@@ -240,7 +240,11 @@ function handleFile(file) {
 }
 
 pdfInput.addEventListener('change', (e) => { if (e.target.files[0]) handleFile(e.target.files[0]); });
-dropZone.addEventListener('click', () => pdfInput.click());
+dropZone.addEventListener('click', (e) => {
+  // Don't double-trigger if clicking the label/input directly
+  if (e.target === pdfInput || e.target.closest('.upload-btn')) return;
+  pdfInput.click();
+});
 dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
 dropZone.addEventListener('dragleave', () => { dropZone.classList.remove('dragover'); });
 dropZone.addEventListener('drop', (e) => {
@@ -327,7 +331,11 @@ proceedBtn.addEventListener('click', async () => {
 
 async function renderPage() {
   const page = await state.pdfDoc.getPage(state.currentPage);
-  const viewport = page.getViewport({ scale: state.zoom * 1.5 });
+  // Fit PDF to container width (~900px max), no artificial stretch
+  const baseViewport = page.getViewport({ scale: 1.0 });
+  const containerWidth = pdfContainer.clientWidth - 32; // minus padding
+  const fitScale = Math.min(containerWidth / baseViewport.width, 2.0);
+  const viewport = page.getViewport({ scale: state.zoom * fitScale });
   pdfCanvas.width = viewport.width; pdfCanvas.height = viewport.height;
   await page.render({ canvasContext: pdfCanvas.getContext('2d'), viewport }).promise;
   pageInfo.textContent = `Page ${state.currentPage} / ${state.totalPages}`;
@@ -342,12 +350,29 @@ zoomIn.addEventListener('click', async () => { state.zoom = Math.min(3, state.zo
 zoomOut.addEventListener('click', async () => { state.zoom = Math.max(0.5, state.zoom - 0.25); await renderPage(); });
 
 // ─── Signature Overlay ───
+function getSignaturePreviewHtml() {
+  const activeTab = document.querySelector('.sig-tab.active').dataset.tab;
+  if (activeTab === 'draw') {
+    const imgData = sigCtx.getImageData(0, 0, sigCanvas.width, sigCanvas.height);
+    const hasContent = imgData.data.some((v, i) => i % 4 === 3 && v > 0);
+    if (hasContent) {
+      return `<img src="${sigCanvas.toDataURL('image/png')}" style="max-width:120px;max-height:28px;display:block;margin-bottom:2px;">`;
+    }
+  } else if (activeTab === 'type' && typedSig.value.trim()) {
+    const font = document.querySelector('input[name="sig-font"]:checked')?.value || "'Dancing Script', cursive";
+    return `<div style="font-family:${font};font-size:18px;color:#1a3b7a;margin-bottom:2px;">${escapeHtml(typedSig.value.trim())}</div>`;
+  }
+  return '';
+}
+
 function createSigOverlay() {
   const name = signerName.value.trim();
   const reason = getReasonValue();
   const location = signLocation.value.trim() || '-';
   const date = signDate.value;
+  const sigPreview = getSignaturePreviewHtml();
   sigOverlay.innerHTML = `
+    ${sigPreview}
     <div class="sig-stamp">
       <div class="stamp-logo"><span class="sd">Doc</span><span class="ss">Seal</span></div>
       <div class="stamp-details">
@@ -362,9 +387,10 @@ function createSigOverlay() {
   sigOverlay.classList.remove('hidden');
   const canvasRect = pdfCanvas.getBoundingClientRect();
   sigOverlay.style.left = (pdfCanvas.offsetLeft + canvasRect.width - 290) + 'px';
-  sigOverlay.style.top = (pdfCanvas.offsetTop + canvasRect.height - 70) + 'px';
+  sigOverlay.style.top = (pdfCanvas.offsetTop + canvasRect.height - 85) + 'px';
   state.sigPlaced = true; downloadBtn.disabled = false;
   makeDraggable(sigOverlay);
+  makeResizable(sigOverlay);
 }
 
 function makeDraggable(el) {
@@ -383,6 +409,42 @@ function makeDraggable(el) {
   });
   document.addEventListener('touchmove', (e) => { if (!isDragging) return; el.style.left = (origLeft + e.touches[0].clientX - startX) + 'px'; el.style.top = (origTop + e.touches[0].clientY - startY) + 'px'; });
   document.addEventListener('touchend', () => { isDragging = false; });
+}
+
+function makeResizable(el) {
+  const handle = el.querySelector('.resize-handle');
+  if (!handle) return;
+  let isResizing = false, startX, startY, origW, origH;
+
+  handle.addEventListener('mousedown', (e) => {
+    isResizing = true;
+    startX = e.clientX; startY = e.clientY;
+    origW = el.offsetWidth; origH = el.offsetHeight;
+    e.preventDefault(); e.stopPropagation();
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!isResizing) return;
+    const scale = Math.max(0.5, Math.min(2.0, (origW + e.clientX - startX) / origW));
+    el.style.transform = `scale(${scale})`;
+    el.style.transformOrigin = 'top left';
+    el.dataset.scale = scale;
+  });
+  document.addEventListener('mouseup', () => { isResizing = false; });
+
+  handle.addEventListener('touchstart', (e) => {
+    isResizing = true;
+    startX = e.touches[0].clientX; startY = e.touches[0].clientY;
+    origW = el.offsetWidth; origH = el.offsetHeight;
+    e.preventDefault(); e.stopPropagation();
+  });
+  document.addEventListener('touchmove', (e) => {
+    if (!isResizing) return;
+    const scale = Math.max(0.5, Math.min(2.0, (origW + e.touches[0].clientX - startX) / origW));
+    el.style.transform = `scale(${scale})`;
+    el.style.transformOrigin = 'top left';
+    el.dataset.scale = scale;
+  });
+  document.addEventListener('touchend', () => { isResizing = false; });
 }
 
 pdfCanvas.addEventListener('click', (e) => {
@@ -649,9 +711,10 @@ downloadBtn.addEventListener('click', async () => {
     const page = pages[state.currentPage - 1];
     const { width: pageWidth, height: pageHeight } = page.getSize();
 
-    // Fixed stamp size in PDF points (compact, like the reference eSign image)
-    const stampW = 250;
-    const stampH = 65;
+    // Fixed stamp size in PDF points, scaled by user resize
+    const userScale = parseFloat(sigOverlay.dataset.scale || '1');
+    const stampW = Math.round(250 * userScale);
+    const stampH = Math.round(65 * userScale);
 
     // Map overlay CENTER position to PDF coordinates
     const canvasRect = pdfCanvas.getBoundingClientRect();
@@ -674,37 +737,35 @@ downloadBtn.addEventListener('click', async () => {
     const date = signDate.value;
     const timestamp = formatFullTimestamp();
 
-    // ── Visual Signature Stamp (compact: 250x65 pts) ──
+    // ── Visual Signature Stamp ──
     loadingText.textContent = 'Adding signature stamp...';
-    const fs = 7, lh = 9.5, logoFs = 12;
+    const fs = 7 * userScale, lh = 9.5 * userScale, logoFs = 12 * userScale;
 
     page.drawRectangle({ x: pdfX, y: pdfY, width: stampW, height: stampH, color: rgb(1,1,1), borderColor: rgb(0.1,0.23,0.48), borderWidth: 1 });
 
-    // Logo
-    const logoX = pdfX + 5, logoY = pdfY + stampH / 2 - logoFs / 3;
+    const p = 5 * userScale; // padding scale
+    const logoX = pdfX + p, logoY = pdfY + stampH / 2 - logoFs / 3;
     page.drawText('Doc', { x: logoX, y: logoY, size: logoFs, font: fontBold, color: rgb(0.1,0.23,0.48) });
     page.drawText('Seal', { x: logoX + fontBold.widthOfTextAtSize('Doc', logoFs), y: logoY, size: logoFs, font: fontBold, color: rgb(0.18,0.37,0.72) });
 
-    // Divider
-    const divX = logoX + 42;
+    const divX = logoX + 42 * userScale;
     page.drawLine({ start: { x: divX, y: pdfY + 4 }, end: { x: divX, y: pdfY + stampH - 4 }, thickness: 0.7, color: rgb(0.1,0.23,0.48) });
 
-    // Text details
-    const tx = divX + 5;
-    let ty = pdfY + stampH - 9;
+    const tx = divX + 5 * userScale;
+    let ty = pdfY + stampH - 9 * userScale;
     page.drawText('Signed by: ', { x: tx, y: ty, size: fs, font, color: rgb(0.2,0.2,0.2) });
     page.drawText(name, { x: tx + font.widthOfTextAtSize('Signed by: ', fs), y: ty, size: fs, font: fontBold, color: rgb(0.1,0.1,0.1) });
     ty -= lh; page.drawText(`Reason: ${reason}`, { x: tx, y: ty, size: fs, font, color: rgb(0.2,0.2,0.2) });
     ty -= lh; page.drawText(`Location: ${location}`, { x: tx, y: ty, size: fs, font, color: rgb(0.2,0.2,0.2) });
     ty -= lh; page.drawText(`Date: ${date}`, { x: tx, y: ty, size: fs, font, color: rgb(0.2,0.2,0.2) });
-    ty -= lh; page.drawText(`ID: ${state.documentId}`, { x: tx, y: ty, size: 5.5, font: fontMono, color: rgb(0.5,0.5,0.5) });
+    ty -= lh; page.drawText(`ID: ${state.documentId}`, { x: tx, y: ty, size: 5.5 * userScale, font: fontMono, color: rgb(0.5,0.5,0.5) });
 
     // Drawn signature above stamp
     const drawnSig = getDrawnSignatureDataUrl();
     if (drawnSig) {
       const sigImgBytes = await fetch(drawnSig).then(r => r.arrayBuffer());
       const sigImg = await pdfDoc.embedPng(sigImgBytes);
-      const sigW = 120, sigH = Math.min(sigW / (sigImg.width / sigImg.height), 30);
+      const sigW = 120 * userScale, sigH = Math.min(sigW / (sigImg.width / sigImg.height), 30 * userScale);
       page.drawImage(sigImg, { x: pdfX + 3, y: pdfY + stampH + 2, width: sigW, height: sigH });
     }
 
@@ -712,7 +773,7 @@ downloadBtn.addEventListener('click', async () => {
     const activeTab = document.querySelector('.sig-tab.active').dataset.tab;
     if (activeTab === 'type' && typedSig.value.trim()) {
       const italic = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
-      page.drawText(typedSig.value.trim(), { x: pdfX + 3, y: pdfY + stampH + 4, size: 12, font: italic, color: rgb(0.1,0.23,0.48) });
+      page.drawText(typedSig.value.trim(), { x: pdfX + 3, y: pdfY + stampH + 4, size: 12 * userScale, font: italic, color: rgb(0.1,0.23,0.48) });
     }
 
     // QR code on stamp
@@ -723,7 +784,7 @@ downloadBtn.addEventListener('click', async () => {
       try {
         const qrBytes = await fetch(qrDataUrl).then(r => r.arrayBuffer());
         const qrImg = await pdfDoc.embedPng(qrBytes);
-        const qrSz = 38; // fits inside the 65pt stamp
+        const qrSz = Math.round(38 * userScale);
         page.drawImage(qrImg, { x: pdfX + stampW - qrSz - 3, y: pdfY + (stampH - qrSz) / 2, width: qrSz, height: qrSz });
       } catch (e) { console.error('QR embed failed', e); }
     }

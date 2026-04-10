@@ -388,16 +388,18 @@ function createSigOverlay() {
   const sigPreview = getSignaturePreviewHtml();
   sigOverlay.innerHTML = `
     ${sigPreview}
-    <div class="sig-stamp">
-      <div class="stamp-logo"><span class="sd">Doc</span><span class="ss">Seal</span></div>
-      <div class="stamp-details">
-        <div><strong>Signed by: ${escapeHtml(name)}</strong></div>
+    <div class="sig-stamp" style="display:flex;gap:5px;padding:3px 6px;font-size:8px;line-height:1.3;">
+      <div style="flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:2px;min-width:36px;">
+        <div style="font-size:10px;font-weight:800;letter-spacing:-0.5px;"><span style="color:#1a3b7a;">Doc</span><span style="color:#2d5db8;">Seal</span></div>
+        <div style="width:28px;height:28px;background:#eee;border:1px solid #ccc;border-radius:2px;display:flex;align-items:center;justify-content:center;font-size:6px;color:#999;">QR</div>
+      </div>
+      <div style="border-left:1px solid #1a3b7a;padding-left:5px;font-size:8px;line-height:1.35;">
+        <div><strong style="font-size:9px;">Signed by: ${escapeHtml(name)}</strong></div>
         <div>Reason: ${escapeHtml(reason)}</div>
         <div>Location: ${escapeHtml(location)}</div>
         <div>Date: ${date}</div>
-        <div class="stamp-docid">ID: ${state.documentId}</div>
+        <div style="font-family:monospace;font-size:6px;color:#888;">ID: ${state.documentId}</div>
       </div>
-      <div class="stamp-qr" style="width:36px;height:36px;background:#eee;border:1px solid #ccc;border-radius:3px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:7px;color:#999;">QR</div>
     </div>`;
   sigOverlay.classList.remove('hidden');
   // Position at bottom-right by default
@@ -498,17 +500,18 @@ async function pkiSignPdf(pdfBytes, meta) {
 
 // ─── Stamp size controls ───
 document.addEventListener('click', (e) => {
-  if (e.target.id === 'stamp-smaller' || e.target.id === 'stamp-bigger') {
-    const cur = parseFloat(sigOverlay.dataset.scale || '1');
-    const next = e.target.id === 'stamp-smaller'
-      ? Math.max(0.5, cur - 0.15)
-      : Math.min(2.0, cur + 0.15);
-    sigOverlay.dataset.scale = next.toFixed(2);
-    sigOverlay.style.transform = `scale(${next})`;
-    sigOverlay.style.transformOrigin = 'top left';
-    const display = document.getElementById('stamp-scale');
-    if (display) display.textContent = Math.round(next * 100) + '%';
-  }
+  const btn = e.target.closest('#stamp-smaller, #stamp-bigger');
+  if (!btn) return;
+  e.stopPropagation();
+  const cur = parseFloat(sigOverlay.dataset.scale || '1');
+  const next = btn.id === 'stamp-smaller'
+    ? Math.max(0.5, cur - 0.15)
+    : Math.min(2.0, cur + 0.15);
+  sigOverlay.dataset.scale = next.toFixed(2);
+  sigOverlay.style.transform = `scale(${next})`;
+  sigOverlay.style.transformOrigin = 'top left';
+  const display = document.getElementById('stamp-scale');
+  if (display) display.textContent = Math.round(next * 100) + '%';
 });
 
 // ─── Audit Trail Page ───
@@ -737,16 +740,18 @@ downloadBtn.addEventListener('click', async () => {
 
     // Fixed stamp size in PDF points, scaled by user resize
     const userScale = parseFloat(sigOverlay.dataset.scale || '1');
-    const stampW = Math.round(250 * userScale);
-    const stampH = Math.round(65 * userScale);
+    const stampW = Math.round(200 * userScale);
+    const stampH = Math.round(72 * userScale);
 
     // Map stamp position to PDF using stored relative coordinates (0-1 range)
     // stampRelX/Y = center of stamp as fraction of page
-    let pdfX = state.stampRelX * pageWidth - stampW / 2;
-    let pdfY = pageHeight - (state.stampRelY * pageHeight) - stampH / 2;
+    // Clamp relative position to page bounds
+    const rx = Math.max(0.05, Math.min(0.95, state.stampRelX));
+    const ry = Math.max(0.05, Math.min(0.95, state.stampRelY));
+    let pdfX = rx * pageWidth - stampW / 2;
+    let pdfY = pageHeight - (ry * pageHeight) - stampH / 2;
     pdfX = Math.max(5, Math.min(pdfX, pageWidth - stampW - 5));
     pdfY = Math.max(5, Math.min(pdfY, pageHeight - stampH - 5));
-    console.log('STAMP DEBUG:', { stampRelX: state.stampRelX, stampRelY: state.stampRelY, pageWidth, pageHeight, pdfX, pdfY, stampW, stampH });
 
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
@@ -758,28 +763,33 @@ downloadBtn.addEventListener('click', async () => {
     const date = signDate.value;
     const timestamp = formatFullTimestamp();
 
-    // ── Visual Signature Stamp ──
+    // ── Visual Signature Stamp (200x72 base) ──
+    // Layout: [DocSeal logo + QR stacked on left] | [text on right]
     loadingText.textContent = 'Adding signature stamp...';
-    const fs = 7 * userScale, lh = 9.5 * userScale, logoFs = 12 * userScale;
+    const s = userScale; // shorthand
+    const fs = 6.5 * s, lh = 8.5 * s, logoFs = 10 * s;
 
     page.drawRectangle({ x: pdfX, y: pdfY, width: stampW, height: stampH, color: rgb(1,1,1), borderColor: rgb(0.1,0.23,0.48), borderWidth: 1 });
 
-    const p = 5 * userScale; // padding scale
-    const logoX = pdfX + p, logoY = pdfY + stampH / 2 - logoFs / 3;
-    page.drawText('Doc', { x: logoX, y: logoY, size: logoFs, font: fontBold, color: rgb(0.1,0.23,0.48) });
-    page.drawText('Seal', { x: logoX + fontBold.widthOfTextAtSize('Doc', logoFs), y: logoY, size: logoFs, font: fontBold, color: rgb(0.18,0.37,0.72) });
+    // Left column: DocSeal logo at top, QR at bottom
+    const leftW = 42 * s;
+    const logoX = pdfX + 4 * s;
+    page.drawText('Doc', { x: logoX, y: pdfY + stampH - 12 * s, size: logoFs, font: fontBold, color: rgb(0.1,0.23,0.48) });
+    page.drawText('Seal', { x: logoX + fontBold.widthOfTextAtSize('Doc', logoFs), y: pdfY + stampH - 12 * s, size: logoFs, font: fontBold, color: rgb(0.18,0.37,0.72) });
 
-    const divX = logoX + 42 * userScale;
-    page.drawLine({ start: { x: divX, y: pdfY + 4 }, end: { x: divX, y: pdfY + stampH - 4 }, thickness: 0.7, color: rgb(0.1,0.23,0.48) });
+    // Divider
+    const divX = pdfX + leftW;
+    page.drawLine({ start: { x: divX, y: pdfY + 3 }, end: { x: divX, y: pdfY + stampH - 3 }, thickness: 0.6, color: rgb(0.1,0.23,0.48) });
 
-    const tx = divX + 5 * userScale;
-    let ty = pdfY + stampH - 9 * userScale;
+    // Right column: text details
+    const tx = divX + 4 * s;
+    let ty = pdfY + stampH - 9 * s;
     page.drawText('Signed by: ', { x: tx, y: ty, size: fs, font, color: rgb(0.2,0.2,0.2) });
     page.drawText(name, { x: tx + font.widthOfTextAtSize('Signed by: ', fs), y: ty, size: fs, font: fontBold, color: rgb(0.1,0.1,0.1) });
     ty -= lh; page.drawText(`Reason: ${reason}`, { x: tx, y: ty, size: fs, font, color: rgb(0.2,0.2,0.2) });
     ty -= lh; page.drawText(`Location: ${location}`, { x: tx, y: ty, size: fs, font, color: rgb(0.2,0.2,0.2) });
     ty -= lh; page.drawText(`Date: ${date}`, { x: tx, y: ty, size: fs, font, color: rgb(0.2,0.2,0.2) });
-    ty -= lh; page.drawText(`ID: ${state.documentId}`, { x: tx, y: ty, size: 5.5 * userScale, font: fontMono, color: rgb(0.5,0.5,0.5) });
+    ty -= lh; page.drawText(`ID: ${state.documentId}`, { x: tx, y: ty, size: 5 * s, font: fontMono, color: rgb(0.5,0.5,0.5) });
 
     // Drawn signature above stamp
     const drawnSig = getDrawnSignatureDataUrl();
@@ -805,8 +815,9 @@ downloadBtn.addEventListener('click', async () => {
       try {
         const qrBytes = await fetch(qrDataUrl).then(r => r.arrayBuffer());
         const qrImg = await pdfDoc.embedPng(qrBytes);
-        const qrSz = Math.round(38 * userScale);
-        page.drawImage(qrImg, { x: pdfX + stampW - qrSz - 3, y: pdfY + (stampH - qrSz) / 2, width: qrSz, height: qrSz });
+        const qrSz = Math.round(30 * userScale);
+        // QR goes below DocSeal logo in left column
+        page.drawImage(qrImg, { x: pdfX + 5 * userScale, y: pdfY + 4 * userScale, width: qrSz, height: qrSz });
       } catch (e) { console.error('QR embed failed', e); }
     }
 

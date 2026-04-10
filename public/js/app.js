@@ -458,11 +458,10 @@ function makeResizable(el) {
   let isResizing = false, startX, startY, origW, origH;
 
   function doResize(cx, cy) {
-    const newW = Math.max(100, origW + cx - startX);
-    const newH = Math.max(50, origH + cy - startY);
-    el.style.width = newW + 'px';
-    el.style.height = newH + 'px';
-    el.style.overflow = 'hidden';
+    const newW = Math.max(80, origW + cx - startX);
+    // Scale font proportionally with width
+    const scale = newW / origW;
+    el.style.fontSize = (8 * scale) + 'px';
   }
 
   handle.addEventListener('mousedown', (e) => {
@@ -808,33 +807,43 @@ downloadBtn.addEventListener('click', async () => {
     const date = signDate.value;
     const timestamp = formatFullTimestamp();
 
-    // ── Visual Signature Stamp (200x72 base) ──
-    // Layout: [DocSeal logo + QR stacked on left] | [text on right]
+    // ── WYSIWYG Signature Stamp ──
     loadingText.textContent = 'Adding signature stamp...';
     const s = userScale;
-    const fs = 5.5 * s, lh = 7.5 * s, logoFs = 8.5 * s;
+    const fs = 5.5 * s, lh = 7 * s, logoFs = 8 * s, idFs = 4.5 * s;
+    const pad = 3 * s;
 
-    page.drawRectangle({ x: pdfX, y: pdfY, width: stampW, height: stampH, color: rgb(1,1,1), borderColor: rgb(0.1,0.23,0.48), borderWidth: 1 });
+    // Calculate content height (5 text lines + ID + padding)
+    const contentH = pad + logoFs + lh * 4 + idFs + pad;
+    // Use the larger of calculated height and WYSIWYG height
+    const finalH = Math.max(stampH, contentH);
 
-    // Left column: DocSeal logo at top, QR at bottom
-    const logoX = pdfX + 3 * s;
-    page.drawText('Doc', { x: logoX, y: pdfY + stampH - 12 * s, size: logoFs, font: fontBold, color: rgb(0.1,0.23,0.48) });
-    page.drawText('Seal', { x: logoX + fontBold.widthOfTextAtSize('Doc', logoFs), y: pdfY + stampH - 12 * s, size: logoFs, font: fontBold, color: rgb(0.18,0.37,0.72) });
+    // Adjust pdfY if we grew taller (keep top edge at same position)
+    if (finalH > stampH) pdfY -= (finalH - stampH);
+    pdfY = Math.max(2, pdfY);
 
-    // Divider - position after the full "DocSeal" text width + padding
-    const logoTotalW = fontBold.widthOfTextAtSize('Doc', logoFs) + fontBold.widthOfTextAtSize('Seal', logoFs);
-    const divX = pdfX + Math.max(logoTotalW + 6 * s, 48 * s);
-    page.drawLine({ start: { x: divX, y: pdfY + 3 }, end: { x: divX, y: pdfY + stampH - 3 }, thickness: 0.6, color: rgb(0.1,0.23,0.48) });
+    // Draw box
+    page.drawRectangle({ x: pdfX, y: pdfY, width: stampW, height: finalH, color: rgb(1,1,1), borderColor: rgb(0.1,0.23,0.48), borderWidth: 0.8 });
 
-    // Right column: text details
-    const tx = divX + 4 * s;
-    let ty = pdfY + stampH - 9 * s;
+    // Left column: DocSeal logo
+    const logoX = pdfX + pad;
+    page.drawText('Doc', { x: logoX, y: pdfY + finalH - pad - logoFs, size: logoFs, font: fontBold, color: rgb(0.1,0.23,0.48) });
+    page.drawText('Seal', { x: logoX + fontBold.widthOfTextAtSize('Doc', logoFs), y: pdfY + finalH - pad - logoFs, size: logoFs, font: fontBold, color: rgb(0.18,0.37,0.72) });
+
+    // Divider
+    const logoTotalW = fontBold.widthOfTextAtSize('DocSeal', logoFs);
+    const divX = pdfX + logoTotalW + pad * 2 + 2;
+    page.drawLine({ start: { x: divX, y: pdfY + 2 }, end: { x: divX, y: pdfY + finalH - 2 }, thickness: 0.5, color: rgb(0.1,0.23,0.48) });
+
+    // Right column: text (tight, no extra gaps)
+    const tx = divX + pad;
+    let ty = pdfY + finalH - pad - fs;
     page.drawText('Signed by: ', { x: tx, y: ty, size: fs, font, color: rgb(0.2,0.2,0.2) });
     page.drawText(name, { x: tx + font.widthOfTextAtSize('Signed by: ', fs), y: ty, size: fs, font: fontBold, color: rgb(0.1,0.1,0.1) });
     ty -= lh; page.drawText(`Reason: ${reason}`, { x: tx, y: ty, size: fs, font, color: rgb(0.2,0.2,0.2) });
     ty -= lh; page.drawText(`Location: ${location}`, { x: tx, y: ty, size: fs, font, color: rgb(0.2,0.2,0.2) });
     ty -= lh; page.drawText(`Date: ${date}`, { x: tx, y: ty, size: fs, font, color: rgb(0.2,0.2,0.2) });
-    ty -= lh; page.drawText(`ID: ${state.documentId}`, { x: tx, y: ty, size: 5 * s, font: fontMono, color: rgb(0.5,0.5,0.5) });
+    ty -= lh; page.drawText(`ID: ${state.documentId}`, { x: tx, y: ty, size: idFs, font: fontMono, color: rgb(0.5,0.5,0.5) });
 
     // Drawn signature above stamp
     const drawnSig = getDrawnSignatureDataUrl();
@@ -842,14 +851,14 @@ downloadBtn.addEventListener('click', async () => {
       const sigImgBytes = await fetch(drawnSig).then(r => r.arrayBuffer());
       const sigImg = await pdfDoc.embedPng(sigImgBytes);
       const sigW = 100 * userScale, sigH = Math.min(sigW / (sigImg.width / sigImg.height), 22 * userScale);
-      page.drawImage(sigImg, { x: pdfX + 3, y: pdfY + stampH + 2, width: sigW, height: sigH });
+      page.drawImage(sigImg, { x: pdfX + 3, y: pdfY + finalH + 2, width: sigW, height: sigH });
     }
 
     // Typed signature above stamp
     const activeTab = document.querySelector('.sig-tab.active').dataset.tab;
     if (activeTab === 'type' && typedSig.value.trim()) {
       const italic = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
-      page.drawText(typedSig.value.trim(), { x: pdfX + 3, y: pdfY + stampH + 3, size: 10 * userScale, font: italic, color: rgb(0, 0, 0) });
+      page.drawText(typedSig.value.trim(), { x: pdfX + 3, y: pdfY + finalH + 3, size: 10 * userScale, font: italic, color: rgb(0, 0, 0) });
     }
 
     // QR code on stamp
@@ -860,9 +869,9 @@ downloadBtn.addEventListener('click', async () => {
       try {
         const qrBytes = await fetch(qrDataUrl).then(r => r.arrayBuffer());
         const qrImg = await pdfDoc.embedPng(qrBytes);
-        const qrSz = Math.round(24 * userScale);
-        // QR goes below DocSeal logo in left column
-        page.drawImage(qrImg, { x: pdfX + 5 * userScale, y: pdfY + 4 * userScale, width: qrSz, height: qrSz });
+        const qrSz = Math.round(22 * userScale);
+        // QR right below DocSeal logo, tight gap
+        page.drawImage(qrImg, { x: pdfX + pad, y: pdfY + finalH - pad - logoFs - qrSz - 2 * s, width: qrSz, height: qrSz });
       } catch (e) { console.error('QR embed failed', e); }
     }
 

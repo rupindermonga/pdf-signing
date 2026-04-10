@@ -401,7 +401,8 @@ function createSigOverlay() {
         <div style="font-family:monospace;font-size:0.75em;color:#888;">ID: ${state.documentId}</div>
       </div>
     </div>
-    <div class="resize-handle" style="position:absolute;bottom:-3px;right:-3px;width:10px;height:10px;background:#1a3b7a;border-radius:2px;cursor:nwse-resize;"></div>`;
+    <div class="resize-handle" style="position:absolute;bottom:-3px;right:-3px;width:10px;height:10px;background:#1a3b7a;border-radius:2px;cursor:nwse-resize;" title="Drag to resize"></div>
+    <div class="width-handle" style="position:absolute;top:50%;right:-4px;transform:translateY(-50%);width:6px;height:20px;background:#1a3b7a;border-radius:2px;cursor:ew-resize;" title="Drag to change width"></div>`;
   sigOverlay.classList.remove('hidden');
   // Default: bottom-right area
   state.stampRelX = 0.75;
@@ -437,6 +438,7 @@ function makeDraggable(el) {
   }
 
   el.addEventListener('mousedown', (e) => {
+    if (e.target.classList.contains('resize-handle') || e.target.classList.contains('width-handle')) return;
     isDragging = true; startX = e.clientX; startY = e.clientY;
     origRelX = state.stampRelX; origRelY = state.stampRelY; e.preventDefault();
   });
@@ -444,6 +446,7 @@ function makeDraggable(el) {
   document.addEventListener('mouseup', () => { isDragging = false; });
 
   el.addEventListener('touchstart', (e) => {
+    if (e.target.classList.contains('resize-handle') || e.target.classList.contains('width-handle')) return;
     isDragging = true; startX = e.touches[0].clientX; startY = e.touches[0].clientY;
     origRelX = state.stampRelX; origRelY = state.stampRelY; e.preventDefault();
   });
@@ -459,9 +462,11 @@ function makeResizable(el) {
 
   function doResize(cx, cy) {
     const newW = Math.max(80, origW + cx - startX);
-    // Scale font proportionally with width
-    const scale = newW / origW;
-    el.style.fontSize = (8 * scale) + 'px';
+    const newH = Math.max(40, origH + cy - startY);
+    el.style.width = newW + 'px';
+    // Scale font with the smaller of width/height ratios so text fits
+    const scale = Math.min(newW / origW, newH / origH);
+    el.style.fontSize = Math.max(5, 8 * scale) + 'px';
   }
 
   handle.addEventListener('mousedown', (e) => {
@@ -479,6 +484,31 @@ function makeResizable(el) {
   });
   document.addEventListener('touchmove', (e) => { if (isResizing) doResize(e.touches[0].clientX, e.touches[0].clientY); });
   document.addEventListener('touchend', () => { isResizing = false; });
+
+  // Width-only handle
+  const wHandle = el.querySelector('.width-handle');
+  if (!wHandle) return;
+  let isWResizing = false, wStartX, wOrigW;
+
+  wHandle.addEventListener('mousedown', (e) => {
+    isWResizing = true; wStartX = e.clientX; wOrigW = el.offsetWidth;
+    e.preventDefault(); e.stopPropagation();
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!isWResizing) return;
+    el.style.width = Math.max(80, wOrigW + e.clientX - wStartX) + 'px';
+  });
+  document.addEventListener('mouseup', () => { isWResizing = false; });
+
+  wHandle.addEventListener('touchstart', (e) => {
+    isWResizing = true; wStartX = e.touches[0].clientX; wOrigW = el.offsetWidth;
+    e.preventDefault(); e.stopPropagation();
+  });
+  document.addEventListener('touchmove', (e) => {
+    if (!isWResizing) return;
+    el.style.width = Math.max(80, wOrigW + e.touches[0].clientX - wStartX) + 'px';
+  });
+  document.addEventListener('touchend', () => { isWResizing = false; });
 }
 
 pdfCanvas.addEventListener('click', (e) => {

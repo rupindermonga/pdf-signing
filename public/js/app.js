@@ -411,11 +411,12 @@ function createSigOverlay() {
 }
 
 function positionOverlayFromRel() {
-  const wrapper = document.getElementById('pdf-wrapper');
-  if (!wrapper) return;
-  const ww = wrapper.offsetWidth, wh = wrapper.offsetHeight;
+  // Use canvas CSS dimensions (= full PDF page size in CSS pixels)
+  const ww = parseFloat(pdfCanvas.style.width);
+  const wh = parseFloat(pdfCanvas.style.height);
+  if (!ww || !wh) return;
   const ow = sigOverlay.offsetWidth, oh = sigOverlay.offsetHeight;
-  // Clamp so overlay stays fully inside the canvas
+  // Position overlay, clamped inside the full canvas area
   const left = Math.max(0, Math.min(state.stampRelX * ww - ow / 2, ww - ow));
   const top = Math.max(0, Math.min(state.stampRelY * wh - oh / 2, wh - oh));
   sigOverlay.style.left = left + 'px';
@@ -451,18 +452,16 @@ function makeDraggable(el) {
 // No resize handle - use scale buttons instead (see placement hint area)
 
 pdfCanvas.addEventListener('click', (e) => {
-  // Account for scroll inside pdf-container
+  // Get click position relative to the full canvas using scroll-aware math
   const contRect = pdfContainer.getBoundingClientRect();
   const wrapper = document.getElementById('pdf-wrapper');
-  // Click position relative to container viewport + scroll = position within full wrapper
-  const clickInContainerX = e.clientX - contRect.left + pdfContainer.scrollLeft;
-  const clickInContainerY = e.clientY - contRect.top + pdfContainer.scrollTop;
-  // Subtract wrapper's offset within container (padding)
-  const clickInWrapperX = clickInContainerX - wrapper.offsetLeft;
-  const clickInWrapperY = clickInContainerY - wrapper.offsetTop;
-  // As fraction of wrapper size
-  state.stampRelX = Math.max(0.02, Math.min(0.98, clickInWrapperX / wrapper.offsetWidth));
-  state.stampRelY = Math.max(0.02, Math.min(0.98, clickInWrapperY / wrapper.offsetHeight));
+  const cw = parseFloat(pdfCanvas.style.width);
+  const ch = parseFloat(pdfCanvas.style.height);
+  // Click position in container viewport + scroll offset - wrapper padding
+  const x = e.clientX - contRect.left + pdfContainer.scrollLeft - wrapper.offsetLeft;
+  const y = e.clientY - contRect.top + pdfContainer.scrollTop - wrapper.offsetTop;
+  state.stampRelX = Math.max(0.02, Math.min(0.98, x / cw));
+  state.stampRelY = Math.max(0.02, Math.min(0.98, y / ch));
   positionOverlayFromRel();
   sigOverlay.classList.remove('hidden'); state.sigPlaced = true; downloadBtn.disabled = false;
 });

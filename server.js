@@ -18,6 +18,16 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
 
+// ─── Security headers ───
+app.use((req, res, next) => {
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://nominatim.openstreetmap.org;");
+  next();
+});
+
 // ─── Middleware ───
 app.use(express.json({ limit: '60mb' }));
 app.use(express.urlencoded({ extended: true }));
@@ -25,8 +35,30 @@ app.use(session({
   secret: process.env.SESSION_SECRET || 'docseal-dev',
   resave: false,
   saveUninitialized: false,
-  cookie: { maxAge: 7 * 24 * 60 * 60 * 1000 } // 7 days
+  cookie: {
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production',
+  }
 }));
+
+// ─── Rate limiting (in-memory, simple) ───
+const rateLimits = new Map();
+function rateLimit(windowMs, maxReqs) {
+  return (req, res, next) => {
+    const key = (req.headers['x-forwarded-for'] || req.connection.remoteAddress || '') + req.path;
+    const now = Date.now();
+    const entry = rateLimits.get(key) || { count: 0, resetAt: now + windowMs };
+    if (now > entry.resetAt) { entry.count = 0; entry.resetAt = now + windowMs; }
+    entry.count++;
+    rateLimits.set(key, entry);
+    if (entry.count > maxReqs) {
+      return res.status(429).json({ error: 'Too many requests. Please wait and try again.' });
+    }
+    next();
+  };
+}
 
 // Static files
 app.use(express.static(path.join(__dirname, 'public')));
@@ -46,12 +78,21 @@ if (fs.existsSync(certPath)) {
 // Multer for PDF uploads
 const upload = multer({
   storage: multer.memoryStorage(),
-  fileFilter: (req, file, cb) => cb(null, file.mimetype === 'application/pdf'),
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'application/pdf') return cb(null, true);
+    cb(new Error('Only PDF files are allowed'), false);
+  },
   limits: { fileSize: 50 * 1024 * 1024 }
 });
 
 // Init email
 email.init();
+
+// ─── Sanitize input (strip HTML tags) ───
+function sanitize(str) {
+  if (typeof str !== 'string') return '';
+  return str.replace(/[<>]/g, '');
+}
 
 // ─── Auth middleware ───
 function requireAuth(req, res, next) {
@@ -66,7 +107,7 @@ app.get('/login', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });
 
-app.post('/api/auth/send-otp', async (req, res) => {
+app.post('/api/auth/send-otp', rateLimit(60000, 5), async (req, res) => {
   const { email: userEmail } = req.body;
   if (!userEmail) return res.status(400).json({ error: 'Email required' });
 
@@ -80,7 +121,7 @@ app.post('/api/auth/send-otp', async (req, res) => {
   res.json({ ok: true, message: 'Verification code sent to your email.' });
 });
 
-app.post('/api/auth/verify-otp', (req, res) => {
+app.post('/api/auth/verify-otp', rateLimit(60000, 10), (req, res) => {
   const { email: userEmail, code, name } = req.body;
   if (!userEmail || !code) return res.status(400).json({ error: 'Email and code required' });
 
@@ -123,26 +164,41 @@ app.get('/send', requireAuth, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'send.html'));
 });
 
-app.post('/api/documents/create', requireAuth, upload.single('pdf'), async (req, res) => {
+app.post('/api/documents/create', requireAuth, (req, res, next) => {
+  upload.single('pdf')(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    next();
+  });
+}, async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'PDF required' });
+
+    // Verify PDF magic bytes (%PDF) - catches forged MIME types
+    if (!req.file.buffer || req.file.buffer.length < 5 || req.file.buffer.toString('utf-8', 0, 5) !== '%PDF-') {
+      return res.status(400).json({ error: 'Invalid PDF file' });
+    }
 
     const { title, message, signers } = req.body;
     const parsedSigners = JSON.parse(signers || '[]');
     if (!parsedSigners.length) return res.status(400).json({ error: 'At least one signer required' });
 
+    // Sanitize all user inputs
+    const cleanTitle = sanitize(title) || sanitize(req.file.originalname);
+    const cleanMessage = sanitize(message);
+    const cleanSigners = parsedSigners.map(s => ({ name: sanitize(s.name), email: sanitize(s.email).toLowerCase() }));
+
     // Hash original PDF
     const hash = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
 
     // Create document record
-    const doc = docOps.create(req.session.userId, title || req.file.originalname, req.file.originalname, hash, message);
+    const doc = docOps.create(req.session.userId, cleanTitle, req.file.originalname, hash, cleanMessage);
 
     // Save PDF file
     fs.writeFileSync(path.join(storageDir, `${doc.uuid}.pdf`), req.file.buffer);
 
     // Add signers
-    for (let i = 0; i < parsedSigners.length; i++) {
-      const s = parsedSigners[i];
+    for (let i = 0; i < cleanSigners.length; i++) {
+      const s = cleanSigners[i];
       signerOps.addToDocument(doc.id, s.name, s.email, i + 1);
     }
 
@@ -202,7 +258,7 @@ app.get('/api/sign/:token/info', (req, res) => {
   });
 });
 
-app.post('/api/sign/:token/send-otp', async (req, res) => {
+app.post('/api/sign/:token/send-otp', rateLimit(60000, 5), async (req, res) => {
   const signer = signerOps.findByToken(req.params.token);
   if (!signer) return res.status(404).json({ error: 'Not found' });
 
@@ -213,7 +269,7 @@ app.post('/api/sign/:token/send-otp', async (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/sign/:token/verify-otp', (req, res) => {
+app.post('/api/sign/:token/verify-otp', rateLimit(60000, 10), (req, res) => {
   const signer = signerOps.findByToken(req.params.token);
   if (!signer) return res.status(404).json({ error: 'Not found' });
 
@@ -409,7 +465,7 @@ async function generateFinalPdf(documentId) {
       const pdfForSign = await PDFDocument.load(stampedBytes);
       pdflibAddPlaceholder({ pdfDoc: pdfForSign, reason: 'All parties signed', name: 'DocSeal', location: '' });
       const withPlaceholder = await pdfForSign.save({ useObjectStreams: false });
-      const signer = new P12Signer(p12Buffer, { passphrase: 'docseal' });
+      const signer = new P12Signer(p12Buffer, { passphrase: process.env.P12_PASSPHRASE || 'docseal' });
       const signPdf = new SignPdf();
       finalBytes = await signPdf.sign(withPlaceholder, signer);
     } catch (e) {

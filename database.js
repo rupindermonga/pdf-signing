@@ -162,8 +162,11 @@ const docOps = {
     return db.prepare('SELECT * FROM documents WHERE created_by = ? ORDER BY created_at DESC').all(userId);
   },
   updateStatus(id, status) {
-    const extra = status === 'completed' ? ", completed_at = datetime('now')" : '';
-    db.prepare(`UPDATE documents SET status = ?${extra} WHERE id = ?`).run(status, id);
+    if (status === 'completed') {
+      db.prepare("UPDATE documents SET status = ?, completed_at = datetime('now') WHERE id = ?").run(status, id);
+    } else {
+      db.prepare('UPDATE documents SET status = ? WHERE id = ?').run(status, id);
+    }
   },
   delete(id) {
     db.prepare('DELETE FROM documents WHERE id = ?').run(id);

@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DocSeal - PDF Digital Signature</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <span class="logo-doc">Doc</span><span class="logo-seal">Seal</span>
+    </div>
+    <h1>PDF Digital Signature</h1>
+  </header>
+
+  <main>
+    <!-- Step 1: Upload -->
+    <section id="upload-section" class="step active">
+      <div class="step-header">
+        <span class="step-number">1</span>
+        <h2>Upload PDF</h2>
+      </div>
+      <div class="upload-area" id="drop-zone">
+        <div class="upload-icon">&#128196;</div>
+        <p>Drag & drop your PDF here or</p>
+        <label class="upload-btn">
+          Browse Files
+          <input type="file" id="pdf-input" accept=".pdf" hidden>
+        </label>
+        <p class="upload-hint">Maximum file size: 50MB</p>
+      </div>
+      <div id="file-info" class="file-info hidden">
+        <span id="file-name"></span>
+        <button id="remove-file" class="btn-icon" title="Remove file">&times;</button>
+      </div>
+    </section>
+
+    <!-- Step 2: Signature Details -->
+    <section id="details-section" class="step hidden">
+      <div class="step-header">
+        <span class="step-number">2</span>
+        <h2>Signature Details</h2>
+      </div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label for="signer-name">Signed by *</label>
+          <input type="text" id="signer-name" placeholder="e.g. MANJIT KAUR" required>
+        </div>
+        <div class="form-group">
+          <label for="sign-reason">Reason</label>
+          <select id="sign-reason">
+            <option value="Document Signing">Document Signing</option>
+            <option value="Invoice Approval">Invoice Approval</option>
+            <option value="Contract Agreement">Contract Agreement</option>
+            <option value="Authorization">Authorization</option>
+            <option value="Acknowledgement">Acknowledgement</option>
+            <option value="Review & Approval">Review & Approval</option>
+            <option value="Certification">Certification</option>
+            <option value="NDA Signing">NDA Signing</option>
+            <option value="Purchase Order">Purchase Order</option>
+            <option value="Consent">Consent</option>
+            <option value="Other">Other...</option>
+          </select>
+          <input type="text" id="sign-reason-custom" class="hidden" placeholder="Enter custom reason">
+        </div>
+        <div class="form-group">
+          <label for="sign-location">
+            Location
+            <span id="location-status" class="location-status"></span>
+          </label>
+          <div class="location-input-wrap">
+            <input type="text" id="sign-location" placeholder="Detecting your location..." readonly>
+            <button type="button" id="refresh-location" class="btn-icon-small" title="Re-detect location">&#8635;</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Date & Time (auto)</label>
+          <input type="text" id="sign-date" readonly>
+        </div>
+      </div>
+
+      <!-- Signature Drawing -->
+      <div class="signature-section">
+        <h3>Your Signature</h3>
+        <div class="signature-tabs">
+          <button class="sig-tab active" data-tab="draw">Draw</button>
+          <button class="sig-tab" data-tab="type">Type</button>
+        </div>
+
+        <div id="draw-panel" class="sig-panel active">
+          <canvas id="sig-canvas" width="500" height="160"></canvas>
+          <div class="canvas-controls">
+            <button id="clear-canvas" class="btn-secondary">Clear</button>
+            <div class="pen-options">
+              <label>Color:</label>
+              <input type="color" id="pen-color" value="#1a3b7a">
+              <label>Size:</label>
+              <input type="range" id="pen-size" min="1" max="6" value="2">
+            </div>
+          </div>
+        </div>
+
+        <div id="type-panel" class="sig-panel hidden">
+          <input type="text" id="typed-sig" placeholder="Type your name" class="typed-sig-input">
+          <div class="font-options">
+            <label>
+              <input type="radio" name="sig-font" value="'Dancing Script', cursive" checked>
+              <span style="font-family: 'Dancing Script', cursive; font-size: 24px;">Signature</span>
+            </label>
+            <label>
+              <input type="radio" name="sig-font" value="'Homemade Apple', cursive">
+              <span style="font-family: 'Homemade Apple', cursive; font-size: 20px;">Signature</span>
+            </label>
+            <label>
+              <input type="radio" name="sig-font" value="'Great Vibes', cursive">
+              <span style="font-family: 'Great Vibes', cursive; font-size: 24px;">Signature</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Signature Preview -->
+      <div class="sig-preview-section">
+        <h3>Signature Block Preview</h3>
+        <div id="sig-preview" class="sig-preview">
+          <div class="sig-block-preview">
+            <div class="sig-block-left">
+              <span class="preview-logo-doc">Doc</span><span class="preview-logo-seal">Seal</span>
+            </div>
+            <div class="sig-block-right">
+              <div class="sig-block-name">Signed by: <strong id="preview-name">YOUR NAME</strong></div>
+              <div>Reason: <span id="preview-reason">Document Signing</span></div>
+              <div>Location: <span id="preview-location">-</span></div>
+              <div>Date: <span id="preview-date">-</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <button id="proceed-placement" class="btn-primary" disabled>Place Signature on PDF</button>
+    </section>
+
+    <!-- Step 3: Place on PDF -->
+    <section id="placement-section" class="step hidden">
+      <div class="step-header">
+        <span class="step-number">3</span>
+        <h2>Place Signature</h2>
+      </div>
+      <p class="placement-hint">Click on the PDF where you want to place your signature. You can drag to reposition.</p>
+
+      <div class="pdf-toolbar">
+        <button id="prev-page" class="btn-secondary" disabled>&laquo; Prev</button>
+        <span id="page-info">Page 1 / 1</span>
+        <button id="next-page" class="btn-secondary" disabled>Next &raquo;</button>
+        <div class="zoom-controls">
+          <button id="zoom-out" class="btn-secondary">-</button>
+          <span id="zoom-level">100%</span>
+          <button id="zoom-in" class="btn-secondary">+</button>
+        </div>
+      </div>
+
+      <div id="pdf-container" class="pdf-container">
+        <canvas id="pdf-canvas"></canvas>
+        <div id="sig-overlay" class="sig-overlay hidden"></div>
+      </div>
+
+      <div class="placement-actions">
+        <button id="back-to-details" class="btn-secondary">Back to Details</button>
+        <button id="download-signed" class="btn-primary" disabled>Download Signed PDF</button>
+      </div>
+    </section>
+
+    <!-- Loading overlay -->
+    <div id="loading" class="loading hidden">
+      <div class="spinner"></div>
+      <p>Processing your PDF...</p>
+    </div>
+  </main>
+
+  <footer>
+    <p>DocSeal &mdash; ManDarshan AI Solutions</p>
+  </footer>
+
+  <!-- Google Fonts for signature styles -->
+  <link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@400;700&family=Great+Vibes&family=Homemade+Apple&display=swap" rel="stylesheet">
+
+  <script src="/js/app.js"></script>
+</body>
+</html>

@@ -427,9 +427,9 @@ function makeDraggable(el) {
 
   function onMove(cx, cy) {
     const wrapper = document.getElementById('pdf-wrapper');
-    const wRect = wrapper.getBoundingClientRect();
-    state.stampRelX = Math.max(0.02, Math.min(0.98, origRelX + (cx - startX) / wRect.width));
-    state.stampRelY = Math.max(0.02, Math.min(0.98, origRelY + (cy - startY) / wRect.height));
+    // Drag delta as fraction of wrapper size (scroll-independent since it's a delta)
+    state.stampRelX = Math.max(0.02, Math.min(0.98, origRelX + (cx - startX) / wrapper.offsetWidth));
+    state.stampRelY = Math.max(0.02, Math.min(0.98, origRelY + (cy - startY) / wrapper.offsetHeight));
     positionOverlayFromRel();
   }
 
@@ -451,10 +451,18 @@ function makeDraggable(el) {
 // No resize handle - use scale buttons instead (see placement hint area)
 
 pdfCanvas.addEventListener('click', (e) => {
+  // Account for scroll inside pdf-container
+  const contRect = pdfContainer.getBoundingClientRect();
   const wrapper = document.getElementById('pdf-wrapper');
-  const wRect = wrapper.getBoundingClientRect();
-  state.stampRelX = Math.max(0.02, Math.min(0.98, (e.clientX - wRect.left) / wRect.width));
-  state.stampRelY = Math.max(0.02, Math.min(0.98, (e.clientY - wRect.top) / wRect.height));
+  // Click position relative to container viewport + scroll = position within full wrapper
+  const clickInContainerX = e.clientX - contRect.left + pdfContainer.scrollLeft;
+  const clickInContainerY = e.clientY - contRect.top + pdfContainer.scrollTop;
+  // Subtract wrapper's offset within container (padding)
+  const clickInWrapperX = clickInContainerX - wrapper.offsetLeft;
+  const clickInWrapperY = clickInContainerY - wrapper.offsetTop;
+  // As fraction of wrapper size
+  state.stampRelX = Math.max(0.02, Math.min(0.98, clickInWrapperX / wrapper.offsetWidth));
+  state.stampRelY = Math.max(0.02, Math.min(0.98, clickInWrapperY / wrapper.offsetHeight));
   positionOverlayFromRel();
   sigOverlay.classList.remove('hidden'); state.sigPlaced = true; downloadBtn.disabled = false;
 });

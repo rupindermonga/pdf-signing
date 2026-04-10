@@ -400,7 +400,8 @@ function createSigOverlay() {
         <div>Date: ${date}</div>
         <div style="font-family:monospace;font-size:0.75em;color:#888;">ID: ${state.documentId}</div>
       </div>
-    </div>`;
+    </div>
+    <div class="resize-handle" style="position:absolute;bottom:-3px;right:-3px;width:10px;height:10px;background:#1a3b7a;border-radius:2px;cursor:nwse-resize;"></div>`;
   sigOverlay.classList.remove('hidden');
   // Default: bottom-right area
   state.stampRelX = 0.75;
@@ -408,6 +409,7 @@ function createSigOverlay() {
   positionOverlayFromRel();
   state.sigPlaced = true; downloadBtn.disabled = false;
   makeDraggable(sigOverlay);
+  makeResizable(sigOverlay);
 }
 
 function positionOverlayFromRel() {
@@ -449,7 +451,36 @@ function makeDraggable(el) {
   document.addEventListener('touchend', () => { isDragging = false; });
 }
 
-// No resize handle - use scale buttons instead (see placement hint area)
+// Corner drag resize
+function makeResizable(el) {
+  const handle = el.querySelector('.resize-handle');
+  if (!handle) return;
+  let isResizing = false, startX, startY, origW, origH;
+
+  function doResize(cx, cy) {
+    const newW = Math.max(100, origW + cx - startX);
+    const newH = Math.max(50, origH + cy - startY);
+    el.style.width = newW + 'px';
+    el.style.height = newH + 'px';
+    el.style.overflow = 'hidden';
+  }
+
+  handle.addEventListener('mousedown', (e) => {
+    isResizing = true; startX = e.clientX; startY = e.clientY;
+    origW = el.offsetWidth; origH = el.offsetHeight;
+    e.preventDefault(); e.stopPropagation();
+  });
+  document.addEventListener('mousemove', (e) => { if (isResizing) doResize(e.clientX, e.clientY); });
+  document.addEventListener('mouseup', () => { isResizing = false; });
+
+  handle.addEventListener('touchstart', (e) => {
+    isResizing = true; startX = e.touches[0].clientX; startY = e.touches[0].clientY;
+    origW = el.offsetWidth; origH = el.offsetHeight;
+    e.preventDefault(); e.stopPropagation();
+  });
+  document.addEventListener('touchmove', (e) => { if (isResizing) doResize(e.touches[0].clientX, e.touches[0].clientY); });
+  document.addEventListener('touchend', () => { isResizing = false; });
+}
 
 pdfCanvas.addEventListener('click', (e) => {
   // Get click position relative to the full canvas using scroll-aware math
@@ -744,20 +775,28 @@ downloadBtn.addEventListener('click', async () => {
     const page = pages[state.currentPage - 1];
     const { width: pageWidth, height: pageHeight } = page.getSize();
 
-    // Fixed stamp size in PDF points, scaled by user resize
-    const userScale = parseFloat(sigOverlay.dataset.scale || '1');
-    const stampW = Math.round(170 * userScale);
-    const stampH = Math.round(60 * userScale);
+    // WYSIWYG: calculate PDF stamp size from overlay's actual screen size
+    // relative to the canvas/page ratio
+    const canvasCSSW = parseFloat(pdfCanvas.style.width);
+    const canvasCSSH = parseFloat(pdfCanvas.style.height);
+    const overlayW = sigOverlay.offsetWidth;
+    const overlayH = sigOverlay.offsetHeight;
+    // Convert overlay CSS pixels to PDF points
+    const stampW = Math.round((overlayW / canvasCSSW) * pageWidth);
+    const stampH = Math.round((overlayH / canvasCSSH) * pageHeight);
+    const userScale = stampW / 170 || 1; // for font scaling
 
-    // Map stamp position to PDF using stored relative coordinates (0-1 range)
-    // stampRelX/Y = center of stamp as fraction of page
-    // Clamp relative position to page bounds
-    const rx = Math.max(0.05, Math.min(0.95, state.stampRelX));
-    const ry = Math.max(0.05, Math.min(0.95, state.stampRelY));
-    let pdfX = rx * pageWidth - stampW / 2;
-    let pdfY = pageHeight - (ry * pageHeight) - stampH / 2;
-    pdfX = Math.max(5, Math.min(pdfX, pageWidth - stampW - 5));
-    pdfY = Math.max(5, Math.min(pdfY, pageHeight - stampH - 5));
+    // Map position using stored relative coordinates
+    const rx = Math.max(0.02, Math.min(0.98, state.stampRelX));
+    const ry = Math.max(0.02, Math.min(0.98, state.stampRelY));
+    // stampRelX/Y = top-left corner as fraction (set by positionOverlayFromRel)
+    // Convert overlay top-left position to PDF coordinates
+    const olLeft = sigOverlay.offsetLeft;
+    const olTop = sigOverlay.offsetTop;
+    let pdfX = (olLeft / canvasCSSW) * pageWidth;
+    let pdfY = pageHeight - ((olTop / canvasCSSH) * pageHeight) - stampH;
+    pdfX = Math.max(2, Math.min(pdfX, pageWidth - stampW - 2));
+    pdfY = Math.max(2, Math.min(pdfY, pageHeight - stampH - 2));
 
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);

@@ -429,36 +429,29 @@ function makeDraggable(el) {
 function makeResizable(el) {
   const handle = el.querySelector('.resize-handle');
   if (!handle) return;
-  let isResizing = false, startX, startY, origW, origH;
+  let isResizing = false, startX, origW;
+
+  function applyScale(e) {
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const newW = Math.max(origW * 0.5, Math.min(origW * 2.0, origW + clientX - startX));
+    const scale = newW / origW;
+    // Scale by changing font-size and padding proportionally (no CSS transform)
+    el.style.fontSize = (9 * scale) + 'px';
+    el.dataset.scale = scale.toFixed(2);
+  }
 
   handle.addEventListener('mousedown', (e) => {
-    isResizing = true;
-    startX = e.clientX; startY = e.clientY;
-    origW = el.offsetWidth; origH = el.offsetHeight;
+    isResizing = true; startX = e.clientX; origW = el.offsetWidth;
     e.preventDefault(); e.stopPropagation();
   });
-  document.addEventListener('mousemove', (e) => {
-    if (!isResizing) return;
-    const scale = Math.max(0.5, Math.min(2.0, (origW + e.clientX - startX) / origW));
-    el.style.transform = `scale(${scale})`;
-    el.style.transformOrigin = 'top left';
-    el.dataset.scale = scale;
-  });
+  document.addEventListener('mousemove', (e) => { if (isResizing) applyScale(e); });
   document.addEventListener('mouseup', () => { isResizing = false; });
 
   handle.addEventListener('touchstart', (e) => {
-    isResizing = true;
-    startX = e.touches[0].clientX; startY = e.touches[0].clientY;
-    origW = el.offsetWidth; origH = el.offsetHeight;
+    isResizing = true; startX = e.touches[0].clientX; origW = el.offsetWidth;
     e.preventDefault(); e.stopPropagation();
   });
-  document.addEventListener('touchmove', (e) => {
-    if (!isResizing) return;
-    const scale = Math.max(0.5, Math.min(2.0, (origW + e.touches[0].clientX - startX) / origW));
-    el.style.transform = `scale(${scale})`;
-    el.style.transformOrigin = 'top left';
-    el.dataset.scale = scale;
-  });
+  document.addEventListener('touchmove', (e) => { if (isResizing) applyScale(e); });
   document.addEventListener('touchend', () => { isResizing = false; });
 }
 

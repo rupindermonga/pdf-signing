@@ -551,13 +551,44 @@ app.get('/api/documents/:uuid', requireAuth, (req, res) => {
 });
 
 // ─── QR Code ───
-app.post('/api/qr', requireAuth, async (req, res) => {
+app.post('/api/qr', async (req, res) => {
   try {
     const { data } = req.body;
     if (!data) return res.status(400).json({ error: 'No data' });
     const qr = await QRCode.toDataURL(data, { errorCorrectionLevel: 'M', margin: 1, width: 200, color: { dark: '#1a3b7a', light: '#ffffff' } });
     res.json({ qr });
   } catch { res.status(500).json({ error: 'QR failed' }); }
+});
+
+// ─── Solo PKI Sign ───
+app.post('/api/sign', async (req, res) => {
+  try {
+    const { pdfBytes } = req.body;
+    if (!pdfBytes || !Array.isArray(pdfBytes)) {
+      return res.status(400).json({ error: 'No PDF bytes provided' });
+    }
+    if (!p12Buffer) {
+      return res.status(500).json({ error: 'No signing certificate available' });
+    }
+    const pdfBuffer = Buffer.from(pdfBytes);
+    const pdfDoc = await PDFDocument.load(pdfBuffer);
+    pdflibAddPlaceholder({
+      pdfDoc,
+      reason: req.body.reason || 'Document Signing',
+      contactInfo: req.body.signer || '',
+      name: req.body.signer || 'DocSeal Signer',
+      location: req.body.location || '',
+    });
+    const pdfWithPlaceholder = await pdfDoc.save({ useObjectStreams: false });
+    const signer = new P12Signer(p12Buffer, { passphrase: process.env.P12_PASSPHRASE || 'docseal' });
+    const signPdf = new SignPdf();
+    const signedPdf = await signPdf.sign(pdfWithPlaceholder, signer);
+    const hash = crypto.createHash('sha256').update(signedPdf).digest('hex');
+    res.json({ signedPdf: Buffer.from(signedPdf).toString('base64'), hash });
+  } catch (err) {
+    console.error('Solo signing error:', err.message);
+    res.status(500).json({ error: 'PDF signing failed' });
+  }
 });
 
 // ─── IP ───

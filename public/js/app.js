@@ -722,16 +722,25 @@ downloadBtn.addEventListener('click', async () => {
     const stampW = Math.round(250 * userScale);
     const stampH = Math.round(65 * userScale);
 
-    // Map overlay CENTER position to PDF coordinates
-    const canvasRect = pdfCanvas.getBoundingClientRect();
-    const overlayRect = sigOverlay.getBoundingClientRect();
-    const overlayCenterX = overlayRect.left + overlayRect.width / 2 - canvasRect.left;
-    const overlayCenterY = overlayRect.top + overlayRect.height / 2 - canvasRect.top;
-    const relX = overlayCenterX / canvasRect.width;
-    const relY = overlayCenterY / canvasRect.height;
-    // PDF origin is bottom-left; clamp to page bounds
-    let pdfX = Math.max(5, Math.min(relX * pageWidth - stampW / 2, pageWidth - stampW - 5));
-    let pdfY = Math.max(5, Math.min(pageHeight - relY * pageHeight - stampH / 2, pageHeight - stampH - 5));
+    // Map overlay position to PDF coordinates using CSS pixel positions
+    // The overlay and canvas are both children of pdf-container (position: relative)
+    // So we compare their offsets directly within the container, accounting for scroll
+    const canvasCSSWidth = parseFloat(pdfCanvas.style.width);
+    const canvasCSSHeight = parseFloat(pdfCanvas.style.height);
+    const canvasLeft = pdfCanvas.offsetLeft;
+    const canvasTop = pdfCanvas.offsetTop;
+
+    // Overlay top-left position relative to the canvas, in CSS pixels
+    const overlayLeft = sigOverlay.offsetLeft - canvasLeft + pdfContainer.scrollLeft;
+    const overlayTop = sigOverlay.offsetTop - canvasTop + pdfContainer.scrollTop;
+
+    // Convert to 0-1 range relative to canvas CSS size
+    const relX = overlayLeft / canvasCSSWidth;
+    const relY = overlayTop / canvasCSSHeight;
+
+    // Map to PDF coordinates (PDF origin = bottom-left)
+    let pdfX = Math.max(5, Math.min(relX * pageWidth, pageWidth - stampW - 5));
+    let pdfY = Math.max(5, Math.min(pageHeight - relY * pageHeight - stampH, pageHeight - stampH - 5));
 
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);

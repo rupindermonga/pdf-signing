@@ -730,13 +730,18 @@ downloadBtn.addEventListener('click', async () => {
     const stampH = Math.round(65 * userScale);
 
     // Map overlay position to PDF coordinates
-    // Use getBoundingClientRect for both to get exact screen positions
-    const cRect = pdfCanvas.getBoundingClientRect(); // canvas screen rect
-    const oRect = sigOverlay.getBoundingClientRect(); // overlay screen rect
+    // Both overlay and canvas are positioned within pdf-container (overflow:auto)
+    // Use offsetLeft/Top which are relative to the container's scroll content
+    const canvasCSSW = parseFloat(pdfCanvas.style.width);
+    const canvasCSSH = parseFloat(pdfCanvas.style.height);
 
-    // Overlay top-left relative to canvas top-left, as fraction of canvas CSS size
-    const relX = (oRect.left - cRect.left) / cRect.width;
-    const relY = (oRect.top - cRect.top) / cRect.height;
+    // Overlay position relative to canvas within the container
+    const ox = sigOverlay.offsetLeft - pdfCanvas.offsetLeft;
+    const oy = sigOverlay.offsetTop - pdfCanvas.offsetTop;
+
+    // As fraction of canvas CSS dimensions
+    const relX = ox / canvasCSSW;
+    const relY = oy / canvasCSSH;
 
     // Map to PDF coordinates (PDF origin = bottom-left)
     let pdfX = Math.max(5, Math.min(relX * pageWidth, pageWidth - stampW - 5));

@@ -375,7 +375,7 @@ function getSignaturePreviewHtml() {
     }
   } else if (activeTab === 'type' && typedSig.value.trim()) {
     const font = document.querySelector('input[name="sig-font"]:checked')?.value || "'Dancing Script', cursive";
-    return `<div style="font-family:${font};font-size:18px;color:#1a3b7a;margin-bottom:2px;">${escapeHtml(typedSig.value.trim())}</div>`;
+    return `<div style="font-family:${font};font-size:18px;color:#000;margin-bottom:2px;">${escapeHtml(typedSig.value.trim())}</div>`;
   }
   return '';
 }
@@ -397,67 +397,69 @@ function createSigOverlay() {
         <div>Date: ${date}</div>
         <div class="stamp-docid">ID: ${state.documentId}</div>
       </div>
-    </div>
+      <div class="stamp-qr" style="width:36px;height:36px;background:#eee;border:1px solid #ccc;border-radius:3px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:7px;color:#999;">QR</div>
     </div>`;
   sigOverlay.classList.remove('hidden');
   // Position at bottom-right by default
-  const cw = parseFloat(pdfCanvas.style.width);
-  const ch = parseFloat(pdfCanvas.style.height);
-  sigOverlay.style.left = (cw - 280) + 'px';
-  sigOverlay.style.top = (ch - 80) + 'px';
+  const wrapper = document.getElementById('pdf-wrapper');
+  const ww = wrapper.offsetWidth;
+  const wh = wrapper.offsetHeight;
+  sigOverlay.style.left = (ww - 280) + 'px';
+  sigOverlay.style.top = (wh - 80) + 'px';
   // Store as relative position (center of overlay)
-  state.stampRelX = (cw - 280 + sigOverlay.offsetWidth / 2) / cw;
-  state.stampRelY = (ch - 80 + sigOverlay.offsetHeight / 2) / ch;
+  state.stampRelX = (ww - 280 + sigOverlay.offsetWidth / 2) / ww;
+  state.stampRelY = (wh - 80 + sigOverlay.offsetHeight / 2) / wh;
   state.sigPlaced = true; downloadBtn.disabled = false;
   makeDraggable(sigOverlay);
 }
 
 function makeDraggable(el) {
-  let isDragging = false, startX, startY, origLeft, origTop;
-
-  function updateStampRel() {
-    // Update state with current center position as fraction of canvas
-    const cw = parseFloat(pdfCanvas.style.width);
-    const ch = parseFloat(pdfCanvas.style.height);
-    state.stampRelX = (el.offsetLeft + el.offsetWidth / 2) / cw;
-    state.stampRelY = (el.offsetTop + el.offsetHeight / 2) / ch;
-  }
+  let isDragging = false, startX, startY, origRelX, origRelY;
 
   el.addEventListener('mousedown', (e) => {
     isDragging = true; startX = e.clientX; startY = e.clientY;
-    origLeft = el.offsetLeft; origTop = el.offsetTop; e.preventDefault();
+    origRelX = state.stampRelX; origRelY = state.stampRelY;
+    e.preventDefault();
   });
   document.addEventListener('mousemove', (e) => {
     if (!isDragging) return;
-    el.style.left = (origLeft + e.clientX - startX) + 'px';
-    el.style.top = (origTop + e.clientY - startY) + 'px';
+    const wrapper = document.getElementById('pdf-wrapper');
+    const wRect = wrapper.getBoundingClientRect();
+    state.stampRelX = origRelX + (e.clientX - startX) / wRect.width;
+    state.stampRelY = origRelY + (e.clientY - startY) / wRect.height;
+    el.style.left = (state.stampRelX * wRect.width - el.offsetWidth / 2) + 'px';
+    el.style.top = (state.stampRelY * wRect.height - el.offsetHeight / 2) + 'px';
   });
-  document.addEventListener('mouseup', () => { if (isDragging) { isDragging = false; updateStampRel(); } });
+  document.addEventListener('mouseup', () => { isDragging = false; });
 
   el.addEventListener('touchstart', (e) => {
     isDragging = true; startX = e.touches[0].clientX; startY = e.touches[0].clientY;
-    origLeft = el.offsetLeft; origTop = el.offsetTop; e.preventDefault();
+    origRelX = state.stampRelX; origRelY = state.stampRelY;
+    e.preventDefault();
   });
   document.addEventListener('touchmove', (e) => {
     if (!isDragging) return;
-    el.style.left = (origLeft + e.touches[0].clientX - startX) + 'px';
-    el.style.top = (origTop + e.touches[0].clientY - startY) + 'px';
+    const wrapper = document.getElementById('pdf-wrapper');
+    const wRect = wrapper.getBoundingClientRect();
+    state.stampRelX = origRelX + (e.touches[0].clientX - startX) / wRect.width;
+    state.stampRelY = origRelY + (e.touches[0].clientY - startY) / wRect.height;
+    el.style.left = (state.stampRelX * wRect.width - el.offsetWidth / 2) + 'px';
+    el.style.top = (state.stampRelY * wRect.height - el.offsetHeight / 2) + 'px';
   });
-  document.addEventListener('touchend', () => { if (isDragging) { isDragging = false; updateStampRel(); } });
+  document.addEventListener('touchend', () => { isDragging = false; });
 }
 
 // No resize handle - use scale buttons instead (see placement hint area)
 
 pdfCanvas.addEventListener('click', (e) => {
-  const cRect = pdfCanvas.getBoundingClientRect();
-  // Store position as fraction of canvas (= fraction of PDF page)
-  state.stampRelX = (e.clientX - cRect.left) / cRect.width;
-  state.stampRelY = (e.clientY - cRect.top) / cRect.height;
+  // Use the wrapper (overlay's offset parent) for position calculation
+  const wrapper = document.getElementById('pdf-wrapper');
+  const wRect = wrapper.getBoundingClientRect();
+  state.stampRelX = (e.clientX - wRect.left) / wRect.width;
+  state.stampRelY = (e.clientY - wRect.top) / wRect.height;
   // Position the overlay visually
-  const cw = parseFloat(pdfCanvas.style.width);
-  const ch = parseFloat(pdfCanvas.style.height);
-  sigOverlay.style.left = (state.stampRelX * cw - sigOverlay.offsetWidth / 2) + 'px';
-  sigOverlay.style.top = (state.stampRelY * ch - sigOverlay.offsetHeight / 2) + 'px';
+  sigOverlay.style.left = (state.stampRelX * wRect.width - sigOverlay.offsetWidth / 2) + 'px';
+  sigOverlay.style.top = (state.stampRelY * wRect.height - sigOverlay.offsetHeight / 2) + 'px';
   sigOverlay.classList.remove('hidden'); state.sigPlaced = true; downloadBtn.disabled = false;
 });
 
@@ -739,13 +741,12 @@ downloadBtn.addEventListener('click', async () => {
     const stampH = Math.round(65 * userScale);
 
     // Map stamp position to PDF using stored relative coordinates (0-1 range)
-    // These are tracked on every click and drag, independent of CSS layout
-    // stampRelX/Y represent the CENTER of where the user wants the stamp
+    // stampRelX/Y = center of stamp as fraction of page
     let pdfX = state.stampRelX * pageWidth - stampW / 2;
     let pdfY = pageHeight - (state.stampRelY * pageHeight) - stampH / 2;
-    // Clamp to page bounds
     pdfX = Math.max(5, Math.min(pdfX, pageWidth - stampW - 5));
     pdfY = Math.max(5, Math.min(pdfY, pageHeight - stampH - 5));
+    console.log('STAMP DEBUG:', { stampRelX: state.stampRelX, stampRelY: state.stampRelY, pageWidth, pageHeight, pdfX, pdfY, stampW, stampH });
 
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);

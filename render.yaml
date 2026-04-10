@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: docseal
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: development
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: BASE_URL
+        fromService:
+          type: web
+          name: docseal
+          property: host

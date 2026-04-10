@@ -4,8 +4,12 @@
   "description": "Web app to sign PDFs with date and time stamp",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
+    "start": "node start.js",
+    "dev": "NODE_ENV=development node server.js",
+    "generate-cert": "node generate-cert.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   },
   "dependencies": {
     "@signpdf/placeholder-pdf-lib": "^3.3.0",

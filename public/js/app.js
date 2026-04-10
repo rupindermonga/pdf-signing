@@ -813,14 +813,8 @@ downloadBtn.addEventListener('click', async () => {
     const fs = 5.5 * s, lh = 7 * s, logoFs = 8 * s, idFs = 4.5 * s;
     const pad = 3 * s;
 
-    // Calculate content height (5 text lines + ID + padding)
-    const contentH = pad + logoFs + lh * 4 + idFs + pad;
-    // Use the larger of calculated height and WYSIWYG height
-    const finalH = Math.max(stampH, contentH);
-
-    // Adjust pdfY if we grew taller (keep top edge at same position)
-    if (finalH > stampH) pdfY -= (finalH - stampH);
-    pdfY = Math.max(2, pdfY);
+    // Calculate exact content height (5 text lines + ID line + padding top/bottom)
+    const finalH = pad + fs + lh * 3 + lh + idFs + pad;
 
     // Draw box
     page.drawRectangle({ x: pdfX, y: pdfY, width: stampW, height: finalH, color: rgb(1,1,1), borderColor: rgb(0.1,0.23,0.48), borderWidth: 0.8 });

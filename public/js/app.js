@@ -10,6 +10,8 @@ const state = {
   totalPages: 1,
   zoom: 1.0,
   sigPlaced: false,
+  stampRelX: 0.55, // stamp position as fraction of PDF page (0-1)
+  stampRelY: 0.85,
   // Security
   documentId: '',
   originalHash: '',
@@ -398,42 +400,64 @@ function createSigOverlay() {
     </div>
     </div>`;
   sigOverlay.classList.remove('hidden');
-  // Position relative to pdf-wrapper (same size as canvas)
+  // Position at bottom-right by default
   const cw = parseFloat(pdfCanvas.style.width);
   const ch = parseFloat(pdfCanvas.style.height);
   sigOverlay.style.left = (cw - 280) + 'px';
   sigOverlay.style.top = (ch - 80) + 'px';
+  // Store as relative position (center of overlay)
+  state.stampRelX = (cw - 280 + sigOverlay.offsetWidth / 2) / cw;
+  state.stampRelY = (ch - 80 + sigOverlay.offsetHeight / 2) / ch;
   state.sigPlaced = true; downloadBtn.disabled = false;
   makeDraggable(sigOverlay);
 }
 
 function makeDraggable(el) {
   let isDragging = false, startX, startY, origLeft, origTop;
+
+  function updateStampRel() {
+    // Update state with current center position as fraction of canvas
+    const cw = parseFloat(pdfCanvas.style.width);
+    const ch = parseFloat(pdfCanvas.style.height);
+    state.stampRelX = (el.offsetLeft + el.offsetWidth / 2) / cw;
+    state.stampRelY = (el.offsetTop + el.offsetHeight / 2) / ch;
+  }
+
   el.addEventListener('mousedown', (e) => {
-    if (e.target.classList.contains('resize-handle')) return;
     isDragging = true; startX = e.clientX; startY = e.clientY;
     origLeft = el.offsetLeft; origTop = el.offsetTop; e.preventDefault();
   });
-  document.addEventListener('mousemove', (e) => { if (!isDragging) return; el.style.left = (origLeft + e.clientX - startX) + 'px'; el.style.top = (origTop + e.clientY - startY) + 'px'; });
-  document.addEventListener('mouseup', () => { isDragging = false; });
+  document.addEventListener('mousemove', (e) => {
+    if (!isDragging) return;
+    el.style.left = (origLeft + e.clientX - startX) + 'px';
+    el.style.top = (origTop + e.clientY - startY) + 'px';
+  });
+  document.addEventListener('mouseup', () => { if (isDragging) { isDragging = false; updateStampRel(); } });
+
   el.addEventListener('touchstart', (e) => {
-    if (e.target.classList.contains('resize-handle')) return;
     isDragging = true; startX = e.touches[0].clientX; startY = e.touches[0].clientY;
     origLeft = el.offsetLeft; origTop = el.offsetTop; e.preventDefault();
   });
-  document.addEventListener('touchmove', (e) => { if (!isDragging) return; el.style.left = (origLeft + e.touches[0].clientX - startX) + 'px'; el.style.top = (origTop + e.touches[0].clientY - startY) + 'px'; });
-  document.addEventListener('touchend', () => { isDragging = false; });
+  document.addEventListener('touchmove', (e) => {
+    if (!isDragging) return;
+    el.style.left = (origLeft + e.touches[0].clientX - startX) + 'px';
+    el.style.top = (origTop + e.touches[0].clientY - startY) + 'px';
+  });
+  document.addEventListener('touchend', () => { if (isDragging) { isDragging = false; updateStampRel(); } });
 }
 
 // No resize handle - use scale buttons instead (see placement hint area)
 
 pdfCanvas.addEventListener('click', (e) => {
-  // Position relative to the canvas (overlay parent is pdf-wrapper which matches canvas)
   const cRect = pdfCanvas.getBoundingClientRect();
-  const x = e.clientX - cRect.left - sigOverlay.offsetWidth / 2;
-  const y = e.clientY - cRect.top - sigOverlay.offsetHeight / 2;
-  sigOverlay.style.left = Math.max(0, x) + 'px';
-  sigOverlay.style.top = Math.max(0, y) + 'px';
+  // Store position as fraction of canvas (= fraction of PDF page)
+  state.stampRelX = (e.clientX - cRect.left) / cRect.width;
+  state.stampRelY = (e.clientY - cRect.top) / cRect.height;
+  // Position the overlay visually
+  const cw = parseFloat(pdfCanvas.style.width);
+  const ch = parseFloat(pdfCanvas.style.height);
+  sigOverlay.style.left = (state.stampRelX * cw - sigOverlay.offsetWidth / 2) + 'px';
+  sigOverlay.style.top = (state.stampRelY * ch - sigOverlay.offsetHeight / 2) + 'px';
   sigOverlay.classList.remove('hidden'); state.sigPlaced = true; downloadBtn.disabled = false;
 });
 
@@ -714,19 +738,14 @@ downloadBtn.addEventListener('click', async () => {
     const stampW = Math.round(250 * userScale);
     const stampH = Math.round(65 * userScale);
 
-    // Map overlay position to PDF coordinates
-    // Overlay and canvas share the same parent (pdf-wrapper, position:relative)
-    // Add border+padding offset (4px) so PDF stamp aligns with the content inside the dashed border
-    const borderPad = 4; // overlay border(2) + padding(2)
-    const canvasCSSW = parseFloat(pdfCanvas.style.width);
-    const canvasCSSH = parseFloat(pdfCanvas.style.height);
-
-    const relX = (sigOverlay.offsetLeft + borderPad) / canvasCSSW;
-    const relY = (sigOverlay.offsetTop + borderPad) / canvasCSSH;
-
-    // Map to PDF coordinates (PDF origin = bottom-left)
-    let pdfX = Math.max(5, Math.min(relX * pageWidth, pageWidth - stampW - 5));
-    let pdfY = Math.max(5, Math.min(pageHeight - (relY * pageHeight) - stampH, pageHeight - stampH - 5));
+    // Map stamp position to PDF using stored relative coordinates (0-1 range)
+    // These are tracked on every click and drag, independent of CSS layout
+    // stampRelX/Y represent the CENTER of where the user wants the stamp
+    let pdfX = state.stampRelX * pageWidth - stampW / 2;
+    let pdfY = pageHeight - (state.stampRelY * pageHeight) - stampH / 2;
+    // Clamp to page bounds
+    pdfX = Math.max(5, Math.min(pdfX, pageWidth - stampW - 5));
+    pdfY = Math.max(5, Math.min(pdfY, pageHeight - stampH - 5));
 
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
@@ -774,7 +793,7 @@ downloadBtn.addEventListener('click', async () => {
     const activeTab = document.querySelector('.sig-tab.active').dataset.tab;
     if (activeTab === 'type' && typedSig.value.trim()) {
       const italic = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
-      page.drawText(typedSig.value.trim(), { x: pdfX + 3, y: pdfY + stampH + 4, size: 12 * userScale, font: italic, color: rgb(0.1,0.23,0.48) });
+      page.drawText(typedSig.value.trim(), { x: pdfX + 3, y: pdfY + stampH + 4, size: 12 * userScale, font: italic, color: rgb(0, 0, 0) });
     }
 
     // QR code on stamp

@@ -129,12 +129,13 @@ app.post('/api/auth/verify-otp', rateLimit(60000, 10), (req, res) => {
     return res.status(400).json({ error: 'Invalid or expired code' });
   }
 
-  const user = userOps.findOrCreate(userEmail, name || '');
-  if (name && !user.name) userOps.updateName(user.id, name);
+  const cleanName = sanitize(name || '');
+  const user = userOps.findOrCreate(userEmail, cleanName);
+  if (cleanName && !user.name) userOps.updateName(user.id, cleanName);
 
   req.session.userId = user.id;
   req.session.userEmail = user.email;
-  req.session.userName = user.name || name || '';
+  req.session.userName = user.name || cleanName;
 
   res.json({ ok: true, redirect: '/dashboard' });
 });
@@ -187,11 +188,14 @@ app.post('/api/documents/create', requireAuth, (req, res, next) => {
     const cleanMessage = sanitize(message);
     const cleanSigners = parsedSigners.map(s => ({ name: sanitize(s.name), email: sanitize(s.email).toLowerCase() }));
 
+    // Sanitize original filename
+    const cleanFilename = sanitize(req.file.originalname).replace(/[^\w.\-() ]/g, '_');
+
     // Hash original PDF
     const hash = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
 
     // Create document record
-    const doc = docOps.create(req.session.userId, cleanTitle, req.file.originalname, hash, cleanMessage);
+    const doc = docOps.create(req.session.userId, cleanTitle, cleanFilename, hash, cleanMessage);
 
     // Save PDF file
     fs.writeFileSync(path.join(storageDir, `${doc.uuid}.pdf`), req.file.buffer);
@@ -261,6 +265,7 @@ app.get('/api/sign/:token/info', (req, res) => {
 app.post('/api/sign/:token/send-otp', rateLimit(60000, 5), async (req, res) => {
   const signer = signerOps.findByToken(req.params.token);
   if (!signer) return res.status(404).json({ error: 'Not found' });
+  if (signer.status !== 'sent') return res.status(403).json({ error: 'It is not your turn to sign yet' });
 
   const otp = signerOps.setOTP(signer.id);
   const sent = await email.sendSignerOTP(signer.email, signer.name, otp);
@@ -272,6 +277,7 @@ app.post('/api/sign/:token/send-otp', rateLimit(60000, 5), async (req, res) => {
 app.post('/api/sign/:token/verify-otp', rateLimit(60000, 10), (req, res) => {
   const signer = signerOps.findByToken(req.params.token);
   if (!signer) return res.status(404).json({ error: 'Not found' });
+  if (signer.status !== 'sent') return res.status(403).json({ error: 'It is not your turn to sign yet' });
 
   if (!signerOps.verifyOTP(signer.id, req.body.code)) {
     return res.status(400).json({ error: 'Invalid or expired code' });
@@ -287,6 +293,7 @@ app.post('/api/sign/:token/verify-otp', rateLimit(60000, 10), (req, res) => {
 app.get('/api/sign/:token/pdf', (req, res) => {
   const signer = signerOps.findByToken(req.params.token);
   if (!signer) return res.status(404).json({ error: 'Not found' });
+  if (signer.status !== 'sent') return res.status(403).json({ error: 'It is not your turn to sign yet' });
 
   // Check OTP verified
   if (!req.session.verifiedSigners?.[req.params.token]) {
@@ -304,6 +311,7 @@ app.post('/api/sign/:token/submit', async (req, res) => {
   const signer = signerOps.findByToken(req.params.token);
   if (!signer) return res.status(404).json({ error: 'Not found' });
   if (signer.status === 'signed') return res.status(400).json({ error: 'Already signed' });
+  if (signer.status !== 'sent') return res.status(403).json({ error: 'It is not your turn to sign yet' });
 
   if (!req.session.verifiedSigners?.[req.params.token]) {
     return res.status(403).json({ error: 'Email not verified' });
@@ -481,6 +489,7 @@ async function generateFinalPdf(documentId) {
 app.get('/api/documents/:uuid/download', requireAuth, (req, res) => {
   const doc = docOps.findByUUID(req.params.uuid);
   if (!doc) return res.status(404).json({ error: 'Not found' });
+  if (doc.created_by !== req.session.userId) return res.status(403).json({ error: 'Access denied' });
 
   const signedPath = path.join(storageDir, `${doc.uuid}_signed.pdf`);
   const originalPath = path.join(storageDir, `${doc.uuid}.pdf`);
@@ -495,14 +504,25 @@ app.get('/api/documents/:uuid/download', requireAuth, (req, res) => {
 app.get('/api/documents/:uuid', requireAuth, (req, res) => {
   const doc = docOps.findByUUID(req.params.uuid);
   if (!doc) return res.status(404).json({ error: 'Not found' });
+  if (doc.created_by !== req.session.userId) return res.status(403).json({ error: 'Access denied' });
+
   const signers = signerOps.listByDocument(doc.id);
-  // Include sign URLs for when email is not configured
-  const signersWithUrls = signers.map(s => ({
-    ...s,
-    signUrl: `${BASE_URL}/sign/${s.token}`,
-    signature_data: undefined // don't leak to frontend
+  // Strip tokens — only show sign URLs when email is NOT configured (owner needs to share manually)
+  const safeSigner = signers.map(s => ({
+    id: s.id,
+    name: s.name,
+    email: s.email,
+    sign_order: s.sign_order,
+    status: s.status,
+    signed_at: s.signed_at,
+    ip_address: s.ip_address,
+    location: s.location,
+    browser_info: s.browser_info,
+    // Only expose sign URL if email is not configured AND signer is currently active
+    signUrl: (!email.isConfigured() && (s.status === 'sent' || s.status === 'pending'))
+      ? `${BASE_URL}/sign/${s.token}` : undefined,
   }));
-  res.json({ document: doc, signers: signersWithUrls, emailConfigured: email.isConfigured() });
+  res.json({ document: doc, signers: safeSigner, emailConfigured: email.isConfigured() });
 });
 
 // ─── QR Code ───

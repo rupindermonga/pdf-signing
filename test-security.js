@@ -8,6 +8,7 @@ const https = require('https');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { signerOps, docOps } = require('./database');
 
 const BASE = 'http://localhost:3000';
 let passed = 0, failed = 0, warnings = 0;
@@ -231,11 +232,14 @@ async function run() {
   console.log('\n\x1b[1m[4] SIGNER FLOW\x1b[0m');
   // ════════════════════════════════════════
 
+  // Get signer tokens directly from DB (tokens are no longer exposed via API)
   let signerToken = null;
+  let signer2Token = null;
   if (docUUID) {
-    const detail = await req('GET', `/api/documents/${docUUID}`, null, { Accept: 'application/json', Cookie: authCookie });
-    const signers = detail.json()?.signers;
+    const doc = docOps.findByUUID(docUUID);
+    const signers = signerOps.listByDocument(doc.id);
     signerToken = signers?.[0]?.token;
+    signer2Token = signers?.[1]?.token;
   }
 
   if (signerToken) {
@@ -388,7 +392,88 @@ async function run() {
     log('FAIL', 'Database publicly accessible!', 'Full data leak!');
 
   // ════════════════════════════════════════
-  console.log('\n\x1b[1m[6] STATIC CODE PATTERNS\x1b[0m');
+  console.log('\n\x1b[1m[6] REGRESSION: AUDIT FINDINGS\x1b[0m');
+  // ════════════════════════════════════════
+
+  // -- Finding 1: IDOR - cross-user document access --
+  // Create a second user
+  const otp2 = await req('POST', '/api/auth/send-otp', { email: 'attacker@evil.local' });
+  const otp2Data = otp2.json();
+  const verify2 = await req('POST', '/api/auth/verify-otp', { email: 'attacker@evil.local', code: otp2Data?.devOtp, name: 'Attacker' });
+  const attackerCookie = getCookie(verify2);
+
+  if (docUUID && attackerCookie) {
+    // Attacker tries to read victim's document detail
+    const crossDetail = await req('GET', `/api/documents/${docUUID}`, null, { Accept: 'application/json', Cookie: attackerCookie });
+    crossDetail.status === 403 ? log('PASS', 'IDOR: cross-user doc detail blocked', '403') : log('FAIL', 'IDOR: cross-user doc detail', `Got ${crossDetail.status} — other user can read doc!`);
+
+    // Attacker tries to download victim's document
+    const crossDownload = await req('GET', `/api/documents/${docUUID}/download`, null, { Accept: 'application/json', Cookie: attackerCookie });
+    crossDownload.status === 403 ? log('PASS', 'IDOR: cross-user doc download blocked', '403') : log('FAIL', 'IDOR: cross-user doc download', `Got ${crossDownload.status} — other user can download!`);
+  }
+
+  // -- Finding 2: Token leakage in document detail response --
+  if (docUUID) {
+    const detailCheck = await req('GET', `/api/documents/${docUUID}`, null, { Accept: 'application/json', Cookie: authCookie });
+    const detailSigners = detailCheck.json()?.signers || [];
+    const hasToken = detailSigners.some(s => s.token);
+    !hasToken ? log('PASS', 'Signer tokens stripped from detail response', '') : log('FAIL', 'Signer tokens leaked in detail response', 'token field still present');
+  }
+
+  // -- Finding 3: Signing order enforcement --
+  // Create a fresh document specifically for this test (signer 1 hasn't signed yet)
+  const orderTestResp = await multipartReq('/api/documents/create', {
+    title: 'Order Test',
+    message: '',
+    signers: JSON.stringify([{ name: 'First', email: 'first@test.local' }, { name: 'Second', email: 'second@test.local' }]),
+  }, 'pdf', pdf, 'order-test.pdf', authCookie);
+  const orderDoc = orderTestResp.json();
+  if (orderDoc?.uuid) {
+    const oDoc = docOps.findByUUID(orderDoc.uuid);
+    const oSigners = signerOps.listByDocument(oDoc.id);
+    const s2token = oSigners[1]?.token;
+    if (s2token) {
+      // Signer 2 should be 'pending' (signer 1 is 'sent' but hasn't signed yet)
+      const outOfOrderOtp = await req('POST', `/api/sign/${s2token}/send-otp`);
+      outOfOrderOtp.status === 403 ? log('PASS', 'Signing order enforced: signer 2 OTP blocked', '403') : log('FAIL', 'Signing order NOT enforced on OTP', `Got ${outOfOrderOtp.status} — signer 2 can act before signer 1!`);
+
+      const outOfOrderSubmit = await req('POST', `/api/sign/${s2token}/submit`, { signatureData: 'test' });
+      outOfOrderSubmit.status === 403 ? log('PASS', 'Signing order enforced: signer 2 submit blocked', '403') : log('FAIL', 'Signing order NOT enforced on submit', `Got ${outOfOrderSubmit.status}`);
+    }
+  }
+
+  // -- Finding 4a: User name sanitization --
+  const xssOtp = await req('POST', '/api/auth/send-otp', { email: 'xssname@test.local' });
+  const xssOtpCode = xssOtp.json()?.devOtp;
+  if (xssOtpCode) {
+    const xssVerify = await req('POST', '/api/auth/verify-otp', {
+      email: 'xssname@test.local', code: xssOtpCode, name: '<img src=x onerror=alert(1)>'
+    });
+    const xssCookie = getCookie(xssVerify);
+    if (xssCookie) {
+      const xssDocs = await req('GET', '/api/documents', null, { Accept: 'application/json', Cookie: xssCookie });
+      const userName = xssDocs.json()?.user?.name || '';
+      !userName.includes('<') ? log('PASS', 'User name sanitized at login', `Stored: "${userName}"`) : log('FAIL', 'User name NOT sanitized', `Stored raw HTML: "${userName}"`);
+    }
+  }
+
+  // -- Finding 4b: Filename sanitization --
+  if (docUUID) {
+    // Create a doc with an XSS filename
+    const xssFileResp = await multipartReq('/api/documents/create', {
+      title: 'Filename Test',
+      signers: JSON.stringify([{ name: 'Test', email: 'fntest@test.local' }]),
+    }, 'pdf', pdf, 'evil<img src=x onerror=alert(1)>.pdf', authCookie);
+    const xssFileData = xssFileResp.json();
+    if (xssFileData?.uuid) {
+      const fnDetail = await req('GET', `/api/documents/${xssFileData.uuid}`, null, { Accept: 'application/json', Cookie: authCookie });
+      const storedFn = fnDetail.json()?.document?.original_filename || '';
+      !storedFn.includes('<') ? log('PASS', 'Filename sanitized', `Stored: "${storedFn}"`) : log('FAIL', 'Filename NOT sanitized', `Stored raw: "${storedFn}"`);
+    }
+  }
+
+  // ════════════════════════════════════════
+  console.log('\n\x1b[1m[7] STATIC CODE PATTERNS\x1b[0m');
   // ════════════════════════════════════════
 
   const serverCode = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf-8');

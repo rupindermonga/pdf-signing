@@ -28,7 +28,7 @@ app.use((req, res, next) => {
   res.setHeader('X-XSS-Protection', '1; mode=block');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://nominatim.openstreetmap.org;");
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://nominatim.openstreetmap.org https://api.ipify.org;");
   next();
 });
 
@@ -337,12 +337,14 @@ app.post('/api/sign/:token/submit', async (req, res) => {
     return res.status(403).json({ error: 'Email not verified' });
   }
 
-  const { signatureData, location, browserInfo, geoCoords } = req.body;
-  const ip = req.socket.remoteAddress || '';
+  const { signatureData, location, browserInfo, geoCoords, publicIp } = req.body;
+  // Prefer client-reported public IP (from ipify.org), fall back to socket IP
+  const socketIp = (req.socket.remoteAddress || '').replace('::ffff:', '').replace('::1', '127.0.0.1');
+  const ip = sanitize(publicIp || '') || socketIp;
 
   const signed = signerOps.markSigned(signer.id, {
     signatureData: sanitize(signatureData || ''),
-    ip: ip.replace('::ffff:', '').replace('::1', '127.0.0.1'),
+    ip,
     location: sanitize(location || ''),
     browserInfo: sanitize(browserInfo || ''),
     geoCoords: sanitize(geoCoords || ''),

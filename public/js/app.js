@@ -124,8 +124,15 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-// ─── Fetch client IP ───
+// ─── Fetch client public IP ───
 async function fetchClientIp() {
+  // Try external service first for real public IP (works even on localhost)
+  try {
+    const resp = await fetch('https://api.ipify.org?format=json');
+    const data = await resp.json();
+    if (data.ip) { state.clientIp = data.ip; return; }
+  } catch { /* fall through */ }
+  // Fallback to server-reported IP
   try {
     const resp = await fetch('/api/ip');
     const data = await resp.json();

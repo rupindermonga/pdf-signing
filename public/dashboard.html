@@ -56,8 +56,8 @@
         <div class="user-info"><span id="user-email"></span> &middot; <a href="#" id="logout-btn" style="color:#c62828;font-size:13px;">Logout</a></div>
       </div>
       <div class="actions">
-        <a href="/send" class="btn-primary" style="text-decoration:none;display:inline-block;">New Signing Request</a>
-        <a href="/solo" class="btn-secondary" style="text-decoration:none;display:inline-block;">Quick Sign (solo)</a>
+        <a href="/send" class="btn-primary" style="text-decoration:none;display:inline-block;">Send for Others to Sign</a>
+        <a href="/solo" class="btn-primary" style="text-decoration:none;display:inline-block;background:#2d5db8;">Sign Myself</a>
       </div>
     </div>
 
@@ -85,7 +85,7 @@
       document.getElementById('user-email').textContent = user.name ? `${user.name} (${user.email})` : user.email;
 
       if (!documents.length) {
-        docList.innerHTML = '<div class="empty-state"><div class="icon">&#128196;</div><h3>No documents yet</h3><p>Click "New Signing Request" to get started.</p></div>';
+        docList.innerHTML = '<div class="empty-state"><div class="icon">&#128196;</div><h3>No documents yet</h3><p><strong>Send for Others to Sign</strong> &mdash; upload a PDF and add signers (they get email links)<br><strong>Sign Myself</strong> &mdash; sign a PDF yourself and download it instantly</p></div>';
         return;
       }
 

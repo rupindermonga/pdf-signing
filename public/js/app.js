@@ -509,13 +509,16 @@ function adjustStampScale(delta) {
   if (display) display.textContent = Math.round(next * 100) + '%';
   positionOverlayFromRel();
 }
-// Attach directly to buttons (they exist in the DOM at script load time)
-document.getElementById('stamp-smaller')?.addEventListener('click', (e) => {
-  e.stopPropagation(); adjustStampScale(-0.1);
-});
-document.getElementById('stamp-bigger')?.addEventListener('click', (e) => {
-  e.stopPropagation(); adjustStampScale(0.1);
-});
+// Attach to buttons - use multiple strategies to ensure it works
+const _smaller = document.getElementById('stamp-smaller');
+const _bigger = document.getElementById('stamp-bigger');
+if (_smaller) _smaller.onclick = (e) => { e.stopPropagation(); adjustStampScale(-0.1); };
+if (_bigger) _bigger.onclick = (e) => { e.stopPropagation(); adjustStampScale(0.1); };
+// Fallback: listen on document for dynamically rendered buttons
+document.addEventListener('mousedown', (e) => {
+  if (e.target.id === 'stamp-smaller') { e.stopPropagation(); e.preventDefault(); adjustStampScale(-0.1); }
+  if (e.target.id === 'stamp-bigger') { e.stopPropagation(); e.preventDefault(); adjustStampScale(0.1); }
+}, true);
 
 // ─── Audit Trail Page ───
 async function addAuditTrailPage(pdfDoc, audit, qrDataUrl) {
@@ -743,8 +746,8 @@ downloadBtn.addEventListener('click', async () => {
 
     // Fixed stamp size in PDF points, scaled by user resize
     const userScale = parseFloat(sigOverlay.dataset.scale || '1');
-    const stampW = Math.round(200 * userScale);
-    const stampH = Math.round(72 * userScale);
+    const stampW = Math.round(170 * userScale);
+    const stampH = Math.round(60 * userScale);
 
     // Map stamp position to PDF using stored relative coordinates (0-1 range)
     // stampRelX/Y = center of stamp as fraction of page
@@ -769,8 +772,8 @@ downloadBtn.addEventListener('click', async () => {
     // ── Visual Signature Stamp (200x72 base) ──
     // Layout: [DocSeal logo + QR stacked on left] | [text on right]
     loadingText.textContent = 'Adding signature stamp...';
-    const s = userScale; // shorthand
-    const fs = 6.5 * s, lh = 8.5 * s, logoFs = 10 * s;
+    const s = userScale;
+    const fs = 5.5 * s, lh = 7.5 * s, logoFs = 8.5 * s;
 
     page.drawRectangle({ x: pdfX, y: pdfY, width: stampW, height: stampH, color: rgb(1,1,1), borderColor: rgb(0.1,0.23,0.48), borderWidth: 1 });
 
@@ -799,7 +802,7 @@ downloadBtn.addEventListener('click', async () => {
     if (drawnSig) {
       const sigImgBytes = await fetch(drawnSig).then(r => r.arrayBuffer());
       const sigImg = await pdfDoc.embedPng(sigImgBytes);
-      const sigW = 120 * userScale, sigH = Math.min(sigW / (sigImg.width / sigImg.height), 30 * userScale);
+      const sigW = 100 * userScale, sigH = Math.min(sigW / (sigImg.width / sigImg.height), 22 * userScale);
       page.drawImage(sigImg, { x: pdfX + 3, y: pdfY + stampH + 2, width: sigW, height: sigH });
     }
 
@@ -807,7 +810,7 @@ downloadBtn.addEventListener('click', async () => {
     const activeTab = document.querySelector('.sig-tab.active').dataset.tab;
     if (activeTab === 'type' && typedSig.value.trim()) {
       const italic = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
-      page.drawText(typedSig.value.trim(), { x: pdfX + 3, y: pdfY + stampH + 4, size: 12 * userScale, font: italic, color: rgb(0, 0, 0) });
+      page.drawText(typedSig.value.trim(), { x: pdfX + 3, y: pdfY + stampH + 3, size: 10 * userScale, font: italic, color: rgb(0, 0, 0) });
     }
 
     // QR code on stamp
@@ -818,7 +821,7 @@ downloadBtn.addEventListener('click', async () => {
       try {
         const qrBytes = await fetch(qrDataUrl).then(r => r.arrayBuffer());
         const qrImg = await pdfDoc.embedPng(qrBytes);
-        const qrSz = Math.round(30 * userScale);
+        const qrSz = Math.round(24 * userScale);
         // QR goes below DocSeal logo in left column
         page.drawImage(qrImg, { x: pdfX + 5 * userScale, y: pdfY + 4 * userScale, width: qrSz, height: qrSz });
       } catch (e) { console.error('QR embed failed', e); }

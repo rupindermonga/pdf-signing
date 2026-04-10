@@ -398,9 +398,11 @@ function createSigOverlay() {
     </div>
     <div class="resize-handle"></div>`;
   sigOverlay.classList.remove('hidden');
-  const canvasRect = pdfCanvas.getBoundingClientRect();
-  sigOverlay.style.left = (pdfCanvas.offsetLeft + canvasRect.width - 290) + 'px';
-  sigOverlay.style.top = (pdfCanvas.offsetTop + canvasRect.height - 85) + 'px';
+  // Position relative to pdf-wrapper (same size as canvas)
+  const cw = parseFloat(pdfCanvas.style.width);
+  const ch = parseFloat(pdfCanvas.style.height);
+  sigOverlay.style.left = (cw - 280) + 'px';
+  sigOverlay.style.top = (ch - 80) + 'px';
   state.sigPlaced = true; downloadBtn.disabled = false;
   makeDraggable(sigOverlay);
   makeResizable(sigOverlay);
@@ -461,9 +463,12 @@ function makeResizable(el) {
 }
 
 pdfCanvas.addEventListener('click', (e) => {
-  const r = pdfContainer.getBoundingClientRect();
-  sigOverlay.style.left = (e.clientX - r.left + pdfContainer.scrollLeft - sigOverlay.offsetWidth / 2) + 'px';
-  sigOverlay.style.top = (e.clientY - r.top + pdfContainer.scrollTop - sigOverlay.offsetHeight / 2) + 'px';
+  // Position relative to the canvas (overlay parent is pdf-wrapper which matches canvas)
+  const cRect = pdfCanvas.getBoundingClientRect();
+  const x = e.clientX - cRect.left - sigOverlay.offsetWidth / 2;
+  const y = e.clientY - cRect.top - sigOverlay.offsetHeight / 2;
+  sigOverlay.style.left = Math.max(0, x) + 'px';
+  sigOverlay.style.top = Math.max(0, y) + 'px';
   sigOverlay.classList.remove('hidden'); state.sigPlaced = true; downloadBtn.disabled = false;
 });
 
@@ -730,18 +735,13 @@ downloadBtn.addEventListener('click', async () => {
     const stampH = Math.round(65 * userScale);
 
     // Map overlay position to PDF coordinates
-    // Both overlay and canvas are positioned within pdf-container (overflow:auto)
-    // Use offsetLeft/Top which are relative to the container's scroll content
+    // Overlay and canvas share the same parent (pdf-wrapper, position:relative)
+    // so overlay.offsetLeft/Top is directly relative to the canvas
     const canvasCSSW = parseFloat(pdfCanvas.style.width);
     const canvasCSSH = parseFloat(pdfCanvas.style.height);
 
-    // Overlay position relative to canvas within the container
-    const ox = sigOverlay.offsetLeft - pdfCanvas.offsetLeft;
-    const oy = sigOverlay.offsetTop - pdfCanvas.offsetTop;
-
-    // As fraction of canvas CSS dimensions
-    const relX = ox / canvasCSSW;
-    const relY = oy / canvasCSSH;
+    const relX = sigOverlay.offsetLeft / canvasCSSW;
+    const relY = sigOverlay.offsetTop / canvasCSSH;
 
     // Map to PDF coordinates (PDF origin = bottom-left)
     let pdfX = Math.max(5, Math.min(relX * pageWidth, pageWidth - stampW - 5));

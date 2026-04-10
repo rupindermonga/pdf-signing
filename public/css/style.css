@@ -568,14 +568,15 @@ main {
 .sig-overlay .sig-stamp {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 6px 10px;
-  font-size: 11px;
-  line-height: 1.5;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 9px;
+  line-height: 1.4;
+  max-width: 280px;
 }
 
 .sig-overlay .stamp-logo {
-  font-size: 18px;
+  font-size: 14px;
   font-weight: 800;
   flex-shrink: 0;
   letter-spacing: -0.5px;
@@ -583,23 +584,23 @@ main {
 
 .sig-overlay .stamp-logo .sd {
   color: #1a3b7a;
-  font-size: 18px;
+  font-size: 14px;
 }
 
 .sig-overlay .stamp-logo .ss {
   color: #2d5db8;
-  font-size: 18px;
+  font-size: 14px;
   font-weight: 600;
 }
 
 .sig-overlay .stamp-details {
-  border-left: 2px solid #1a3b7a;
-  padding-left: 10px;
+  border-left: 1.5px solid #1a3b7a;
+  padding-left: 6px;
   color: #333;
 }
 
 .sig-overlay .stamp-details strong {
-  font-size: 12px;
+  font-size: 10px;
 }
 
 .sig-overlay .resize-handle {

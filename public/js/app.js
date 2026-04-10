@@ -361,8 +361,8 @@ function createSigOverlay() {
     <div class="resize-handle"></div>`;
   sigOverlay.classList.remove('hidden');
   const canvasRect = pdfCanvas.getBoundingClientRect();
-  sigOverlay.style.left = (pdfCanvas.offsetLeft + canvasRect.width - 340) + 'px';
-  sigOverlay.style.top = (pdfCanvas.offsetTop + canvasRect.height - 90) + 'px';
+  sigOverlay.style.left = (pdfCanvas.offsetLeft + canvasRect.width - 290) + 'px';
+  sigOverlay.style.top = (pdfCanvas.offsetTop + canvasRect.height - 70) + 'px';
   state.sigPlaced = true; downloadBtn.disabled = false;
   makeDraggable(sigOverlay);
 }
@@ -649,16 +649,20 @@ downloadBtn.addEventListener('click', async () => {
     const page = pages[state.currentPage - 1];
     const { width: pageWidth, height: pageHeight } = page.getSize();
 
+    // Fixed stamp size in PDF points (compact, like the reference eSign image)
+    const stampW = 250;
+    const stampH = 65;
+
+    // Map overlay CENTER position to PDF coordinates
     const canvasRect = pdfCanvas.getBoundingClientRect();
     const overlayRect = sigOverlay.getBoundingClientRect();
-    const relX = (overlayRect.left - canvasRect.left) / canvasRect.width;
-    const relY = (overlayRect.top - canvasRect.top) / canvasRect.height;
-    const relW = overlayRect.width / canvasRect.width;
-    const relH = overlayRect.height / canvasRect.height;
-    const pdfX = relX * pageWidth;
-    const pdfY = pageHeight - (relY * pageHeight) - (relH * pageHeight);
-    const stampW = relW * pageWidth;
-    const stampH = relH * pageHeight;
+    const overlayCenterX = overlayRect.left + overlayRect.width / 2 - canvasRect.left;
+    const overlayCenterY = overlayRect.top + overlayRect.height / 2 - canvasRect.top;
+    const relX = overlayCenterX / canvasRect.width;
+    const relY = overlayCenterY / canvasRect.height;
+    // PDF origin is bottom-left; clamp to page bounds
+    let pdfX = Math.max(5, Math.min(relX * pageWidth - stampW / 2, pageWidth - stampW - 5));
+    let pdfY = Math.max(5, Math.min(pageHeight - relY * pageHeight - stampH / 2, pageHeight - stampH - 5));
 
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
@@ -669,43 +673,46 @@ downloadBtn.addEventListener('click', async () => {
     const location = signLocation.value.trim() || '-';
     const date = signDate.value;
     const timestamp = formatFullTimestamp();
-    const pad = 6, fs = 8, lh = 12, logoFs = 16;
 
-    // ── Visual Signature Stamp ──
+    // ── Visual Signature Stamp (compact: 250x65 pts) ──
     loadingText.textContent = 'Adding signature stamp...';
+    const fs = 7, lh = 9.5, logoFs = 12;
 
-    page.drawRectangle({ x: pdfX, y: pdfY, width: stampW, height: stampH, color: rgb(1,1,1), borderColor: rgb(0.1,0.23,0.48), borderWidth: 1.5 });
+    page.drawRectangle({ x: pdfX, y: pdfY, width: stampW, height: stampH, color: rgb(1,1,1), borderColor: rgb(0.1,0.23,0.48), borderWidth: 1 });
 
-    const logoX = pdfX + pad + 2, logoY = pdfY + stampH / 2 - logoFs / 3;
+    // Logo
+    const logoX = pdfX + 5, logoY = pdfY + stampH / 2 - logoFs / 3;
     page.drawText('Doc', { x: logoX, y: logoY, size: logoFs, font: fontBold, color: rgb(0.1,0.23,0.48) });
     page.drawText('Seal', { x: logoX + fontBold.widthOfTextAtSize('Doc', logoFs), y: logoY, size: logoFs, font: fontBold, color: rgb(0.18,0.37,0.72) });
 
-    const divX = logoX + 52;
-    page.drawLine({ start: { x: divX, y: pdfY + 4 }, end: { x: divX, y: pdfY + stampH - 4 }, thickness: 1, color: rgb(0.1,0.23,0.48) });
+    // Divider
+    const divX = logoX + 42;
+    page.drawLine({ start: { x: divX, y: pdfY + 4 }, end: { x: divX, y: pdfY + stampH - 4 }, thickness: 0.7, color: rgb(0.1,0.23,0.48) });
 
-    const tx = divX + 8;
-    let ty = pdfY + stampH - pad - fs;
+    // Text details
+    const tx = divX + 5;
+    let ty = pdfY + stampH - 9;
     page.drawText('Signed by: ', { x: tx, y: ty, size: fs, font, color: rgb(0.2,0.2,0.2) });
     page.drawText(name, { x: tx + font.widthOfTextAtSize('Signed by: ', fs), y: ty, size: fs, font: fontBold, color: rgb(0.1,0.1,0.1) });
     ty -= lh; page.drawText(`Reason: ${reason}`, { x: tx, y: ty, size: fs, font, color: rgb(0.2,0.2,0.2) });
     ty -= lh; page.drawText(`Location: ${location}`, { x: tx, y: ty, size: fs, font, color: rgb(0.2,0.2,0.2) });
     ty -= lh; page.drawText(`Date: ${date}`, { x: tx, y: ty, size: fs, font, color: rgb(0.2,0.2,0.2) });
-    ty -= lh; page.drawText(`ID: ${state.documentId}`, { x: tx, y: ty, size: 6.5, font: fontMono, color: rgb(0.4,0.4,0.4) });
+    ty -= lh; page.drawText(`ID: ${state.documentId}`, { x: tx, y: ty, size: 5.5, font: fontMono, color: rgb(0.5,0.5,0.5) });
 
-    // Drawn signature
+    // Drawn signature above stamp
     const drawnSig = getDrawnSignatureDataUrl();
     if (drawnSig) {
       const sigImgBytes = await fetch(drawnSig).then(r => r.arrayBuffer());
       const sigImg = await pdfDoc.embedPng(sigImgBytes);
-      const sigW = stampW - 10, sigH = Math.min(sigW / (sigImg.width / sigImg.height), 40);
-      page.drawImage(sigImg, { x: pdfX + 5, y: pdfY + stampH + 4, width: sigW, height: sigH });
+      const sigW = 120, sigH = Math.min(sigW / (sigImg.width / sigImg.height), 30);
+      page.drawImage(sigImg, { x: pdfX + 3, y: pdfY + stampH + 2, width: sigW, height: sigH });
     }
 
-    // Typed signature
+    // Typed signature above stamp
     const activeTab = document.querySelector('.sig-tab.active').dataset.tab;
     if (activeTab === 'type' && typedSig.value.trim()) {
       const italic = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
-      page.drawText(typedSig.value.trim(), { x: pdfX + 5, y: pdfY + stampH + 8, size: 16, font: italic, color: rgb(0.1,0.23,0.48) });
+      page.drawText(typedSig.value.trim(), { x: pdfX + 3, y: pdfY + stampH + 4, size: 12, font: italic, color: rgb(0.1,0.23,0.48) });
     }
 
     // QR code on stamp
@@ -716,8 +723,8 @@ downloadBtn.addEventListener('click', async () => {
       try {
         const qrBytes = await fetch(qrDataUrl).then(r => r.arrayBuffer());
         const qrImg = await pdfDoc.embedPng(qrBytes);
-        const qrSz = Math.min(stampH - 6, 45);
-        page.drawImage(qrImg, { x: pdfX + stampW - qrSz - 4, y: pdfY + 3, width: qrSz, height: qrSz });
+        const qrSz = 38; // fits inside the 65pt stamp
+        page.drawImage(qrImg, { x: pdfX + stampW - qrSz - 3, y: pdfY + (stampH - qrSz) / 2, width: qrSz, height: qrSz });
       } catch (e) { console.error('QR embed failed', e); }
     }
 

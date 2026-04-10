@@ -14,6 +14,7 @@
       <span class="logo-doc">Doc</span><span class="logo-seal">Seal</span>
     </div>
     <h1>PDF Digital Signature</h1>
+    <a href="/verify" class="header-link">Verify a Document</a>
   </header>
 
   <main>
@@ -35,6 +36,13 @@
       <div id="file-info" class="file-info hidden">
         <span id="file-name"></span>
         <button id="remove-file" class="btn-icon" title="Remove file">&times;</button>
+      </div>
+      <div id="security-info" class="security-info hidden">
+        <div class="security-badge">SECURED</div>
+        <div class="security-details">
+          <span>Document ID: <code id="doc-id-display"></code></span>
+          <span>SHA-256: <code id="doc-hash-display" title=""></code></span>
+        </div>
       </div>
     </section>
 

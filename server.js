@@ -1,10 +1,14 @@
 const express = require('express');
 const multer = require('multer');
+const QRCode = require('qrcode');
+const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 
 const app = express();
 const PORT = 3000;
+
+app.use(express.json());
 
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
@@ -28,11 +32,12 @@ const upload = multer({
       cb(new Error('Only PDF files are allowed'));
     }
   },
-  limits: { fileSize: 50 * 1024 * 1024 } // 50MB
+  limits: { fileSize: 50 * 1024 * 1024 }
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
 
+// ─── Upload PDF ───
 app.post('/upload', upload.single('pdf'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No file uploaded' });
@@ -53,7 +58,42 @@ app.get('/uploads/:filename', (req, res) => {
   res.sendFile(filePath);
 });
 
-// Cleanup old files periodically (files older than 1 hour)
+// ─── Get client IP ───
+app.get('/api/ip', (req, res) => {
+  const ip = req.headers['x-forwarded-for']
+    || req.connection.remoteAddress
+    || req.socket.remoteAddress
+    || '';
+  // Clean up IPv6 localhost
+  const cleanIp = ip.replace('::ffff:', '').replace('::1', '127.0.0.1');
+  res.json({ ip: cleanIp });
+});
+
+// ─── Generate QR code as data URL ───
+app.post('/api/qr', async (req, res) => {
+  try {
+    const { data } = req.body;
+    if (!data) {
+      return res.status(400).json({ error: 'No data provided' });
+    }
+    const qrDataUrl = await QRCode.toDataURL(data, {
+      errorCorrectionLevel: 'M',
+      margin: 1,
+      width: 200,
+      color: { dark: '#1a3b7a', light: '#ffffff' }
+    });
+    res.json({ qr: qrDataUrl });
+  } catch (err) {
+    res.status(500).json({ error: 'QR generation failed' });
+  }
+});
+
+// ─── Verify page ───
+app.get('/verify', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'verify.html'));
+});
+
+// Cleanup old uploads (files older than 1 hour)
 setInterval(() => {
   const oneHourAgo = Date.now() - 60 * 60 * 1000;
   fs.readdirSync(uploadsDir).forEach(file => {

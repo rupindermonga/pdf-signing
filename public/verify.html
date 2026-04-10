@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DocSeal - Verify Signed Document</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    .verify-container {
+      max-width: 700px;
+      margin: 40px auto;
+      padding: 0 20px;
+    }
+    .verify-card {
+      background: white;
+      border-radius: 12px;
+      padding: 32px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    }
+    .verify-card h2 {
+      color: #1a3b7a;
+      margin-bottom: 8px;
+    }
+    .verify-card p.sub {
+      color: #666;
+      font-size: 14px;
+      margin-bottom: 24px;
+    }
+    .verify-upload {
+      border: 2px dashed #b0c4de;
+      border-radius: 12px;
+      padding: 40px 24px;
+      text-align: center;
+      cursor: pointer;
+      background: #f8fafd;
+      transition: all 0.2s;
+      margin-bottom: 20px;
+    }
+    .verify-upload:hover { border-color: #1a3b7a; background: #eef3fb; }
+    .verify-upload .icon { font-size: 40px; margin-bottom: 8px; }
+    .hash-input-section {
+      margin-top: 20px;
+      padding-top: 20px;
+      border-top: 1px solid #e0e0e0;
+    }
+    .hash-input-section label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      color: #555;
+      margin-bottom: 6px;
+    }
+    .hash-input-section input {
+      width: 100%;
+      padding: 10px 14px;
+      border: 1px solid #d0d5dd;
+      border-radius: 8px;
+      font-family: 'Courier New', monospace;
+      font-size: 13px;
+    }
+    .hash-input-section input:focus {
+      outline: none;
+      border-color: #1a3b7a;
+      box-shadow: 0 0 0 3px rgba(26,59,122,0.1);
+    }
+    .result-box {
+      margin-top: 20px;
+      padding: 16px 20px;
+      border-radius: 8px;
+      display: none;
+    }
+    .result-box.valid {
+      background: #e8f5e9;
+      border: 1px solid #66bb6a;
+      color: #2e7d32;
+      display: block;
+    }
+    .result-box.invalid {
+      background: #ffebee;
+      border: 1px solid #ef5350;
+      color: #c62828;
+      display: block;
+    }
+    .result-box.info {
+      background: #e3f2fd;
+      border: 1px solid #42a5f5;
+      color: #1565c0;
+      display: block;
+    }
+    .result-box h3 { margin-bottom: 8px; font-size: 16px; }
+    .result-box .hash-display {
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      word-break: break-all;
+      margin-top: 6px;
+      padding: 8px;
+      background: rgba(0,0,0,0.05);
+      border-radius: 4px;
+    }
+    .back-link {
+      display: inline-block;
+      margin-top: 20px;
+      color: #1a3b7a;
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .back-link:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <span class="logo-doc">Doc</span><span class="logo-seal">Seal</span>
+    </div>
+    <h1>Document Verification</h1>
+  </header>
+
+  <div class="verify-container">
+    <div class="verify-card">
+      <h2>Verify Document Integrity</h2>
+      <p class="sub">Upload a signed PDF to compute its SHA-256 hash, then compare with the hash printed on the document's audit trail page.</p>
+
+      <div class="verify-upload" id="verify-drop">
+        <div class="icon">&#128270;</div>
+        <p>Drop a signed PDF here or click to browse</p>
+        <input type="file" id="verify-input" accept=".pdf" hidden>
+      </div>
+
+      <div id="file-loaded" style="display:none;">
+        <div class="result-box info" style="display:block;">
+          <h3>File loaded: <span id="loaded-name"></span></h3>
+          <div>SHA-256 hash of this file:</div>
+          <div class="hash-display" id="computed-hash"></div>
+        </div>
+      </div>
+
+      <div class="hash-input-section">
+        <label for="expected-hash">Paste the expected hash from the audit trail to compare:</label>
+        <input type="text" id="expected-hash" placeholder="e.g. a1b2c3d4e5f6...">
+        <button class="btn-primary" style="margin-top:12px;" id="compare-btn" disabled>Compare Hashes</button>
+      </div>
+
+      <div class="result-box" id="result-box"></div>
+
+      <a href="/" class="back-link">&larr; Back to DocSeal</a>
+    </div>
+  </div>
+
+  <footer>
+    <p>DocSeal &mdash; ManDarshan AI Solutions</p>
+  </footer>
+
+  <script>
+    const dropArea = document.getElementById('verify-drop');
+    const fileInput = document.getElementById('verify-input');
+    const fileLoaded = document.getElementById('file-loaded');
+    const loadedName = document.getElementById('loaded-name');
+    const computedHash = document.getElementById('computed-hash');
+    const expectedHash = document.getElementById('expected-hash');
+    const compareBtn = document.getElementById('compare-btn');
+    const resultBox = document.getElementById('result-box');
+
+    let currentHash = '';
+
+    dropArea.addEventListener('click', () => fileInput.click());
+    dropArea.addEventListener('dragover', e => { e.preventDefault(); dropArea.style.borderColor = '#1a3b7a'; });
+    dropArea.addEventListener('dragleave', () => { dropArea.style.borderColor = '#b0c4de'; });
+    dropArea.addEventListener('drop', e => {
+      e.preventDefault();
+      dropArea.style.borderColor = '#b0c4de';
+      if (e.dataTransfer.files[0]) processFile(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener('change', e => {
+      if (e.target.files[0]) processFile(e.target.files[0]);
+    });
+
+    async function processFile(file) {
+      const buffer = await file.arrayBuffer();
+      const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      currentHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+      loadedName.textContent = file.name;
+      computedHash.textContent = currentHash;
+      fileLoaded.style.display = 'block';
+      compareBtn.disabled = false;
+      resultBox.className = 'result-box';
+      resultBox.style.display = 'none';
+    }
+
+    compareBtn.addEventListener('click', () => {
+      const expected = expectedHash.value.trim().toLowerCase();
+      if (!expected) {
+        resultBox.className = 'result-box invalid';
+        resultBox.innerHTML = '<h3>No hash to compare</h3><p>Please paste the expected hash from the audit trail page.</p>';
+        return;
+      }
+      if (expected === currentHash) {
+        resultBox.className = 'result-box valid';
+        resultBox.innerHTML = '<h3>MATCH - Document is authentic</h3><p>The SHA-256 hash matches. This document has NOT been tampered with since it was signed.</p>';
+      } else {
+        resultBox.className = 'result-box invalid';
+        resultBox.innerHTML = `<h3>MISMATCH - Possible tampering detected</h3>
+          <p>The hashes do not match. This document may have been modified after signing.</p>
+          <div class="hash-display">Expected: ${expected}<br>Got: ${currentHash}</div>`;
+      }
+    });
+  </script>
+</body>
+</html>

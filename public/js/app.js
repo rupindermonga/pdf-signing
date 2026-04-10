@@ -396,7 +396,7 @@ function createSigOverlay() {
         <div class="stamp-docid">ID: ${state.documentId}</div>
       </div>
     </div>
-    <div class="resize-handle"></div>`;
+    </div>`;
   sigOverlay.classList.remove('hidden');
   // Position relative to pdf-wrapper (same size as canvas)
   const cw = parseFloat(pdfCanvas.style.width);
@@ -405,7 +405,6 @@ function createSigOverlay() {
   sigOverlay.style.top = (ch - 80) + 'px';
   state.sigPlaced = true; downloadBtn.disabled = false;
   makeDraggable(sigOverlay);
-  makeResizable(sigOverlay);
 }
 
 function makeDraggable(el) {
@@ -426,34 +425,7 @@ function makeDraggable(el) {
   document.addEventListener('touchend', () => { isDragging = false; });
 }
 
-function makeResizable(el) {
-  const handle = el.querySelector('.resize-handle');
-  if (!handle) return;
-  let isResizing = false, startX, origW;
-
-  function applyScale(e) {
-    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-    const newW = Math.max(origW * 0.5, Math.min(origW * 2.0, origW + clientX - startX));
-    const scale = newW / origW;
-    // Scale by changing font-size and padding proportionally (no CSS transform)
-    el.style.fontSize = (9 * scale) + 'px';
-    el.dataset.scale = scale.toFixed(2);
-  }
-
-  handle.addEventListener('mousedown', (e) => {
-    isResizing = true; startX = e.clientX; origW = el.offsetWidth;
-    e.preventDefault(); e.stopPropagation();
-  });
-  document.addEventListener('mousemove', (e) => { if (isResizing) applyScale(e); });
-  document.addEventListener('mouseup', () => { isResizing = false; });
-
-  handle.addEventListener('touchstart', (e) => {
-    isResizing = true; startX = e.touches[0].clientX; origW = el.offsetWidth;
-    e.preventDefault(); e.stopPropagation();
-  });
-  document.addEventListener('touchmove', (e) => { if (isResizing) applyScale(e); });
-  document.addEventListener('touchend', () => { isResizing = false; });
-}
+// No resize handle - use scale buttons instead (see placement hint area)
 
 pdfCanvas.addEventListener('click', (e) => {
   // Position relative to the canvas (overlay parent is pdf-wrapper which matches canvas)
@@ -496,6 +468,32 @@ async function pkiSignPdf(pdfBytes, meta) {
     console.error('PKI signing error:', err);
     return null;
   }
+}
+
+// ─── Stamp size controls ───
+const stampSmaller = document.getElementById('stamp-smaller');
+const stampBigger = document.getElementById('stamp-bigger');
+const stampScaleDisplay = document.getElementById('stamp-scale');
+
+if (stampSmaller) {
+  stampSmaller.addEventListener('click', () => {
+    const cur = parseFloat(sigOverlay.dataset.scale || '1');
+    const next = Math.max(0.5, cur - 0.15);
+    sigOverlay.dataset.scale = next.toFixed(2);
+    sigOverlay.style.transform = `scale(${next})`;
+    sigOverlay.style.transformOrigin = 'top left';
+    stampScaleDisplay.textContent = Math.round(next * 100) + '%';
+  });
+}
+if (stampBigger) {
+  stampBigger.addEventListener('click', () => {
+    const cur = parseFloat(sigOverlay.dataset.scale || '1');
+    const next = Math.min(2.0, cur + 0.15);
+    sigOverlay.dataset.scale = next.toFixed(2);
+    sigOverlay.style.transform = `scale(${next})`;
+    sigOverlay.style.transformOrigin = 'top left';
+    stampScaleDisplay.textContent = Math.round(next * 100) + '%';
+  });
 }
 
 // ─── Audit Trail Page ───

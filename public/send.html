@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DocSeal - New Signing Request</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    .send-container { max-width: 680px; margin: 24px auto; padding: 0 20px; }
+    .card { background: white; border-radius: 12px; padding: 28px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); margin-bottom: 20px; }
+    .card h2 { color: #1a3b7a; font-size: 20px; margin-bottom: 20px; }
+    .form-group { margin-bottom: 16px; }
+    .form-group label { display: block; font-size: 13px; font-weight: 600; color: #555; margin-bottom: 6px; }
+    .form-group input, .form-group textarea { width: 100%; padding: 10px 14px; border: 1px solid #d0d5dd; border-radius: 8px; font-size: 14px; font-family: inherit; }
+    .form-group input:focus, .form-group textarea:focus { outline: none; border-color: #1a3b7a; box-shadow: 0 0 0 3px rgba(26,59,122,0.1); }
+    .form-group textarea { resize: vertical; min-height: 60px; }
+    .upload-area { border: 2px dashed #b0c4de; border-radius: 10px; padding: 36px 20px; text-align: center; cursor: pointer; background: #f8fafd; transition: all 0.2s; }
+    .upload-area:hover { border-color: #1a3b7a; background: #eef3fb; }
+    .upload-area .icon { font-size: 36px; margin-bottom: 6px; }
+    .file-loaded { background: #e8f5e9; border-radius: 8px; padding: 10px 16px; display: flex; align-items: center; gap: 10px; font-size: 14px; color: #2e7d32; font-weight: 500; }
+    .file-loaded .remove { cursor: pointer; color: #c62828; font-size: 18px; margin-left: auto; }
+    /* Signers */
+    .signers-list { margin-bottom: 16px; }
+    .signer-entry { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+    .signer-entry input { flex: 1; padding: 10px 12px; border: 1px solid #d0d5dd; border-radius: 8px; font-size: 14px; }
+    .signer-entry input:focus { outline: none; border-color: #1a3b7a; }
+    .signer-num { background: #1a3b7a; color: white; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; flex-shrink: 0; }
+    .remove-signer { background: none; border: none; color: #c62828; font-size: 20px; cursor: pointer; padding: 4px 8px; flex-shrink: 0; }
+    .add-signer-btn { font-size: 13px; color: #1a3b7a; background: none; border: 1px dashed #1a3b7a; padding: 8px 16px; border-radius: 8px; cursor: pointer; }
+    .add-signer-btn:hover { background: #f0f4fb; }
+    .order-hint { font-size: 12px; color: #888; margin-bottom: 12px; }
+    .actions { display: flex; gap: 12px; justify-content: space-between; }
+    .error { background: #ffebee; border: 1px solid #ef5350; color: #c62828; padding: 10px 14px; border-radius: 8px; font-size: 13px; display: none; margin-bottom: 16px; }
+    .error.show { display: block; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo"><span class="logo-doc">Doc</span><span class="logo-seal">Seal</span></div>
+    <h1>New Signing Request</h1>
+    <a href="/dashboard" class="header-link">Dashboard</a>
+  </header>
+
+  <div class="send-container">
+    <div class="card">
+      <h2>1. Upload Document</h2>
+      <div id="upload-area" class="upload-area">
+        <div class="icon">&#128196;</div>
+        <p>Drop your PDF here or click to browse</p>
+        <input type="file" id="file-input" accept=".pdf" hidden>
+      </div>
+      <div id="file-loaded" class="file-loaded" style="display:none;">
+        <span id="file-name-display"></span>
+        <span class="remove" id="remove-file">&times;</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>2. Document Details</h2>
+      <div class="form-group">
+        <label>Title</label>
+        <input type="text" id="doc-title" placeholder="e.g. Q4 Contract Agreement">
+      </div>
+      <div class="form-group">
+        <label>Message to signers (optional)</label>
+        <textarea id="doc-message" placeholder="Please review and sign this document by Friday."></textarea>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>3. Add Signers</h2>
+      <p class="order-hint">Signers will be contacted in order. Each signer must complete before the next one is notified.</p>
+      <div id="signers-list" class="signers-list">
+        <div class="signer-entry">
+          <span class="signer-num">1</span>
+          <input type="text" placeholder="Name" class="signer-name">
+          <input type="email" placeholder="Email" class="signer-email">
+        </div>
+      </div>
+      <button class="add-signer-btn" id="add-signer">+ Add another signer</button>
+    </div>
+
+    <div id="error" class="error"></div>
+
+    <div class="actions">
+      <a href="/dashboard" class="btn-secondary" style="text-decoration:none;">Cancel</a>
+      <button class="btn-primary" id="send-btn">Send for Signing</button>
+    </div>
+  </div>
+
+  <script>
+    const uploadArea = document.getElementById('upload-area');
+    const fileInput = document.getElementById('file-input');
+    const fileLoaded = document.getElementById('file-loaded');
+    const fileNameDisplay = document.getElementById('file-name-display');
+    const signersList = document.getElementById('signers-list');
+    const errorDiv = document.getElementById('error');
+    let selectedFile = null;
+
+    // File upload
+    uploadArea.addEventListener('click', () => fileInput.click());
+    uploadArea.addEventListener('dragover', e => { e.preventDefault(); uploadArea.style.borderColor = '#1a3b7a'; });
+    uploadArea.addEventListener('dragleave', () => { uploadArea.style.borderColor = '#b0c4de'; });
+    uploadArea.addEventListener('drop', e => { e.preventDefault(); if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]); });
+    fileInput.addEventListener('change', e => { if (e.target.files[0]) setFile(e.target.files[0]); });
+
+    function setFile(file) {
+      if (file.type !== 'application/pdf') return showError('Only PDF files are supported.');
+      selectedFile = file;
+      fileNameDisplay.textContent = file.name;
+      uploadArea.style.display = 'none';
+      fileLoaded.style.display = 'flex';
+      if (!document.getElementById('doc-title').value) {
+        document.getElementById('doc-title').value = file.name.replace('.pdf', '');
+      }
+    }
+
+    document.getElementById('remove-file').addEventListener('click', () => {
+      selectedFile = null; fileInput.value = '';
+      uploadArea.style.display = ''; fileLoaded.style.display = 'none';
+    });
+
+    // Signers
+    document.getElementById('add-signer').addEventListener('click', () => {
+      const count = signersList.children.length + 1;
+      const div = document.createElement('div');
+      div.className = 'signer-entry';
+      div.innerHTML = `
+        <span class="signer-num">${count}</span>
+        <input type="text" placeholder="Name" class="signer-name">
+        <input type="email" placeholder="Email" class="signer-email">
+        <button class="remove-signer" onclick="this.parentElement.remove();renumber();">&times;</button>`;
+      signersList.appendChild(div);
+    });
+
+    window.renumber = function() {
+      signersList.querySelectorAll('.signer-entry').forEach((el, i) => {
+        el.querySelector('.signer-num').textContent = i + 1;
+      });
+    };
+
+    function showError(msg) { errorDiv.textContent = msg; errorDiv.classList.add('show'); }
+
+    // Send
+    document.getElementById('send-btn').addEventListener('click', async () => {
+      errorDiv.classList.remove('show');
+      if (!selectedFile) return showError('Please upload a PDF.');
+
+      const signers = [];
+      signersList.querySelectorAll('.signer-entry').forEach(el => {
+        const name = el.querySelector('.signer-name').value.trim();
+        const email = el.querySelector('.signer-email').value.trim();
+        if (name && email) signers.push({ name, email });
+      });
+
+      if (!signers.length) return showError('Add at least one signer with name and email.');
+
+      const btn = document.getElementById('send-btn');
+      btn.disabled = true; btn.textContent = 'Sending...';
+
+      try {
+        const formData = new FormData();
+        formData.append('pdf', selectedFile);
+        formData.append('title', document.getElementById('doc-title').value.trim() || selectedFile.name);
+        formData.append('message', document.getElementById('doc-message').value.trim());
+        formData.append('signers', JSON.stringify(signers));
+
+        const resp = await fetch('/api/documents/create', { method: 'POST', body: formData });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error);
+
+        window.location.href = '/dashboard';
+      } catch (err) {
+        showError(err.message);
+        btn.disabled = false; btn.textContent = 'Send for Signing';
+      }
+    });
+  </script>
+</body>
+</html>

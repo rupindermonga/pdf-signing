@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DocSeal - Dashboard</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    .dash-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }
+    .dash-header h2 { color: #1a3b7a; font-size: 22px; }
+    .user-info { font-size: 13px; color: #666; display: flex; align-items: center; gap: 12px; }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; }
+    .doc-list { display: flex; flex-direction: column; gap: 12px; }
+    .doc-card { background: white; border-radius: 10px; padding: 18px 22px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); display: flex; align-items: center; gap: 16px; transition: box-shadow 0.2s; cursor: pointer; }
+    .doc-card:hover { box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+    .doc-icon { font-size: 28px; flex-shrink: 0; }
+    .doc-info { flex: 1; min-width: 0; }
+    .doc-title { font-weight: 600; color: #222; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .doc-meta { font-size: 12px; color: #888; margin-top: 3px; }
+    .doc-meta span { margin-right: 14px; }
+    .status-badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .status-draft { background: #f5f5f5; color: #888; }
+    .status-pending { background: #fff8e1; color: #f57c00; }
+    .status-completed { background: #e8f5e9; color: #2e7d32; }
+    .doc-actions { display: flex; gap: 8px; flex-shrink: 0; }
+    .doc-actions a, .doc-actions button { font-size: 12px; padding: 6px 14px; border-radius: 6px; text-decoration: none; border: none; cursor: pointer; }
+    .empty-state { text-align: center; padding: 60px 20px; color: #888; }
+    .empty-state .icon { font-size: 48px; margin-bottom: 12px; }
+    .empty-state h3 { color: #555; margin-bottom: 8px; }
+    /* Detail modal */
+    .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 200; display: none; align-items: center; justify-content: center; padding: 20px; }
+    .modal-bg.show { display: flex; }
+    .modal { background: white; border-radius: 16px; padding: 28px; max-width: 600px; width: 100%; max-height: 80vh; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.2); }
+    .modal h3 { color: #1a3b7a; margin-bottom: 16px; }
+    .modal .close { float: right; background: none; border: none; font-size: 22px; cursor: pointer; color: #888; }
+    .signer-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+    .signer-row:last-child { border-bottom: none; }
+    .signer-order { background: #1a3b7a; color: white; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0; }
+    .signer-status { margin-left: auto; }
+    .link-box { background: #f5f7fa; padding: 8px 12px; border-radius: 6px; font-size: 12px; word-break: break-all; font-family: monospace; color: #1a3b7a; margin-top: 6px; cursor: pointer; }
+    .link-box:hover { background: #eef3fb; }
+    .copied-toast { color: #2e7d32; font-size: 11px; margin-left: 8px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo"><span class="logo-doc">Doc</span><span class="logo-seal">Seal</span></div>
+    <h1>Dashboard</h1>
+    <a href="/verify" class="header-link">Verify</a>
+  </header>
+
+  <main>
+    <div class="dash-header">
+      <div>
+        <h2>Your Documents</h2>
+        <div class="user-info"><span id="user-email"></span> &middot; <a href="#" id="logout-btn" style="color:#c62828;font-size:13px;">Logout</a></div>
+      </div>
+      <div class="actions">
+        <a href="/send" class="btn-primary" style="text-decoration:none;display:inline-block;">New Signing Request</a>
+        <a href="/solo" class="btn-secondary" style="text-decoration:none;display:inline-block;">Quick Sign (solo)</a>
+      </div>
+    </div>
+
+    <div id="doc-list" class="doc-list">
+      <div class="empty-state">
+        <div class="icon">&#128196;</div>
+        <h3>Loading...</h3>
+      </div>
+    </div>
+  </main>
+
+  <div class="modal-bg" id="modal-bg">
+    <div class="modal" id="modal-content"></div>
+  </div>
+
+  <script>
+    const docList = document.getElementById('doc-list');
+    const modalBg = document.getElementById('modal-bg');
+    const modalContent = document.getElementById('modal-content');
+
+    async function loadDocuments() {
+      const resp = await fetch('/api/documents');
+      if (resp.status === 401) return window.location.href = '/login';
+      const { documents, user } = await resp.json();
+      document.getElementById('user-email').textContent = user.name ? `${user.name} (${user.email})` : user.email;
+
+      if (!documents.length) {
+        docList.innerHTML = '<div class="empty-state"><div class="icon">&#128196;</div><h3>No documents yet</h3><p>Click "New Signing Request" to get started.</p></div>';
+        return;
+      }
+
+      docList.innerHTML = documents.map(doc => `
+        <div class="doc-card" onclick="showDetail('${doc.uuid}')">
+          <div class="doc-icon">${doc.status === 'completed' ? '&#9989;' : '&#128196;'}</div>
+          <div class="doc-info">
+            <div class="doc-title">${esc(doc.title)}</div>
+            <div class="doc-meta">
+              <span>${doc.original_filename}</span>
+              <span>${doc.signedCount}/${doc.totalSigners} signed</span>
+              <span>${new Date(doc.created_at).toLocaleDateString()}</span>
+            </div>
+          </div>
+          <span class="status-badge status-${doc.status}">${doc.status}</span>
+          ${doc.status === 'completed' ? '<a href="/api/documents/' + doc.uuid + '/download" class="btn-secondary" onclick="event.stopPropagation()">Download</a>' : ''}
+        </div>
+      `).join('');
+    }
+
+    async function showDetail(uuid) {
+      const resp = await fetch('/api/documents/' + uuid);
+      const { document: doc, signers, emailConfigured } = await resp.json();
+
+      modalContent.innerHTML = `
+        <button class="close" onclick="modalBg.classList.remove('show')">&times;</button>
+        <h3>${esc(doc.title)}</h3>
+        <div style="font-size:13px;color:#666;margin-bottom:16px;">
+          <div>ID: <code style="color:#1a3b7a;">${doc.uuid}</code></div>
+          <div>Status: <span class="status-badge status-${doc.status}">${doc.status}</span></div>
+          <div>Created: ${new Date(doc.created_at).toLocaleString()}</div>
+          ${doc.completed_at ? '<div>Completed: ' + new Date(doc.completed_at).toLocaleString() + '</div>' : ''}
+        </div>
+        <h4 style="color:#1a3b7a;margin-bottom:10px;">Signers</h4>
+        ${signers.map(s => `
+          <div class="signer-row">
+            <span class="signer-order">${s.sign_order}</span>
+            <div>
+              <div style="font-weight:600;">${esc(s.name)}</div>
+              <div style="color:#888;font-size:12px;">${esc(s.email)}</div>
+              ${(!emailConfigured && (s.status === 'sent' || s.status === 'pending')) ? '<div class="link-box" onclick="copyLink(this)" title="Click to copy">' + s.signUrl + '</div>' : ''}
+            </div>
+            <span class="signer-status"><span class="status-badge status-${s.status === 'signed' ? 'completed' : 'pending'}">${s.status}</span></span>
+          </div>
+        `).join('')}
+        ${!emailConfigured ? '<p style="font-size:12px;color:#e65100;margin-top:12px;">Email not configured. Share the signing links above manually.</p>' : ''}
+        ${doc.status === 'completed' ? '<a href="/api/documents/' + doc.uuid + '/download" class="btn-primary" style="display:inline-block;margin-top:16px;text-decoration:none;">Download Signed PDF</a>' : ''}
+      `;
+      modalBg.classList.add('show');
+    }
+
+    function copyLink(el) {
+      navigator.clipboard.writeText(el.textContent.trim());
+      const toast = document.createElement('span');
+      toast.className = 'copied-toast'; toast.textContent = 'Copied!';
+      el.parentNode.appendChild(toast);
+      setTimeout(() => toast.remove(), 2000);
+    }
+
+    modalBg.addEventListener('click', (e) => { if (e.target === modalBg) modalBg.classList.remove('show'); });
+
+    document.getElementById('logout-btn').addEventListener('click', async (e) => {
+      e.preventDefault();
+      await fetch('/api/auth/logout', { method: 'POST' });
+      window.location.href = '/login';
+    });
+
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+    loadDocuments();
+  </script>
+</body>
+</html>

@@ -388,80 +388,74 @@ function createSigOverlay() {
   const sigPreview = getSignaturePreviewHtml();
   sigOverlay.innerHTML = `
     ${sigPreview}
-    <div class="sig-stamp" style="display:flex;gap:5px;padding:3px 6px;font-size:8px;line-height:1.3;">
-      <div style="flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:2px;min-width:36px;">
-        <div style="font-size:10px;font-weight:800;letter-spacing:-0.5px;"><span style="color:#1a3b7a;">Doc</span><span style="color:#2d5db8;">Seal</span></div>
-        <div style="width:28px;height:28px;background:#eee;border:1px solid #ccc;border-radius:2px;display:flex;align-items:center;justify-content:center;font-size:6px;color:#999;">QR</div>
+    <div style="display:flex;gap:0.5em;padding:0.3em 0.5em;line-height:1.35;">
+      <div style="flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:0.2em;">
+        <div style="font-size:1.3em;font-weight:800;letter-spacing:-0.5px;white-space:nowrap;"><span style="color:#1a3b7a;">Doc</span><span style="color:#2d5db8;">Seal</span></div>
+        <div style="width:3.2em;height:3.2em;background:#f0f0f0;border:1px solid #ccc;border-radius:2px;display:flex;align-items:center;justify-content:center;font-size:0.7em;color:#aaa;">QR</div>
       </div>
-      <div style="border-left:1px solid #1a3b7a;padding-left:5px;font-size:8px;line-height:1.35;">
-        <div><strong style="font-size:9px;">Signed by: ${escapeHtml(name)}</strong></div>
+      <div style="border-left:1px solid #1a3b7a;padding-left:0.5em;">
+        <div><strong style="font-size:1.1em;">Signed by: ${escapeHtml(name)}</strong></div>
         <div>Reason: ${escapeHtml(reason)}</div>
         <div>Location: ${escapeHtml(location)}</div>
         <div>Date: ${date}</div>
-        <div style="font-family:monospace;font-size:6px;color:#888;">ID: ${state.documentId}</div>
+        <div style="font-family:monospace;font-size:0.75em;color:#888;">ID: ${state.documentId}</div>
       </div>
     </div>`;
   sigOverlay.classList.remove('hidden');
-  // Position at bottom-right by default
-  const wrapper = document.getElementById('pdf-wrapper');
-  const ww = wrapper.offsetWidth;
-  const wh = wrapper.offsetHeight;
-  sigOverlay.style.left = (ww - 280) + 'px';
-  sigOverlay.style.top = (wh - 80) + 'px';
-  // Store as relative position (center of overlay)
-  state.stampRelX = (ww - 280 + sigOverlay.offsetWidth / 2) / ww;
-  state.stampRelY = (wh - 80 + sigOverlay.offsetHeight / 2) / wh;
+  // Default: bottom-right area
+  state.stampRelX = 0.75;
+  state.stampRelY = 0.88;
+  positionOverlayFromRel();
   state.sigPlaced = true; downloadBtn.disabled = false;
   makeDraggable(sigOverlay);
+}
+
+function positionOverlayFromRel() {
+  const wrapper = document.getElementById('pdf-wrapper');
+  if (!wrapper) return;
+  const ww = wrapper.offsetWidth, wh = wrapper.offsetHeight;
+  const ow = sigOverlay.offsetWidth, oh = sigOverlay.offsetHeight;
+  // Clamp so overlay stays fully inside the canvas
+  const left = Math.max(0, Math.min(state.stampRelX * ww - ow / 2, ww - ow));
+  const top = Math.max(0, Math.min(state.stampRelY * wh - oh / 2, wh - oh));
+  sigOverlay.style.left = left + 'px';
+  sigOverlay.style.top = top + 'px';
 }
 
 function makeDraggable(el) {
   let isDragging = false, startX, startY, origRelX, origRelY;
 
-  el.addEventListener('mousedown', (e) => {
-    isDragging = true; startX = e.clientX; startY = e.clientY;
-    origRelX = state.stampRelX; origRelY = state.stampRelY;
-    e.preventDefault();
-  });
-  document.addEventListener('mousemove', (e) => {
-    if (!isDragging) return;
+  function onMove(cx, cy) {
     const wrapper = document.getElementById('pdf-wrapper');
     const wRect = wrapper.getBoundingClientRect();
-    state.stampRelX = origRelX + (e.clientX - startX) / wRect.width;
-    state.stampRelY = origRelY + (e.clientY - startY) / wRect.height;
-    el.style.left = (state.stampRelX * wRect.width - el.offsetWidth / 2) + 'px';
-    el.style.top = (state.stampRelY * wRect.height - el.offsetHeight / 2) + 'px';
+    state.stampRelX = Math.max(0.02, Math.min(0.98, origRelX + (cx - startX) / wRect.width));
+    state.stampRelY = Math.max(0.02, Math.min(0.98, origRelY + (cy - startY) / wRect.height));
+    positionOverlayFromRel();
+  }
+
+  el.addEventListener('mousedown', (e) => {
+    isDragging = true; startX = e.clientX; startY = e.clientY;
+    origRelX = state.stampRelX; origRelY = state.stampRelY; e.preventDefault();
   });
+  document.addEventListener('mousemove', (e) => { if (isDragging) onMove(e.clientX, e.clientY); });
   document.addEventListener('mouseup', () => { isDragging = false; });
 
   el.addEventListener('touchstart', (e) => {
     isDragging = true; startX = e.touches[0].clientX; startY = e.touches[0].clientY;
-    origRelX = state.stampRelX; origRelY = state.stampRelY;
-    e.preventDefault();
+    origRelX = state.stampRelX; origRelY = state.stampRelY; e.preventDefault();
   });
-  document.addEventListener('touchmove', (e) => {
-    if (!isDragging) return;
-    const wrapper = document.getElementById('pdf-wrapper');
-    const wRect = wrapper.getBoundingClientRect();
-    state.stampRelX = origRelX + (e.touches[0].clientX - startX) / wRect.width;
-    state.stampRelY = origRelY + (e.touches[0].clientY - startY) / wRect.height;
-    el.style.left = (state.stampRelX * wRect.width - el.offsetWidth / 2) + 'px';
-    el.style.top = (state.stampRelY * wRect.height - el.offsetHeight / 2) + 'px';
-  });
+  document.addEventListener('touchmove', (e) => { if (isDragging) onMove(e.touches[0].clientX, e.touches[0].clientY); });
   document.addEventListener('touchend', () => { isDragging = false; });
 }
 
 // No resize handle - use scale buttons instead (see placement hint area)
 
 pdfCanvas.addEventListener('click', (e) => {
-  // Use the wrapper (overlay's offset parent) for position calculation
   const wrapper = document.getElementById('pdf-wrapper');
   const wRect = wrapper.getBoundingClientRect();
-  state.stampRelX = (e.clientX - wRect.left) / wRect.width;
-  state.stampRelY = (e.clientY - wRect.top) / wRect.height;
-  // Position the overlay visually
-  sigOverlay.style.left = (state.stampRelX * wRect.width - sigOverlay.offsetWidth / 2) + 'px';
-  sigOverlay.style.top = (state.stampRelY * wRect.height - sigOverlay.offsetHeight / 2) + 'px';
+  state.stampRelX = Math.max(0.02, Math.min(0.98, (e.clientX - wRect.left) / wRect.width));
+  state.stampRelY = Math.max(0.02, Math.min(0.98, (e.clientY - wRect.top) / wRect.height));
+  positionOverlayFromRel();
   sigOverlay.classList.remove('hidden'); state.sigPlaced = true; downloadBtn.disabled = false;
 });
 
@@ -498,20 +492,24 @@ async function pkiSignPdf(pdfBytes, meta) {
   }
 }
 
-// ─── Stamp size controls ───
+// ─── Stamp size controls (no CSS transform - changes data-scale and rebuilds overlay) ───
 document.addEventListener('click', (e) => {
   const btn = e.target.closest('#stamp-smaller, #stamp-bigger');
   if (!btn) return;
   e.stopPropagation();
+  e.preventDefault();
   const cur = parseFloat(sigOverlay.dataset.scale || '1');
   const next = btn.id === 'stamp-smaller'
-    ? Math.max(0.5, cur - 0.15)
-    : Math.min(2.0, cur + 0.15);
+    ? Math.max(0.6, cur - 0.1)
+    : Math.min(1.8, cur + 0.1);
   sigOverlay.dataset.scale = next.toFixed(2);
-  sigOverlay.style.transform = `scale(${next})`;
-  sigOverlay.style.transformOrigin = 'top left';
+  // Rebuild overlay at new scale (font-size scales the whole thing)
+  const baseFontSize = 8;
+  sigOverlay.style.fontSize = (baseFontSize * next) + 'px';
   const display = document.getElementById('stamp-scale');
   if (display) display.textContent = Math.round(next * 100) + '%';
+  // Re-center at current position
+  positionOverlayFromRel();
 });
 
 // ─── Audit Trail Page ───

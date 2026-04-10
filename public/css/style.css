@@ -548,13 +548,13 @@ main {
 .sig-overlay {
   position: absolute;
   cursor: move;
-  border: 2px dashed #1a3b7a;
-  border-radius: 4px;
-  background: rgba(255,255,255,0.92);
-  padding: 2px;
+  border: 1.5px dashed #1a3b7a;
+  border-radius: 3px;
+  background: rgba(255,255,255,0.95);
+  padding: 1px;
   z-index: 10;
   user-select: none;
-  transition: box-shadow 0.2s;
+  font-size: 8px;
 }
 
 .sig-overlay:hover {

@@ -119,6 +119,8 @@
       compareResult.className = 'result';
     }
 
+    function escV(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
     compareBtn.addEventListener('click', () => {
       const expected = expectedHash.value.trim().toLowerCase();
       if (!expected) {
@@ -131,7 +133,7 @@
         compareResult.innerHTML = '<h3>MATCH &mdash; Document is authentic</h3><p>The SHA-256 hash matches perfectly. This document has <strong>not been tampered with</strong> since it was signed.</p>';
       } else {
         compareResult.className = 'result show invalid';
-        compareResult.innerHTML = '<h3>MISMATCH &mdash; Possible tampering</h3><p>The hashes do not match. This document may have been modified after signing.</p><div class="mono">Expected: ' + expected + '<br>Computed: ' + currentHash + '</div>';
+        compareResult.innerHTML = '<h3>MISMATCH &mdash; Possible tampering</h3><p>The hashes do not match. This document may have been modified after signing.</p><div class="mono">Expected: ' + escV(expected) + '<br>Computed: ' + escV(currentHash) + '</div>';
       }
     });
 

@@ -188,6 +188,8 @@
       resultBox.style.display = 'none';
     }
 
+    function escVerify(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
     compareBtn.addEventListener('click', () => {
       const expected = expectedHash.value.trim().toLowerCase();
       if (!expected) {
@@ -200,9 +202,7 @@
         resultBox.innerHTML = '<h3>MATCH - Document is authentic</h3><p>The SHA-256 hash matches. This document has NOT been tampered with since it was signed.</p>';
       } else {
         resultBox.className = 'result-box invalid';
-        resultBox.innerHTML = `<h3>MISMATCH - Possible tampering detected</h3>
-          <p>The hashes do not match. This document may have been modified after signing.</p>
-          <div class="hash-display">Expected: ${expected}<br>Got: ${currentHash}</div>`;
+        resultBox.innerHTML = '<h3>MISMATCH - Possible tampering detected</h3><p>The hashes do not match. This document may have been modified after signing.</p><div class="hash-display">Expected: ' + escVerify(expected) + '<br>Got: ' + escVerify(currentHash) + '</div>';
       }
     });
   </script>

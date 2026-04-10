@@ -18,7 +18,8 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
 
-const IS_DEV = process.env.NODE_ENV !== 'production';
+// DEV mode must be explicitly enabled — defaults to production-safe behavior
+const IS_DEV = process.env.NODE_ENV === 'development';
 
 // ─── Security headers ───
 app.use((req, res, next) => {
@@ -337,7 +338,7 @@ app.post('/api/sign/:token/submit', async (req, res) => {
   }
 
   const { signatureData, location, browserInfo, geoCoords } = req.body;
-  const ip = req.headers['x-forwarded-for'] || req.connection.remoteAddress || '';
+  const ip = req.socket.remoteAddress || '';
 
   const signed = signerOps.markSigned(signer.id, {
     signatureData: sanitize(signatureData || ''),
@@ -559,7 +560,7 @@ app.post('/api/qr', requireAuth, async (req, res) => {
 
 // ─── IP ───
 app.get('/api/ip', (req, res) => {
-  const ip = (req.headers['x-forwarded-for'] || req.connection.remoteAddress || '').replace('::ffff:', '').replace('::1', '127.0.0.1');
+  const ip = (req.socket.remoteAddress || '').replace('::ffff:', '').replace('::1', '127.0.0.1');
   res.json({ ip });
 });
 

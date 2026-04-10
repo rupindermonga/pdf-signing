@@ -79,7 +79,7 @@ function generateToken() {
 }
 
 function generateOTP() {
-  return String(Math.floor(100000 + Math.random() * 900000));
+  return String(crypto.randomInt(100000, 999999));
 }
 
 function generateDocUUID() {
@@ -115,12 +115,14 @@ const otpOps = {
     return code;
   },
   verify(email, code) {
-    const row = db.prepare('SELECT * FROM otp_codes WHERE email = ? AND code = ? AND used = 0 AND expires_at > datetime(\'now\')').get(email.toLowerCase(), code);
-    if (row) {
-      db.prepare('UPDATE otp_codes SET used = 1 WHERE email = ? AND code = ?').run(email.toLowerCase(), code);
-      return true;
-    }
-    return false;
+    const row = db.prepare("SELECT * FROM otp_codes WHERE email = ? AND used = 0 AND expires_at > datetime('now')").get(email.toLowerCase());
+    if (!row) return false;
+    // Timing-safe comparison to prevent side-channel attacks
+    const codeBuffer = Buffer.from(String(code).padEnd(6, '0'));
+    const storedBuffer = Buffer.from(String(row.code).padEnd(6, '0'));
+    if (codeBuffer.length !== storedBuffer.length || !crypto.timingSafeEqual(codeBuffer, storedBuffer)) return false;
+    db.prepare('UPDATE otp_codes SET used = 1 WHERE email = ? AND code = ?').run(email.toLowerCase(), row.code);
+    return true;
   }
 };
 
@@ -201,17 +203,20 @@ const signerOps = {
     return otp;
   },
   verifyOTP(id, code) {
-    const signer = db.prepare("SELECT * FROM signers WHERE id = ? AND otp = ? AND otp_expires > datetime('now')").get(id, code);
-    if (signer) {
-      db.prepare('UPDATE signers SET otp = NULL, otp_expires = NULL WHERE id = ?').run(id);
-      return true;
-    }
-    return false;
+    const signer = db.prepare("SELECT * FROM signers WHERE id = ? AND otp IS NOT NULL AND otp_expires > datetime('now')").get(id);
+    if (!signer) return false;
+    const codeBuffer = Buffer.from(String(code).padEnd(6, '0'));
+    const storedBuffer = Buffer.from(String(signer.otp).padEnd(6, '0'));
+    if (codeBuffer.length !== storedBuffer.length || !crypto.timingSafeEqual(codeBuffer, storedBuffer)) return false;
+    db.prepare('UPDATE signers SET otp = NULL, otp_expires = NULL WHERE id = ?').run(id);
+    return true;
   },
   markSigned(id, data) {
-    db.prepare(`UPDATE signers SET status = 'signed', signature_data = ?, signed_at = datetime('now'),
-      ip_address = ?, location = ?, browser_info = ?, geo_coords = ? WHERE id = ?`)
+    // Atomic: only update if status is still 'sent' — prevents race condition double-sign
+    const result = db.prepare(`UPDATE signers SET status = 'signed', signature_data = ?, signed_at = datetime('now'),
+      ip_address = ?, location = ?, browser_info = ?, geo_coords = ? WHERE id = ? AND status = 'sent'`)
       .run(data.signatureData, data.ip, data.location, data.browserInfo, data.geoCoords, id);
+    return result.changes === 1; // false if already signed (race condition caught)
   },
   getNextPending(documentId) {
     return db.prepare("SELECT * FROM signers WHERE document_id = ? AND status = 'pending' ORDER BY sign_order LIMIT 1").get(documentId);

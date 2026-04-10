@@ -95,13 +95,13 @@
           <div class="doc-info">
             <div class="doc-title">${esc(doc.title)}</div>
             <div class="doc-meta">
-              <span>${doc.original_filename}</span>
+              <span>${esc(doc.original_filename)}</span>
               <span>${doc.signedCount}/${doc.totalSigners} signed</span>
-              <span>${new Date(doc.created_at).toLocaleDateString()}</span>
+              <span>${esc(new Date(doc.created_at).toLocaleDateString())}</span>
             </div>
           </div>
-          <span class="status-badge status-${doc.status}">${doc.status}</span>
-          ${doc.status === 'completed' ? '<a href="/api/documents/' + doc.uuid + '/download" class="btn-secondary" onclick="event.stopPropagation()">Download</a>' : ''}
+          <span class="status-badge status-${esc(doc.status)}">${esc(doc.status)}</span>
+          ${doc.status === 'completed' ? '<a href="/api/documents/' + esc(doc.uuid) + '/download" class="btn-secondary" onclick="event.stopPropagation()">Download</a>' : ''}
         </div>
       `).join('');
     }
@@ -115,24 +115,24 @@
         <h3>${esc(doc.title)}</h3>
         <div style="font-size:13px;color:#666;margin-bottom:16px;">
           <div>ID: <code style="color:#1a3b7a;">${doc.uuid}</code></div>
-          <div>Status: <span class="status-badge status-${doc.status}">${doc.status}</span></div>
-          <div>Created: ${new Date(doc.created_at).toLocaleString()}</div>
-          ${doc.completed_at ? '<div>Completed: ' + new Date(doc.completed_at).toLocaleString() + '</div>' : ''}
+          <div>Status: <span class="status-badge status-${esc(doc.status)}">${esc(doc.status)}</span></div>
+          <div>Created: ${esc(new Date(doc.created_at).toLocaleString())}</div>
+          ${doc.completed_at ? '<div>Completed: ' + esc(new Date(doc.completed_at).toLocaleString()) + '</div>' : ''}
         </div>
         <h4 style="color:#1a3b7a;margin-bottom:10px;">Signers</h4>
         ${signers.map(s => `
           <div class="signer-row">
-            <span class="signer-order">${s.sign_order}</span>
+            <span class="signer-order">${esc(String(s.sign_order))}</span>
             <div>
               <div style="font-weight:600;">${esc(s.name)}</div>
               <div style="color:#888;font-size:12px;">${esc(s.email)}</div>
-              ${(!emailConfigured && (s.status === 'sent' || s.status === 'pending')) ? '<div class="link-box" onclick="copyLink(this)" title="Click to copy">' + s.signUrl + '</div>' : ''}
+              ${(!emailConfigured && s.signUrl && (s.status === 'sent' || s.status === 'pending')) ? '<div class="link-box" onclick="copyLink(this)" title="Click to copy">' + esc(s.signUrl) + '</div>' : ''}
             </div>
-            <span class="signer-status"><span class="status-badge status-${s.status === 'signed' ? 'completed' : 'pending'}">${s.status}</span></span>
+            <span class="signer-status"><span class="status-badge status-${s.status === 'signed' ? 'completed' : 'pending'}">${esc(s.status)}</span></span>
           </div>
         `).join('')}
         ${!emailConfigured ? '<p style="font-size:12px;color:#e65100;margin-top:12px;">Email not configured. Share the signing links above manually.</p>' : ''}
-        ${doc.status === 'completed' ? '<a href="/api/documents/' + doc.uuid + '/download" class="btn-primary" style="display:inline-block;margin-top:16px;text-decoration:none;">Download Signed PDF</a>' : ''}
+        ${doc.status === 'completed' ? '<a href="/api/documents/' + esc(doc.uuid) + '/download" class="btn-primary" style="display:inline-block;margin-top:16px;text-decoration:none;">Download Signed PDF</a>' : ''}
       `;
       modalBg.classList.add('show');
     }

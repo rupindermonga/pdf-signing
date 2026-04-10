@@ -41,7 +41,7 @@ async function sendLoginOTP(toEmail, otp) {
   await transporter.sendMail({
     from: `"${FROM_NAME}" <${FROM_EMAIL}>`,
     to: toEmail,
-    subject: `Your DocSeal login code: ${otp}`,
+    subject: 'Your DocSeal login verification code',
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;">
         <div style="background:#1a3b7a;padding:16px 24px;border-radius:8px 8px 0 0;">
@@ -62,7 +62,7 @@ async function sendSignerOTP(toEmail, signerName, otp) {
   await transporter.sendMail({
     from: `"${FROM_NAME}" <${FROM_EMAIL}>`,
     to: toEmail,
-    subject: `Your verification code: ${otp}`,
+    subject: 'Your DocSeal verification code',
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;">
         <div style="background:#1a3b7a;padding:16px 24px;border-radius:8px 8px 0 0;">

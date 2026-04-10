@@ -98,7 +98,12 @@
 
         if (data.devOtp) {
           devOtpDiv.style.display = 'block';
-          devOtpDiv.innerHTML = 'Email not configured. Your code: <strong style="font-size:18px;letter-spacing:3px;">' + data.devOtp + '</strong>';
+          devOtpDiv.textContent = '';
+          devOtpDiv.appendChild(document.createTextNode('Email not configured. Your code: '));
+          const strong = document.createElement('strong');
+          strong.style.cssText = 'font-size:18px;letter-spacing:3px;';
+          strong.textContent = data.devOtp;
+          devOtpDiv.appendChild(strong);
         }
       } catch (err) { showError(err.message); }
       sendBtn.disabled = false; sendBtn.textContent = 'Continue';
@@ -117,7 +122,13 @@
         });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.error);
-        window.location.href = data.redirect;
+        const redirect = data.redirect;
+        // Prevent open redirect — only allow same-origin paths
+        if (redirect && redirect.startsWith('/') && !redirect.startsWith('//')) {
+          window.location.href = redirect;
+        } else {
+          window.location.href = '/dashboard';
+        }
       } catch (err) { showError(err.message); }
       verifyBtn.disabled = false; verifyBtn.textContent = 'Verify & Login';
     });

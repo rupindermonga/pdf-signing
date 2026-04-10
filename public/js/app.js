@@ -557,26 +557,26 @@ footer{text-align:center;padding:16px;color:#aaa;font-size:11px}
 
     <div class="section">
       <h3>Document</h3>
-      <div class="row"><span class="label">Document ID</span><span class="value mono">${audit.documentId}</span></div>
-      <div class="row"><span class="label">Filename</span><span class="value">${audit.fileName}</span></div>
-      <div class="row"><span class="label">Original Pages</span><span class="value">${audit.pageCount}</span></div>
-      <div class="row"><span class="label">Original Doc SHA-256</span><span class="value mono">${audit.originalHash}</span></div>
+      <div class="row"><span class="label">Document ID</span><span class="value mono">${escapeHtml(audit.documentId)}</span></div>
+      <div class="row"><span class="label">Filename</span><span class="value">${escapeHtml(audit.fileName)}</span></div>
+      <div class="row"><span class="label">Original Pages</span><span class="value">${escapeHtml(String(audit.pageCount))}</span></div>
+      <div class="row"><span class="label">Original Doc SHA-256</span><span class="value mono">${escapeHtml(audit.originalHash)}</span></div>
     </div>
 
     <div class="section">
       <h3>Signer</h3>
-      <div class="row"><span class="label">Signed By</span><span class="value">${audit.signerName}</span></div>
-      <div class="row"><span class="label">Reason</span><span class="value">${audit.reason}</span></div>
-      <div class="row"><span class="label">Location</span><span class="value">${audit.location}</span></div>
-      <div class="row"><span class="label">IP Address</span><span class="value mono">${audit.ip}</span></div>
-      <div class="row"><span class="label">Browser / OS</span><span class="value">${audit.browserInfo}</span></div>
-      ${audit.geoCoords ? `<div class="row"><span class="label">GPS Coordinates</span><span class="value mono">${audit.geoCoords.lat}, ${audit.geoCoords.lon}</span></div>` : ''}
+      <div class="row"><span class="label">Signed By</span><span class="value">${escapeHtml(audit.signerName)}</span></div>
+      <div class="row"><span class="label">Reason</span><span class="value">${escapeHtml(audit.reason)}</span></div>
+      <div class="row"><span class="label">Location</span><span class="value">${escapeHtml(audit.location)}</span></div>
+      <div class="row"><span class="label">IP Address</span><span class="value mono">${escapeHtml(audit.ip)}</span></div>
+      <div class="row"><span class="label">Browser / OS</span><span class="value">${escapeHtml(audit.browserInfo)}</span></div>
+      ${audit.geoCoords ? `<div class="row"><span class="label">GPS Coordinates</span><span class="value mono">${escapeHtml(audit.geoCoords.lat)}, ${escapeHtml(audit.geoCoords.lon)}</span></div>` : ''}
     </div>
 
     <div class="section">
       <h3>Timestamp</h3>
-      <div class="row"><span class="label">Signed At</span><span class="value">${audit.timestamp}</span></div>
-      <div class="row"><span class="label">Display Date</span><span class="value">${audit.displayDate}</span></div>
+      <div class="row"><span class="label">Signed At</span><span class="value">${escapeHtml(audit.timestamp)}</span></div>
+      <div class="row"><span class="label">Display Date</span><span class="value">${escapeHtml(audit.displayDate)}</span></div>
     </div>
 
     <div class="section">
@@ -807,19 +807,23 @@ function showHashDialog(hash, docId, hasPki, certFile) {
       <div style="font-size:13px;margin-bottom:16px;">${pkiStatus}</div>
       <div class="hash-row">
         <span class="hash-label">Document ID</span>
-        <code class="hash-value">${docId}</code>
+        <code class="hash-value">${escapeHtml(docId)}</code>
       </div>
       <div class="hash-row">
         <span class="hash-label">Signed File SHA-256</span>
-        <code class="hash-value hash-long">${hash}</code>
+        <code class="hash-value hash-long">${escapeHtml(hash)}</code>
       </div>
       <div class="hash-actions">
-        <button class="btn-secondary" onclick="navigator.clipboard.writeText('${hash}');this.textContent='Copied!'">Copy Hash</button>
-        <button class="btn-secondary" onclick="window.open('${VERIFY_URL}','_blank')">Verify Online</button>
-        <button class="btn-primary" onclick="document.getElementById('hash-dialog').remove()">Done</button>
+        <button class="btn-secondary" id="copy-hash-btn">Copy Hash</button>
+        <button class="btn-secondary" id="verify-online-btn">Verify Online</button>
+        <button class="btn-primary" id="done-dialog-btn">Done</button>
       </div>
     </div>`;
   document.body.appendChild(dialog);
+  // Attach event listeners programmatically (no inline onclick with interpolated data)
+  document.getElementById('copy-hash-btn').addEventListener('click', function() { navigator.clipboard.writeText(hash); this.textContent = 'Copied!'; });
+  document.getElementById('verify-online-btn').addEventListener('click', () => window.open(VERIFY_URL, '_blank'));
+  document.getElementById('done-dialog-btn').addEventListener('click', () => dialog.remove());
 }
 
 // ─── Init ───

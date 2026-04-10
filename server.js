@@ -18,12 +18,15 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
 
+const IS_DEV = process.env.NODE_ENV !== 'production';
+
 // ─── Security headers ───
 app.use((req, res, next) => {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-XSS-Protection', '1; mode=block');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://nominatim.openstreetmap.org;");
   next();
 });
@@ -43,11 +46,13 @@ app.use(session({
   }
 }));
 
-// ─── Rate limiting (in-memory, simple) ───
+// ─── Rate limiting (in-memory, keyed by socket IP — not spoofable) ───
 const rateLimits = new Map();
 function rateLimit(windowMs, maxReqs) {
   return (req, res, next) => {
-    const key = (req.headers['x-forwarded-for'] || req.connection.remoteAddress || '') + req.path;
+    // Use socket address only — X-Forwarded-For is spoofable unless behind a trusted proxy
+    const ip = req.socket.remoteAddress || '';
+    const key = ip + ':' + req.path;
     const now = Date.now();
     const entry = rateLimits.get(key) || { count: 0, resetAt: now + windowMs };
     if (now > entry.resetAt) { entry.count = 0; entry.resetAt = now + windowMs; }
@@ -59,6 +64,13 @@ function rateLimit(windowMs, maxReqs) {
     next();
   };
 }
+// Cleanup expired rate limit entries every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of rateLimits) {
+    if (now > entry.resetAt) rateLimits.delete(key);
+  }
+}, 5 * 60 * 1000);
 
 // Static files
 app.use(express.static(path.join(__dirname, 'public')));
@@ -114,9 +126,11 @@ app.post('/api/auth/send-otp', rateLimit(60000, 5), async (req, res) => {
   const otp = otpOps.create(userEmail);
 
   const sent = await email.sendLoginOTP(userEmail, otp);
+  if (!sent && IS_DEV) {
+    return res.json({ ok: true, devOtp: otp, message: 'Email not configured (dev mode). Use this code.' });
+  }
   if (!sent) {
-    // Dev mode: return OTP directly
-    return res.json({ ok: true, devOtp: otp, message: 'Email not configured. Use this code.' });
+    return res.status(500).json({ error: 'Email delivery failed. Configure SMTP in .env.' });
   }
   res.json({ ok: true, message: 'Verification code sent to your email.' });
 });
@@ -133,11 +147,14 @@ app.post('/api/auth/verify-otp', rateLimit(60000, 10), (req, res) => {
   const user = userOps.findOrCreate(userEmail, cleanName);
   if (cleanName && !user.name) userOps.updateName(user.id, cleanName);
 
-  req.session.userId = user.id;
-  req.session.userEmail = user.email;
-  req.session.userName = user.name || cleanName;
-
-  res.json({ ok: true, redirect: '/dashboard' });
+  // Regenerate session to prevent session fixation
+  req.session.regenerate((err) => {
+    if (err) return res.status(500).json({ error: 'Session error' });
+    req.session.userId = user.id;
+    req.session.userEmail = user.email;
+    req.session.userName = user.name || cleanName;
+    res.json({ ok: true, redirect: '/dashboard' });
+  });
 });
 
 app.post('/api/auth/logout', (req, res) => {
@@ -213,7 +230,8 @@ app.post('/api/documents/create', requireAuth, (req, res, next) => {
     res.json({ ok: true, uuid: doc.uuid });
   } catch (err) {
     console.error('Create document error:', err);
-    res.status(500).json({ error: err.message });
+    console.error('Document create error:', err);
+    res.status(500).json({ error: 'Failed to create document. Please try again.' });
   }
 });
 
@@ -270,7 +288,8 @@ app.post('/api/sign/:token/send-otp', rateLimit(60000, 5), async (req, res) => {
   const otp = signerOps.setOTP(signer.id);
   const sent = await email.sendSignerOTP(signer.email, signer.name, otp);
 
-  if (!sent) return res.json({ ok: true, devOtp: otp });
+  if (!sent && IS_DEV) return res.json({ ok: true, devOtp: otp });
+  if (!sent) return res.status(500).json({ error: 'Email delivery failed' });
   res.json({ ok: true });
 });
 
@@ -320,13 +339,14 @@ app.post('/api/sign/:token/submit', async (req, res) => {
   const { signatureData, location, browserInfo, geoCoords } = req.body;
   const ip = req.headers['x-forwarded-for'] || req.connection.remoteAddress || '';
 
-  signerOps.markSigned(signer.id, {
-    signatureData: signatureData || '',
+  const signed = signerOps.markSigned(signer.id, {
+    signatureData: sanitize(signatureData || ''),
     ip: ip.replace('::ffff:', '').replace('::1', '127.0.0.1'),
-    location: location || '',
-    browserInfo: browserInfo || '',
-    geoCoords: geoCoords || '',
+    location: sanitize(location || ''),
+    browserInfo: sanitize(browserInfo || ''),
+    geoCoords: sanitize(geoCoords || ''),
   });
+  if (!signed) return res.status(409).json({ error: 'Signature already recorded (concurrent request)' });
 
   // Check if all signers are done
   if (signerOps.allSigned(signer.document_id)) {
@@ -495,8 +515,10 @@ app.get('/api/documents/:uuid/download', requireAuth, (req, res) => {
   const originalPath = path.join(storageDir, `${doc.uuid}.pdf`);
   const filePath = fs.existsSync(signedPath) ? signedPath : originalPath;
 
+  // Safe Content-Disposition: encode filename to prevent header injection
+  const safeFilename = encodeURIComponent(doc.original_filename).replace(/%20/g, '_');
   res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', `attachment; filename="signed_${doc.original_filename}"`);
+  res.setHeader('Content-Disposition', `attachment; filename="signed_${safeFilename}"`);
   res.sendFile(filePath);
 });
 
@@ -526,7 +548,7 @@ app.get('/api/documents/:uuid', requireAuth, (req, res) => {
 });
 
 // ─── QR Code ───
-app.post('/api/qr', async (req, res) => {
+app.post('/api/qr', requireAuth, async (req, res) => {
   try {
     const { data } = req.body;
     if (!data) return res.status(400).json({ error: 'No data' });

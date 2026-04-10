@@ -471,30 +471,19 @@ async function pkiSignPdf(pdfBytes, meta) {
 }
 
 // ─── Stamp size controls ───
-const stampSmaller = document.getElementById('stamp-smaller');
-const stampBigger = document.getElementById('stamp-bigger');
-const stampScaleDisplay = document.getElementById('stamp-scale');
-
-if (stampSmaller) {
-  stampSmaller.addEventListener('click', () => {
+document.addEventListener('click', (e) => {
+  if (e.target.id === 'stamp-smaller' || e.target.id === 'stamp-bigger') {
     const cur = parseFloat(sigOverlay.dataset.scale || '1');
-    const next = Math.max(0.5, cur - 0.15);
+    const next = e.target.id === 'stamp-smaller'
+      ? Math.max(0.5, cur - 0.15)
+      : Math.min(2.0, cur + 0.15);
     sigOverlay.dataset.scale = next.toFixed(2);
     sigOverlay.style.transform = `scale(${next})`;
     sigOverlay.style.transformOrigin = 'top left';
-    stampScaleDisplay.textContent = Math.round(next * 100) + '%';
-  });
-}
-if (stampBigger) {
-  stampBigger.addEventListener('click', () => {
-    const cur = parseFloat(sigOverlay.dataset.scale || '1');
-    const next = Math.min(2.0, cur + 0.15);
-    sigOverlay.dataset.scale = next.toFixed(2);
-    sigOverlay.style.transform = `scale(${next})`;
-    sigOverlay.style.transformOrigin = 'top left';
-    stampScaleDisplay.textContent = Math.round(next * 100) + '%';
-  });
-}
+    const display = document.getElementById('stamp-scale');
+    if (display) display.textContent = Math.round(next * 100) + '%';
+  }
+});
 
 // ─── Audit Trail Page ───
 async function addAuditTrailPage(pdfDoc, audit, qrDataUrl) {
@@ -727,12 +716,13 @@ downloadBtn.addEventListener('click', async () => {
 
     // Map overlay position to PDF coordinates
     // Overlay and canvas share the same parent (pdf-wrapper, position:relative)
-    // so overlay.offsetLeft/Top is directly relative to the canvas
+    // Add border+padding offset (4px) so PDF stamp aligns with the content inside the dashed border
+    const borderPad = 4; // overlay border(2) + padding(2)
     const canvasCSSW = parseFloat(pdfCanvas.style.width);
     const canvasCSSH = parseFloat(pdfCanvas.style.height);
 
-    const relX = sigOverlay.offsetLeft / canvasCSSW;
-    const relY = sigOverlay.offsetTop / canvasCSSH;
+    const relX = (sigOverlay.offsetLeft + borderPad) / canvasCSSW;
+    const relY = (sigOverlay.offsetTop + borderPad) / canvasCSSH;
 
     // Map to PDF coordinates (PDF origin = bottom-left)
     let pdfX = Math.max(5, Math.min(relX * pageWidth, pageWidth - stampW - 5));

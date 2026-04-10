@@ -722,25 +722,18 @@ downloadBtn.addEventListener('click', async () => {
     const stampW = Math.round(250 * userScale);
     const stampH = Math.round(65 * userScale);
 
-    // Map overlay position to PDF coordinates using CSS pixel positions
-    // The overlay and canvas are both children of pdf-container (position: relative)
-    // So we compare their offsets directly within the container, accounting for scroll
-    const canvasCSSWidth = parseFloat(pdfCanvas.style.width);
-    const canvasCSSHeight = parseFloat(pdfCanvas.style.height);
-    const canvasLeft = pdfCanvas.offsetLeft;
-    const canvasTop = pdfCanvas.offsetTop;
+    // Map overlay position to PDF coordinates
+    // Use getBoundingClientRect for both to get exact screen positions
+    const cRect = pdfCanvas.getBoundingClientRect(); // canvas screen rect
+    const oRect = sigOverlay.getBoundingClientRect(); // overlay screen rect
 
-    // Overlay top-left position relative to the canvas, in CSS pixels
-    const overlayLeft = sigOverlay.offsetLeft - canvasLeft + pdfContainer.scrollLeft;
-    const overlayTop = sigOverlay.offsetTop - canvasTop + pdfContainer.scrollTop;
-
-    // Convert to 0-1 range relative to canvas CSS size
-    const relX = overlayLeft / canvasCSSWidth;
-    const relY = overlayTop / canvasCSSHeight;
+    // Overlay top-left relative to canvas top-left, as fraction of canvas CSS size
+    const relX = (oRect.left - cRect.left) / cRect.width;
+    const relY = (oRect.top - cRect.top) / cRect.height;
 
     // Map to PDF coordinates (PDF origin = bottom-left)
     let pdfX = Math.max(5, Math.min(relX * pageWidth, pageWidth - stampW - 5));
-    let pdfY = Math.max(5, Math.min(pageHeight - relY * pageHeight - stampH, pageHeight - stampH - 5));
+    let pdfY = Math.max(5, Math.min(pageHeight - (relY * pageHeight) - stampH, pageHeight - stampH - 5));
 
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);

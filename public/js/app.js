@@ -331,12 +331,18 @@ proceedBtn.addEventListener('click', async () => {
 
 async function renderPage() {
   const page = await state.pdfDoc.getPage(state.currentPage);
-  // Fit PDF to container width (~900px max), no artificial stretch
+  // Fit to container width, render at device pixel ratio for sharp text
   const baseViewport = page.getViewport({ scale: 1.0 });
-  const containerWidth = pdfContainer.clientWidth - 32; // minus padding
-  const fitScale = Math.min(containerWidth / baseViewport.width, 2.0);
-  const viewport = page.getViewport({ scale: state.zoom * fitScale });
-  pdfCanvas.width = viewport.width; pdfCanvas.height = viewport.height;
+  const containerWidth = pdfContainer.clientWidth - 32;
+  const fitScale = Math.min(containerWidth / baseViewport.width, 2.0) * state.zoom;
+  const dpr = window.devicePixelRatio || 1;
+  const viewport = page.getViewport({ scale: fitScale * dpr });
+  // Canvas internal resolution = high-res
+  pdfCanvas.width = viewport.width;
+  pdfCanvas.height = viewport.height;
+  // CSS display size = logical size (sharp on retina)
+  pdfCanvas.style.width = (viewport.width / dpr) + 'px';
+  pdfCanvas.style.height = (viewport.height / dpr) + 'px';
   await page.render({ canvasContext: pdfCanvas.getContext('2d'), viewport }).promise;
   pageInfo.textContent = `Page ${state.currentPage} / ${state.totalPages}`;
   prevPage.disabled = state.currentPage <= 1;

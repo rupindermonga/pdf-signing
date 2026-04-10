@@ -1,3 +1,6 @@
+// ─── Constants ───
+const VERIFY_URL = 'https://rupindermonga.github.io/pdf-signing/';
+
 // ─── State ───
 const state = {
   pdfFile: null,
@@ -85,8 +88,7 @@ function formatDate(date) {
 }
 
 function formatFullTimestamp() {
-  const d = new Date();
-  return d.toISOString().replace('T', ' ').replace(/\.\d+Z/, ' UTC');
+  return new Date().toISOString().replace('T', ' ').replace(/\.\d+Z/, ' UTC');
 }
 
 function getBrowserInfo() {
@@ -96,14 +98,12 @@ function getBrowserInfo() {
   else if (ua.includes('Edg/')) browser = 'Edge';
   else if (ua.includes('Chrome/')) browser = 'Chrome';
   else if (ua.includes('Safari/')) browser = 'Safari';
-
   let os = 'Unknown';
   if (ua.includes('Windows')) os = 'Windows';
   else if (ua.includes('Mac OS')) os = 'macOS';
   else if (ua.includes('Linux')) os = 'Linux';
   else if (ua.includes('Android')) os = 'Android';
   else if (ua.includes('iPhone') || ua.includes('iPad')) os = 'iOS';
-
   return `${browser} on ${os}`;
 }
 
@@ -118,15 +118,19 @@ function showSection(section) {
   section.classList.remove('hidden');
 }
 
-// ─── Fetch client IP from server ───
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// ─── Fetch client IP ───
 async function fetchClientIp() {
   try {
     const resp = await fetch('/api/ip');
     const data = await resp.json();
     state.clientIp = data.ip || 'Unknown';
-  } catch {
-    state.clientIp = 'Unknown';
-  }
+  } catch { state.clientIp = 'Unknown'; }
 }
 
 // ─── Auto-detect Location ───
@@ -159,9 +163,7 @@ function detectLocation() {
         const stateRegion = addr.state || '';
         const country = addr.country || '';
         const parts = [city, stateRegion, country].filter(Boolean);
-        const unique = [...new Set(parts)];
-        const locationStr = unique.join(', ');
-
+        const locationStr = [...new Set(parts)].join(', ');
         signLocation.value = locationStr;
         signLocation.removeAttribute('readonly');
         locationStatus.textContent = '(auto-detected)';
@@ -188,19 +190,13 @@ refreshLocation.addEventListener('click', detectLocation);
 
 // ─── Reason dropdown ───
 function getReasonValue() {
-  if (signReason.value === 'Other') {
-    return signReasonCustom.value.trim() || 'Other';
-  }
+  if (signReason.value === 'Other') return signReasonCustom.value.trim() || 'Other';
   return signReason.value;
 }
 
 signReason.addEventListener('change', () => {
-  if (signReason.value === 'Other') {
-    signReasonCustom.classList.remove('hidden');
-    signReasonCustom.focus();
-  } else {
-    signReasonCustom.classList.add('hidden');
-  }
+  if (signReason.value === 'Other') { signReasonCustom.classList.remove('hidden'); signReasonCustom.focus(); }
+  else { signReasonCustom.classList.add('hidden'); }
   $('#preview-reason').textContent = getReasonValue();
 });
 
@@ -222,14 +218,11 @@ function handleFile(file) {
   const reader = new FileReader();
   reader.onload = async (e) => {
     state.pdfBytes = new Uint8Array(e.target.result);
-
-    // Security: generate document ID + hash original PDF + get IP + browser info
     state.documentId = generateUUID();
     state.originalHash = await computeSHA256(state.pdfBytes);
     state.browserInfo = getBrowserInfo();
     fetchClientIp();
 
-    // Show document ID in the security info area
     const secInfo = $('#security-info');
     if (secInfo) {
       secInfo.classList.remove('hidden');
@@ -246,35 +239,18 @@ function handleFile(file) {
   reader.readAsArrayBuffer(file);
 }
 
-pdfInput.addEventListener('change', (e) => {
-  if (e.target.files[0]) handleFile(e.target.files[0]);
-});
-
+pdfInput.addEventListener('change', (e) => { if (e.target.files[0]) handleFile(e.target.files[0]); });
 dropZone.addEventListener('click', () => pdfInput.click());
-
-dropZone.addEventListener('dragover', (e) => {
-  e.preventDefault();
-  dropZone.classList.add('dragover');
-});
-
-dropZone.addEventListener('dragleave', () => {
-  dropZone.classList.remove('dragover');
-});
-
+dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => { dropZone.classList.remove('dragover'); });
 dropZone.addEventListener('drop', (e) => {
-  e.preventDefault();
-  dropZone.classList.remove('dragover');
+  e.preventDefault(); dropZone.classList.remove('dragover');
   if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
 });
 
 removeFile.addEventListener('click', () => {
-  state.pdfFile = null;
-  state.pdfBytes = null;
-  state.documentId = '';
-  state.originalHash = '';
-  pdfInput.value = '';
-  fileInfo.classList.add('hidden');
-  dropZone.style.display = '';
+  state.pdfFile = null; state.pdfBytes = null; state.documentId = ''; state.originalHash = '';
+  pdfInput.value = ''; fileInfo.classList.add('hidden'); dropZone.style.display = '';
   const secInfo = $('#security-info');
   if (secInfo) secInfo.classList.add('hidden');
   showSection(uploadSection);
@@ -285,7 +261,6 @@ signerName.addEventListener('input', () => {
   $('#preview-name').textContent = signerName.value || 'YOUR NAME';
   validateForm();
 });
-
 signLocation.addEventListener('input', () => {
   $('#preview-location').textContent = signLocation.value || '-';
 });
@@ -294,7 +269,6 @@ function validateForm() {
   proceedBtn.disabled = signerName.value.trim().length === 0;
 }
 
-// Signature tabs
 document.querySelectorAll('.sig-tab').forEach(tab => {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.sig-tab').forEach(t => t.classList.remove('active'));
@@ -305,112 +279,67 @@ document.querySelectorAll('.sig-tab').forEach(tab => {
 });
 
 // ─── Signature Drawing Canvas ───
-let drawing = false;
-let lastX = 0, lastY = 0;
+let drawing = false, lastX = 0, lastY = 0;
 
 function getCanvasPos(e) {
   const rect = sigCanvas.getBoundingClientRect();
-  const scaleX = sigCanvas.width / rect.width;
-  const scaleY = sigCanvas.height / rect.height;
   const clientX = e.touches ? e.touches[0].clientX : e.clientX;
   const clientY = e.touches ? e.touches[0].clientY : e.clientY;
   return {
-    x: (clientX - rect.left) * scaleX,
-    y: (clientY - rect.top) * scaleY
+    x: (clientX - rect.left) * (sigCanvas.width / rect.width),
+    y: (clientY - rect.top) * (sigCanvas.height / rect.height)
   };
 }
-
-function startDraw(e) {
-  e.preventDefault();
-  drawing = true;
-  const pos = getCanvasPos(e);
-  lastX = pos.x;
-  lastY = pos.y;
-}
-
+function startDraw(e) { e.preventDefault(); drawing = true; const p = getCanvasPos(e); lastX = p.x; lastY = p.y; }
 function draw(e) {
-  if (!drawing) return;
-  e.preventDefault();
-  const pos = getCanvasPos(e);
-  sigCtx.beginPath();
-  sigCtx.moveTo(lastX, lastY);
-  sigCtx.lineTo(pos.x, pos.y);
-  sigCtx.strokeStyle = penColor.value;
-  sigCtx.lineWidth = parseInt(penSize.value);
-  sigCtx.lineCap = 'round';
-  sigCtx.lineJoin = 'round';
-  sigCtx.stroke();
-  lastX = pos.x;
-  lastY = pos.y;
+  if (!drawing) return; e.preventDefault();
+  const p = getCanvasPos(e);
+  sigCtx.beginPath(); sigCtx.moveTo(lastX, lastY); sigCtx.lineTo(p.x, p.y);
+  sigCtx.strokeStyle = penColor.value; sigCtx.lineWidth = parseInt(penSize.value);
+  sigCtx.lineCap = 'round'; sigCtx.lineJoin = 'round'; sigCtx.stroke();
+  lastX = p.x; lastY = p.y;
 }
-
 function endDraw() { drawing = false; }
 
-sigCanvas.addEventListener('mousedown', startDraw);
-sigCanvas.addEventListener('mousemove', draw);
-sigCanvas.addEventListener('mouseup', endDraw);
-sigCanvas.addEventListener('mouseleave', endDraw);
-sigCanvas.addEventListener('touchstart', startDraw);
-sigCanvas.addEventListener('touchmove', draw);
+sigCanvas.addEventListener('mousedown', startDraw); sigCanvas.addEventListener('mousemove', draw);
+sigCanvas.addEventListener('mouseup', endDraw); sigCanvas.addEventListener('mouseleave', endDraw);
+sigCanvas.addEventListener('touchstart', startDraw); sigCanvas.addEventListener('touchmove', draw);
 sigCanvas.addEventListener('touchend', endDraw);
-
-clearCanvas.addEventListener('click', () => {
-  sigCtx.clearRect(0, 0, sigCanvas.width, sigCanvas.height);
+clearCanvas.addEventListener('click', () => { sigCtx.clearRect(0, 0, sigCanvas.width, sigCanvas.height); });
+document.querySelectorAll('input[name="sig-font"]').forEach(r => {
+  r.addEventListener('change', () => { typedSig.style.fontFamily = r.value; });
 });
 
-document.querySelectorAll('input[name="sig-font"]').forEach(radio => {
-  radio.addEventListener('change', () => { typedSig.style.fontFamily = radio.value; });
-});
-
-// ─── Step 3: Proceed to Placement ───
+// ─── Step 3: PDF Preview ───
 proceedBtn.addEventListener('click', async () => {
   loading.classList.remove('hidden');
   try {
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     state.pdfDoc = await pdfjsLib.getDocument({ data: state.pdfBytes.slice() }).promise;
     state.totalPages = state.pdfDoc.numPages;
-    state.currentPage = 1;
-    state.zoom = 1.0;
-
+    state.currentPage = 1; state.zoom = 1.0;
     showSection(placementSection);
     await renderPage();
     createSigOverlay();
-  } catch (err) {
-    alert('Error loading PDF: ' + err.message);
-    console.error(err);
-  }
+  } catch (err) { alert('Error loading PDF: ' + err.message); console.error(err); }
   loading.classList.add('hidden');
 });
 
 async function renderPage() {
   const page = await state.pdfDoc.getPage(state.currentPage);
   const viewport = page.getViewport({ scale: state.zoom * 1.5 });
-  pdfCanvas.width = viewport.width;
-  pdfCanvas.height = viewport.height;
-
-  await page.render({
-    canvasContext: pdfCanvas.getContext('2d'),
-    viewport
-  }).promise;
-
+  pdfCanvas.width = viewport.width; pdfCanvas.height = viewport.height;
+  await page.render({ canvasContext: pdfCanvas.getContext('2d'), viewport }).promise;
   pageInfo.textContent = `Page ${state.currentPage} / ${state.totalPages}`;
   prevPage.disabled = state.currentPage <= 1;
   nextPage.disabled = state.currentPage >= state.totalPages;
   zoomLevel.textContent = Math.round(state.zoom * 100) + '%';
 }
 
-prevPage.addEventListener('click', async () => {
-  if (state.currentPage > 1) { state.currentPage--; await renderPage(); }
-});
-nextPage.addEventListener('click', async () => {
-  if (state.currentPage < state.totalPages) { state.currentPage++; await renderPage(); }
-});
-zoomIn.addEventListener('click', async () => {
-  state.zoom = Math.min(3, state.zoom + 0.25); await renderPage();
-});
-zoomOut.addEventListener('click', async () => {
-  state.zoom = Math.max(0.5, state.zoom - 0.25); await renderPage();
-});
+prevPage.addEventListener('click', async () => { if (state.currentPage > 1) { state.currentPage--; await renderPage(); } });
+nextPage.addEventListener('click', async () => { if (state.currentPage < state.totalPages) { state.currentPage++; await renderPage(); } });
+zoomIn.addEventListener('click', async () => { state.zoom = Math.min(3, state.zoom + 0.25); await renderPage(); });
+zoomOut.addEventListener('click', async () => { state.zoom = Math.max(0.5, state.zoom - 0.25); await renderPage(); });
 
 // ─── Signature Overlay ───
 function createSigOverlay() {
@@ -418,7 +347,6 @@ function createSigOverlay() {
   const reason = getReasonValue();
   const location = signLocation.value.trim() || '-';
   const date = signDate.value;
-
   sigOverlay.innerHTML = `
     <div class="sig-stamp">
       <div class="stamp-logo"><span class="sd">Doc</span><span class="ss">Seal</span></div>
@@ -430,181 +358,135 @@ function createSigOverlay() {
         <div class="stamp-docid">ID: ${state.documentId}</div>
       </div>
     </div>
-    <div class="resize-handle"></div>
-  `;
-
+    <div class="resize-handle"></div>`;
   sigOverlay.classList.remove('hidden');
-
-  const offsetX = pdfCanvas.offsetLeft;
   const canvasRect = pdfCanvas.getBoundingClientRect();
-  const offsetY = pdfCanvas.offsetTop;
-
-  sigOverlay.style.left = (offsetX + canvasRect.width - 340) + 'px';
-  sigOverlay.style.top = (offsetY + canvasRect.height - 90) + 'px';
-
-  state.sigPlaced = true;
-  downloadBtn.disabled = false;
+  sigOverlay.style.left = (pdfCanvas.offsetLeft + canvasRect.width - 340) + 'px';
+  sigOverlay.style.top = (pdfCanvas.offsetTop + canvasRect.height - 90) + 'px';
+  state.sigPlaced = true; downloadBtn.disabled = false;
   makeDraggable(sigOverlay);
 }
 
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
-}
-
 function makeDraggable(el) {
-  let isDragging = false;
-  let startX, startY, origLeft, origTop;
-
+  let isDragging = false, startX, startY, origLeft, origTop;
   el.addEventListener('mousedown', (e) => {
     if (e.target.classList.contains('resize-handle')) return;
-    isDragging = true;
-    startX = e.clientX; startY = e.clientY;
-    origLeft = el.offsetLeft; origTop = el.offsetTop;
-    e.preventDefault();
+    isDragging = true; startX = e.clientX; startY = e.clientY;
+    origLeft = el.offsetLeft; origTop = el.offsetTop; e.preventDefault();
   });
-  document.addEventListener('mousemove', (e) => {
-    if (!isDragging) return;
-    el.style.left = (origLeft + e.clientX - startX) + 'px';
-    el.style.top = (origTop + e.clientY - startY) + 'px';
-  });
+  document.addEventListener('mousemove', (e) => { if (!isDragging) return; el.style.left = (origLeft + e.clientX - startX) + 'px'; el.style.top = (origTop + e.clientY - startY) + 'px'; });
   document.addEventListener('mouseup', () => { isDragging = false; });
-
   el.addEventListener('touchstart', (e) => {
     if (e.target.classList.contains('resize-handle')) return;
-    isDragging = true;
-    startX = e.touches[0].clientX; startY = e.touches[0].clientY;
-    origLeft = el.offsetLeft; origTop = el.offsetTop;
-    e.preventDefault();
+    isDragging = true; startX = e.touches[0].clientX; startY = e.touches[0].clientY;
+    origLeft = el.offsetLeft; origTop = el.offsetTop; e.preventDefault();
   });
-  document.addEventListener('touchmove', (e) => {
-    if (!isDragging) return;
-    el.style.left = (origLeft + e.touches[0].clientX - startX) + 'px';
-    el.style.top = (origTop + e.touches[0].clientY - startY) + 'px';
-  });
+  document.addEventListener('touchmove', (e) => { if (!isDragging) return; el.style.left = (origLeft + e.touches[0].clientX - startX) + 'px'; el.style.top = (origTop + e.touches[0].clientY - startY) + 'px'; });
   document.addEventListener('touchend', () => { isDragging = false; });
 }
 
 pdfCanvas.addEventListener('click', (e) => {
-  const containerRect = pdfContainer.getBoundingClientRect();
-  const clickX = e.clientX - containerRect.left + pdfContainer.scrollLeft;
-  const clickY = e.clientY - containerRect.top + pdfContainer.scrollTop;
-  sigOverlay.style.left = (clickX - sigOverlay.offsetWidth / 2) + 'px';
-  sigOverlay.style.top = (clickY - sigOverlay.offsetHeight / 2) + 'px';
-  sigOverlay.classList.remove('hidden');
-  state.sigPlaced = true;
-  downloadBtn.disabled = false;
+  const r = pdfContainer.getBoundingClientRect();
+  sigOverlay.style.left = (e.clientX - r.left + pdfContainer.scrollLeft - sigOverlay.offsetWidth / 2) + 'px';
+  sigOverlay.style.top = (e.clientY - r.top + pdfContainer.scrollTop - sigOverlay.offsetHeight / 2) + 'px';
+  sigOverlay.classList.remove('hidden'); state.sigPlaced = true; downloadBtn.disabled = false;
 });
 
 backBtn.addEventListener('click', () => { showSection(detailsSection); });
 
-// ─── Generate QR Code via server ───
+// ─── Server helpers ───
 async function generateQR(data) {
   try {
-    const resp = await fetch('/api/qr', {
+    const resp = await fetch('/api/qr', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data }) });
+    return (await resp.json()).qr;
+  } catch { return null; }
+}
+
+async function pkiSignPdf(pdfBytes, meta) {
+  try {
+    const resp = await fetch('/api/sign', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data })
+      body: JSON.stringify({
+        pdfBytes: Array.from(pdfBytes),
+        signer: meta.signer,
+        reason: meta.reason,
+        location: meta.location,
+      })
     });
-    const result = await resp.json();
-    return result.qr; // data URL
-  } catch {
+    if (!resp.ok) {
+      const err = await resp.json();
+      throw new Error(err.error || 'Signing failed');
+    }
+    return await resp.json(); // { signedPdf: base64, hash }
+  } catch (err) {
+    console.error('PKI signing error:', err);
     return null;
   }
 }
 
-// ─── Draw Audit Trail Page ───
-async function addAuditTrailPage(pdfDoc, auditData, qrDataUrl) {
+// ─── Audit Trail Page ───
+async function addAuditTrailPage(pdfDoc, audit, qrDataUrl) {
   const { rgb, StandardFonts } = PDFLib;
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
   const fontMono = await pdfDoc.embedFont(StandardFonts.Courier);
 
-  const auditPage = pdfDoc.addPage([595, 842]); // A4
+  const pg = pdfDoc.addPage([595, 842]);
   const w = 595, h = 842;
   let y = h - 50;
 
-  // Header background
-  auditPage.drawRectangle({
-    x: 0, y: h - 80, width: w, height: 80,
-    color: rgb(0.1, 0.23, 0.48),
-  });
-
-  auditPage.drawText('Doc', {
-    x: 40, y: h - 52, size: 24, font: fontBold,
-    color: rgb(1, 1, 1),
-  });
-  auditPage.drawText('Seal', {
-    x: 40 + fontBold.widthOfTextAtSize('Doc', 24), y: h - 52,
-    size: 24, font: fontBold,
-    color: rgb(0.5, 0.72, 1),
-  });
-  auditPage.drawText('Certificate of Signing', {
-    x: 40 + fontBold.widthOfTextAtSize('DocSeal', 24) + 20, y: h - 50,
-    size: 16, font,
-    color: rgb(0.85, 0.9, 1),
-  });
+  // Header
+  pg.drawRectangle({ x: 0, y: h - 80, width: w, height: 80, color: rgb(0.1, 0.23, 0.48) });
+  pg.drawText('Doc', { x: 40, y: h - 52, size: 24, font: fontBold, color: rgb(1, 1, 1) });
+  pg.drawText('Seal', { x: 40 + fontBold.widthOfTextAtSize('Doc', 24), y: h - 52, size: 24, font: fontBold, color: rgb(0.5, 0.72, 1) });
+  pg.drawText('Certificate of Signing', { x: 40 + fontBold.widthOfTextAtSize('DocSeal', 24) + 20, y: h - 50, size: 16, font, color: rgb(0.85, 0.9, 1) });
 
   y = h - 110;
 
-  // Section helper
-  function drawSection(title, items) {
-    auditPage.drawText(title, {
-      x: 40, y, size: 12, font: fontBold,
-      color: rgb(0.1, 0.23, 0.48),
-    });
+  function section(title, items) {
+    pg.drawText(title, { x: 40, y, size: 12, font: fontBold, color: rgb(0.1, 0.23, 0.48) });
     y -= 4;
-    auditPage.drawLine({
-      start: { x: 40, y }, end: { x: w - 40, y },
-      thickness: 1, color: rgb(0.8, 0.85, 0.9),
-    });
+    pg.drawLine({ start: { x: 40, y }, end: { x: w - 40, y }, thickness: 1, color: rgb(0.8, 0.85, 0.9) });
     y -= 16;
-
     for (const [label, value] of items) {
-      auditPage.drawText(label, {
-        x: 50, y, size: 9, font: fontBold,
-        color: rgb(0.3, 0.3, 0.3),
-      });
-      const isMono = label.includes('Hash') || label.includes('ID');
-      auditPage.drawText(String(value), {
-        x: 200, y, size: 9, font: isMono ? fontMono : font,
-        color: rgb(0.15, 0.15, 0.15),
-      });
+      pg.drawText(label, { x: 50, y, size: 9, font: fontBold, color: rgb(0.3, 0.3, 0.3) });
+      const isMono = label.includes('Hash') || label.includes('ID') || label.includes('URL');
+      pg.drawText(String(value), { x: 200, y, size: isMono ? 8 : 9, font: isMono ? fontMono : font, color: rgb(0.15, 0.15, 0.15) });
       y -= 16;
     }
     y -= 8;
   }
 
-  drawSection('DOCUMENT INFORMATION', [
-    ['Document ID:', auditData.documentId],
-    ['Original Filename:', auditData.fileName],
-    ['Original Pages:', String(auditData.pageCount)],
-    ['Original SHA-256:', auditData.originalHash.substring(0, 32)],
-    ['', auditData.originalHash.substring(32)],
+  section('DOCUMENT INFORMATION', [
+    ['Document ID:', audit.documentId],
+    ['Original Filename:', audit.fileName],
+    ['Original Pages:', String(audit.pageCount)],
+    ['Original SHA-256:', audit.originalHash.substring(0, 32)],
+    ['', audit.originalHash.substring(32)],
   ]);
 
-  drawSection('SIGNER INFORMATION', [
-    ['Signed By:', auditData.signerName],
-    ['Reason:', auditData.reason],
-    ['Location:', auditData.location],
-    ['IP Address:', auditData.ip],
-    ['Browser / OS:', auditData.browserInfo],
-    ...(auditData.geoCoords
-      ? [['GPS Coordinates:', `${auditData.geoCoords.lat}, ${auditData.geoCoords.lon}`]]
-      : []),
+  section('SIGNER INFORMATION', [
+    ['Signed By:', audit.signerName],
+    ['Reason:', audit.reason],
+    ['Location:', audit.location],
+    ['IP Address:', audit.ip],
+    ['Browser / OS:', audit.browserInfo],
+    ...(audit.geoCoords ? [['GPS Coordinates:', `${audit.geoCoords.lat}, ${audit.geoCoords.lon}`]] : []),
   ]);
 
-  drawSection('TIMESTAMP', [
-    ['Signed At:', auditData.timestamp],
+  section('TIMESTAMP', [
+    ['Signed At:', audit.timestamp],
     ['Timezone:', Intl.DateTimeFormat().resolvedOptions().timeZone],
-    ['Display Format:', auditData.displayDate],
+    ['Display Format:', audit.displayDate],
   ]);
 
-  drawSection('INTEGRITY', [
+  section('INTEGRITY & VERIFICATION', [
     ['Hash Algorithm:', 'SHA-256'],
-    ['Signature Page:', `Page ${auditData.signedOnPage}`],
-    ['QR Verification:', 'Scan QR code to view signing details'],
+    ['Digital Signature:', 'PKCS#7 (X.509 self-signed certificate)'],
+    ['Signature Page:', `Page ${audit.signedOnPage}`],
+    ['Verify URL:', VERIFY_URL],
+    ['QR Code:', 'Scan to view signing details'],
   ]);
 
   // QR code
@@ -612,40 +494,153 @@ async function addAuditTrailPage(pdfDoc, auditData, qrDataUrl) {
     try {
       const qrImgBytes = await fetch(qrDataUrl).then(r => r.arrayBuffer());
       const qrImg = await pdfDoc.embedPng(qrImgBytes);
-      auditPage.drawImage(qrImg, {
-        x: w - 180, y: y - 100, width: 130, height: 130,
-      });
-      auditPage.drawText('Scan to verify', {
-        x: w - 165, y: y - 115, size: 9, font,
-        color: rgb(0.4, 0.4, 0.4),
-      });
-    } catch (e) {
-      console.error('QR embed failed', e);
-    }
+      pg.drawImage(qrImg, { x: w - 180, y: y - 100, width: 130, height: 130 });
+      pg.drawText('Scan to verify', { x: w - 165, y: y - 115, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+    } catch (e) { console.error('QR embed failed', e); }
   }
 
-  // Disclaimer at bottom
-  const disclaimerY = 60;
-  auditPage.drawLine({
-    start: { x: 40, y: disclaimerY + 15 }, end: { x: w - 40, y: disclaimerY + 15 },
-    thickness: 0.5, color: rgb(0.7, 0.7, 0.7),
-  });
-  auditPage.drawText(
-    'This document was digitally signed using DocSeal. The SHA-256 hash can be verified at the /verify page.',
-    { x: 40, y: disclaimerY, size: 8, font, color: rgb(0.5, 0.5, 0.5) }
-  );
-  auditPage.drawText(
-    'Any modification to this document after signing will invalidate the hash and can be detected.',
-    { x: 40, y: disclaimerY - 12, size: 8, font, color: rgb(0.5, 0.5, 0.5) }
-  );
-
-  return auditPage;
+  // Disclaimer
+  pg.drawLine({ start: { x: 40, y: 75 }, end: { x: w - 40, y: 75 }, thickness: 0.5, color: rgb(0.7, 0.7, 0.7) });
+  pg.drawText('This document was digitally signed using DocSeal with a PKCS#7 digital certificate.', { x: 40, y: 60, size: 8, font, color: rgb(0.5, 0.5, 0.5) });
+  pg.drawText(`Verify integrity at: ${VERIFY_URL}`, { x: 40, y: 48, size: 8, font: fontMono, color: rgb(0.4, 0.4, 0.4) });
+  pg.drawText('Any modification after signing will invalidate both the hash and the digital signature.', { x: 40, y: 36, size: 8, font, color: rgb(0.5, 0.5, 0.5) });
 }
 
-// ─── Generate Signed PDF ───
+// ─── Generate HTML Verification Certificate ───
+function generateHtmlCertificate(audit, signedHash) {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DocSeal Signing Certificate - ${audit.documentId}</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',Tahoma,sans-serif;background:#f0f2f5;color:#333;padding:24px}
+.cert{max-width:700px;margin:0 auto;background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,0.1);overflow:hidden}
+.cert-header{background:linear-gradient(135deg,#1a3b7a,#2d5db8);color:#fff;padding:24px 32px;display:flex;align-items:center;gap:16px}
+.cert-header .logo{font-size:28px;font-weight:800;letter-spacing:-0.5px}
+.logo-d{color:#fff}.logo-s{color:#7eb8ff;font-weight:600}
+.cert-header h1{font-size:18px;font-weight:400;opacity:0.9}
+.cert-body{padding:28px 32px}
+.badge{display:inline-block;background:#1a3b7a;color:#fff;font-size:10px;font-weight:700;letter-spacing:1px;padding:4px 10px;border-radius:4px;margin-bottom:16px}
+.section{margin-bottom:20px}
+.section h3{font-size:13px;color:#1a3b7a;text-transform:uppercase;letter-spacing:0.5px;padding-bottom:6px;border-bottom:2px solid #eef3fb;margin-bottom:10px}
+.row{display:flex;padding:4px 0;font-size:13px}
+.row .label{width:170px;color:#666;font-weight:600;flex-shrink:0}
+.row .value{color:#222;word-break:break-all}
+.row .mono{font-family:'Courier New',monospace;font-size:12px;color:#1a3b7a}
+.verify-section{margin-top:24px;padding:20px;background:#f8fafd;border-radius:10px;border:1px solid #e0e8f0}
+.verify-section h3{color:#1a3b7a;margin-bottom:8px;font-size:15px}
+.verify-section p{font-size:13px;color:#555;margin-bottom:14px}
+.drop-zone{border:2px dashed #b0c4de;border-radius:10px;padding:32px;text-align:center;cursor:pointer;transition:all 0.2s;background:#fff}
+.drop-zone:hover,.drop-zone.active{border-color:#1a3b7a;background:#eef3fb}
+.drop-zone .icon{font-size:36px;margin-bottom:6px}
+.result{margin-top:14px;padding:14px;border-radius:8px;display:none;font-size:14px}
+.result.show{display:block}
+.result.match{background:#e8f5e9;border:1px solid #66bb6a;color:#2e7d32}
+.result.mismatch{background:#ffebee;border:1px solid #ef5350;color:#c62828}
+.result.info{background:#e3f2fd;border:1px solid #42a5f5;color:#1565c0}
+.result .hash{font-family:'Courier New',monospace;font-size:11px;word-break:break-all;margin-top:6px;padding:8px;background:rgba(0,0,0,0.04);border-radius:4px}
+footer{text-align:center;padding:16px;color:#aaa;font-size:11px}
+@media print{.verify-section{display:none}body{background:#fff;padding:0}.cert{box-shadow:none}}
+</style>
+</head>
+<body>
+<div class="cert">
+  <div class="cert-header">
+    <div class="logo"><span class="logo-d">Doc</span><span class="logo-s">Seal</span></div>
+    <h1>Certificate of Signing</h1>
+  </div>
+  <div class="cert-body">
+    <span class="badge">DIGITALLY SIGNED</span>
+
+    <div class="section">
+      <h3>Document</h3>
+      <div class="row"><span class="label">Document ID</span><span class="value mono">${audit.documentId}</span></div>
+      <div class="row"><span class="label">Filename</span><span class="value">${audit.fileName}</span></div>
+      <div class="row"><span class="label">Original Pages</span><span class="value">${audit.pageCount}</span></div>
+      <div class="row"><span class="label">Original Doc SHA-256</span><span class="value mono">${audit.originalHash}</span></div>
+    </div>
+
+    <div class="section">
+      <h3>Signer</h3>
+      <div class="row"><span class="label">Signed By</span><span class="value">${audit.signerName}</span></div>
+      <div class="row"><span class="label">Reason</span><span class="value">${audit.reason}</span></div>
+      <div class="row"><span class="label">Location</span><span class="value">${audit.location}</span></div>
+      <div class="row"><span class="label">IP Address</span><span class="value mono">${audit.ip}</span></div>
+      <div class="row"><span class="label">Browser / OS</span><span class="value">${audit.browserInfo}</span></div>
+      ${audit.geoCoords ? `<div class="row"><span class="label">GPS Coordinates</span><span class="value mono">${audit.geoCoords.lat}, ${audit.geoCoords.lon}</span></div>` : ''}
+    </div>
+
+    <div class="section">
+      <h3>Timestamp</h3>
+      <div class="row"><span class="label">Signed At</span><span class="value">${audit.timestamp}</span></div>
+      <div class="row"><span class="label">Display Date</span><span class="value">${audit.displayDate}</span></div>
+    </div>
+
+    <div class="section">
+      <h3>Integrity</h3>
+      <div class="row"><span class="label">Signed File SHA-256</span><span class="value mono">${signedHash}</span></div>
+      <div class="row"><span class="label">Digital Signature</span><span class="value">PKCS#7 (X.509 certificate)</span></div>
+      <div class="row"><span class="label">Verify Online</span><span class="value"><a href="${VERIFY_URL}" target="_blank">${VERIFY_URL}</a></span></div>
+    </div>
+
+    <div class="verify-section">
+      <h3>Verify This Document</h3>
+      <p>Drop the signed PDF below to instantly check if it matches this certificate. Everything runs in your browser &mdash; no upload.</p>
+      <div class="drop-zone" id="vdrop">
+        <div class="icon">&#128270;</div>
+        <p>Drop the signed PDF here</p>
+        <input type="file" id="vfile" accept=".pdf" hidden>
+      </div>
+      <div class="result" id="vresult"></div>
+    </div>
+  </div>
+</div>
+<footer>DocSeal &mdash; ManDarshan AI Solutions &mdash; This certificate was generated at the time of signing.</footer>
+
+<script>
+const expectedHash = "${signedHash}";
+const dz = document.getElementById('vdrop');
+const fi = document.getElementById('vfile');
+const vr = document.getElementById('vresult');
+dz.addEventListener('click', () => fi.click());
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('active'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('active'));
+dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('active'); if(e.dataTransfer.files[0]) check(e.dataTransfer.files[0]); });
+fi.addEventListener('change', e => { if(e.target.files[0]) check(e.target.files[0]); });
+async function check(file) {
+  const buf = await file.arrayBuffer();
+  const hb = await crypto.subtle.digest('SHA-256', buf);
+  const hash = Array.from(new Uint8Array(hb)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  if (hash === expectedHash) {
+    vr.className = 'result show match';
+    vr.innerHTML = '<strong>MATCH</strong> &mdash; This document is authentic and has not been tampered with.';
+  } else {
+    vr.className = 'result show mismatch';
+    vr.innerHTML = '<strong>MISMATCH</strong> &mdash; This document may have been modified after signing.<div class="hash">Expected: '+expectedHash+'<br>Got: '+hash+'</div>';
+  }
+}
+</script>
+</body>
+</html>`;
+}
+
+// ─── Download helper ───
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+
+// ─── Main: Generate Signed PDF ───
 downloadBtn.addEventListener('click', async () => {
   if (!state.sigPlaced) return;
   loading.classList.remove('hidden');
+  const loadingText = loading.querySelector('p');
 
   try {
     const { PDFDocument, rgb, StandardFonts } = PDFLib;
@@ -656,12 +651,10 @@ downloadBtn.addEventListener('click', async () => {
 
     const canvasRect = pdfCanvas.getBoundingClientRect();
     const overlayRect = sigOverlay.getBoundingClientRect();
-
     const relX = (overlayRect.left - canvasRect.left) / canvasRect.width;
     const relY = (overlayRect.top - canvasRect.top) / canvasRect.height;
     const relW = overlayRect.width / canvasRect.width;
     const relH = overlayRect.height / canvasRect.height;
-
     const pdfX = relX * pageWidth;
     const pdfY = pageHeight - (relY * pageHeight) - (relH * pageHeight);
     const stampW = relW * pageWidth;
@@ -676,176 +669,110 @@ downloadBtn.addEventListener('click', async () => {
     const location = signLocation.value.trim() || '-';
     const date = signDate.value;
     const timestamp = formatFullTimestamp();
+    const pad = 6, fs = 8, lh = 12, logoFs = 16;
 
-    const padding = 6;
-    const fontSize = 8;
-    const lineHeight = 12;
-    const logoFontSize = 16;
+    // ── Visual Signature Stamp ──
+    loadingText.textContent = 'Adding signature stamp...';
 
-    // ── Signature stamp ──
-    page.drawRectangle({
-      x: pdfX, y: pdfY, width: stampW, height: stampH,
-      color: rgb(1, 1, 1),
-      borderColor: rgb(0.1, 0.23, 0.48),
-      borderWidth: 1.5,
-    });
+    page.drawRectangle({ x: pdfX, y: pdfY, width: stampW, height: stampH, color: rgb(1,1,1), borderColor: rgb(0.1,0.23,0.48), borderWidth: 1.5 });
 
-    const logoX = pdfX + padding + 2;
-    const logoY = pdfY + stampH / 2 - logoFontSize / 3;
+    const logoX = pdfX + pad + 2, logoY = pdfY + stampH / 2 - logoFs / 3;
+    page.drawText('Doc', { x: logoX, y: logoY, size: logoFs, font: fontBold, color: rgb(0.1,0.23,0.48) });
+    page.drawText('Seal', { x: logoX + fontBold.widthOfTextAtSize('Doc', logoFs), y: logoY, size: logoFs, font: fontBold, color: rgb(0.18,0.37,0.72) });
 
-    page.drawText('Doc', {
-      x: logoX, y: logoY, size: logoFontSize, font: fontBold,
-      color: rgb(0.1, 0.23, 0.48),
-    });
-    page.drawText('Seal', {
-      x: logoX + fontBold.widthOfTextAtSize('Doc', logoFontSize),
-      y: logoY, size: logoFontSize, font: fontBold,
-      color: rgb(0.18, 0.37, 0.72),
-    });
+    const divX = logoX + 52;
+    page.drawLine({ start: { x: divX, y: pdfY + 4 }, end: { x: divX, y: pdfY + stampH - 4 }, thickness: 1, color: rgb(0.1,0.23,0.48) });
 
-    const dividerX = logoX + 52;
-    page.drawLine({
-      start: { x: dividerX, y: pdfY + 4 },
-      end: { x: dividerX, y: pdfY + stampH - 4 },
-      thickness: 1, color: rgb(0.1, 0.23, 0.48),
-    });
+    const tx = divX + 8;
+    let ty = pdfY + stampH - pad - fs;
+    page.drawText('Signed by: ', { x: tx, y: ty, size: fs, font, color: rgb(0.2,0.2,0.2) });
+    page.drawText(name, { x: tx + font.widthOfTextAtSize('Signed by: ', fs), y: ty, size: fs, font: fontBold, color: rgb(0.1,0.1,0.1) });
+    ty -= lh; page.drawText(`Reason: ${reason}`, { x: tx, y: ty, size: fs, font, color: rgb(0.2,0.2,0.2) });
+    ty -= lh; page.drawText(`Location: ${location}`, { x: tx, y: ty, size: fs, font, color: rgb(0.2,0.2,0.2) });
+    ty -= lh; page.drawText(`Date: ${date}`, { x: tx, y: ty, size: fs, font, color: rgb(0.2,0.2,0.2) });
+    ty -= lh; page.drawText(`ID: ${state.documentId}`, { x: tx, y: ty, size: 6.5, font: fontMono, color: rgb(0.4,0.4,0.4) });
 
-    const textX = dividerX + 8;
-    let textY = pdfY + stampH - padding - fontSize;
-
-    page.drawText('Signed by: ', {
-      x: textX, y: textY, size: fontSize, font,
-      color: rgb(0.2, 0.2, 0.2),
-    });
-    page.drawText(name, {
-      x: textX + font.widthOfTextAtSize('Signed by: ', fontSize),
-      y: textY, size: fontSize, font: fontBold,
-      color: rgb(0.1, 0.1, 0.1),
-    });
-
-    textY -= lineHeight;
-    page.drawText(`Reason: ${reason}`, {
-      x: textX, y: textY, size: fontSize, font,
-      color: rgb(0.2, 0.2, 0.2),
-    });
-
-    textY -= lineHeight;
-    page.drawText(`Location: ${location}`, {
-      x: textX, y: textY, size: fontSize, font,
-      color: rgb(0.2, 0.2, 0.2),
-    });
-
-    textY -= lineHeight;
-    page.drawText(`Date: ${date}`, {
-      x: textX, y: textY, size: fontSize, font,
-      color: rgb(0.2, 0.2, 0.2),
-    });
-
-    textY -= lineHeight;
-    page.drawText(`ID: ${state.documentId}`, {
-      x: textX, y: textY, size: 6.5, font: fontMono,
-      color: rgb(0.4, 0.4, 0.4),
-    });
-
-    // Drawn signature above stamp
-    const drawnSigDataUrl = getDrawnSignatureDataUrl();
-    if (drawnSigDataUrl) {
-      const sigImgBytes = await fetch(drawnSigDataUrl).then(r => r.arrayBuffer());
+    // Drawn signature
+    const drawnSig = getDrawnSignatureDataUrl();
+    if (drawnSig) {
+      const sigImgBytes = await fetch(drawnSig).then(r => r.arrayBuffer());
       const sigImg = await pdfDoc.embedPng(sigImgBytes);
-      const sigAspect = sigImg.width / sigImg.height;
-      const sigDrawW = stampW - 10;
-      const sigDrawH = sigDrawW / sigAspect;
-      page.drawImage(sigImg, {
-        x: pdfX + 5, y: pdfY + stampH + 4,
-        width: sigDrawW, height: Math.min(sigDrawH, 40),
-      });
+      const sigW = stampW - 10, sigH = Math.min(sigW / (sigImg.width / sigImg.height), 40);
+      page.drawImage(sigImg, { x: pdfX + 5, y: pdfY + stampH + 4, width: sigW, height: sigH });
     }
 
-    // Typed signature above stamp
+    // Typed signature
     const activeTab = document.querySelector('.sig-tab.active').dataset.tab;
     if (activeTab === 'type' && typedSig.value.trim()) {
-      const italicFont = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
-      page.drawText(typedSig.value.trim(), {
-        x: pdfX + 5, y: pdfY + stampH + 8,
-        size: 16, font: italicFont,
-        color: rgb(0.1, 0.23, 0.48),
-      });
+      const italic = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
+      page.drawText(typedSig.value.trim(), { x: pdfX + 5, y: pdfY + stampH + 8, size: 16, font: italic, color: rgb(0.1,0.23,0.48) });
     }
 
-    // ── QR Code ──
-    const qrPayload = JSON.stringify({
-      id: state.documentId,
-      signer: name,
-      reason,
-      location,
-      date: timestamp,
-      hash: state.originalHash.substring(0, 32),
-      ip: state.clientIp,
-    });
+    // QR code on stamp
+    loadingText.textContent = 'Generating QR code...';
+    const qrPayload = JSON.stringify({ id: state.documentId, signer: name, reason, location, date: timestamp, hash: state.originalHash.substring(0, 32), verify: VERIFY_URL });
     const qrDataUrl = await generateQR(qrPayload);
-
-    // Embed small QR on the stamp
     if (qrDataUrl) {
       try {
         const qrBytes = await fetch(qrDataUrl).then(r => r.arrayBuffer());
         const qrImg = await pdfDoc.embedPng(qrBytes);
-        const qrSize = Math.min(stampH - 6, 45);
-        page.drawImage(qrImg, {
-          x: pdfX + stampW - qrSize - 4,
-          y: pdfY + 3,
-          width: qrSize,
-          height: qrSize,
-        });
-      } catch (e) {
-        console.error('QR stamp embed failed', e);
-      }
+        const qrSz = Math.min(stampH - 6, 45);
+        page.drawImage(qrImg, { x: pdfX + stampW - qrSz - 4, y: pdfY + 3, width: qrSz, height: qrSz });
+      } catch (e) { console.error('QR embed failed', e); }
     }
 
     // ── Audit Trail Page ──
-    const auditData = {
-      documentId: state.documentId,
-      fileName: state.pdfFile.name,
-      pageCount: state.totalPages,
-      originalHash: state.originalHash,
-      signerName: name,
-      reason,
-      location,
-      ip: state.clientIp,
-      browserInfo: state.browserInfo,
-      geoCoords: state.geoCoords,
-      timestamp,
-      displayDate: date,
-      signedOnPage: state.currentPage,
+    loadingText.textContent = 'Building audit trail...';
+    const audit = {
+      documentId: state.documentId, fileName: state.pdfFile.name, pageCount: state.totalPages,
+      originalHash: state.originalHash, signerName: name, reason, location,
+      ip: state.clientIp, browserInfo: state.browserInfo, geoCoords: state.geoCoords,
+      timestamp, displayDate: date, signedOnPage: state.currentPage,
     };
+    await addAuditTrailPage(pdfDoc, audit, qrDataUrl);
 
-    await addAuditTrailPage(pdfDoc, auditData, qrDataUrl);
+    // ── Save stamped PDF ──
+    const stampedBytes = await pdfDoc.save({ useObjectStreams: false });
 
-    // ── Save & compute final hash ──
-    const signedPdfBytes = await pdfDoc.save();
-    const finalHash = await computeSHA256(signedPdfBytes);
+    // ── PKI Digital Signature via server ──
+    loadingText.textContent = 'Applying digital certificate...';
+    const pkiResult = await pkiSignPdf(new Uint8Array(stampedBytes), { signer: name, reason, location });
 
-    // Download
-    const blob = new Blob([signedPdfBytes], { type: 'application/pdf' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `signed_${state.pdfFile.name}`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    let finalPdfBytes, finalHash;
+    if (pkiResult) {
+      // Server signed successfully
+      finalPdfBytes = Uint8Array.from(atob(pkiResult.signedPdf), c => c.charCodeAt(0));
+      finalHash = pkiResult.hash;
+    } else {
+      // Fallback: use the stamped PDF without PKI (still has audit trail + QR)
+      finalPdfBytes = new Uint8Array(stampedBytes);
+      finalHash = await computeSHA256(finalPdfBytes);
+      console.warn('PKI signing unavailable, using visual signature only');
+    }
 
-    // Show final hash to user
+    // ── Download signed PDF ──
+    loadingText.textContent = 'Downloading files...';
+    downloadBlob(new Blob([finalPdfBytes], { type: 'application/pdf' }), `signed_${state.pdfFile.name}`);
+
+    // ── Generate & download HTML certificate ──
+    const htmlCert = generateHtmlCertificate(audit, finalHash);
+    const certFilename = `certificate_${state.documentId}.html`;
+    setTimeout(() => {
+      downloadBlob(new Blob([htmlCert], { type: 'text/html' }), certFilename);
+    }, 500);
+
+    // ── Show success dialog ──
     loading.classList.add('hidden');
-    showHashDialog(finalHash, state.documentId);
+    loadingText.textContent = 'Processing your PDF...';
+    showHashDialog(finalHash, state.documentId, !!pkiResult, certFilename);
     return;
 
   } catch (err) {
     alert('Error generating signed PDF: ' + err.message);
     console.error(err);
   }
-
   loading.classList.add('hidden');
+  loadingText.textContent = 'Processing your PDF...';
 });
 
 function getDrawnSignatureDataUrl() {
@@ -857,11 +784,14 @@ function getDrawnSignatureDataUrl() {
   return sigCanvas.toDataURL('image/png');
 }
 
-// ─── Hash Result Dialog ───
-function showHashDialog(hash, docId) {
-  // Remove existing dialog if any
+// ─── Success Dialog ───
+function showHashDialog(hash, docId, hasPki, certFile) {
   const existing = $('#hash-dialog');
   if (existing) existing.remove();
+
+  const pkiStatus = hasPki
+    ? '<span style="color:#2e7d32;font-weight:600">Digital certificate applied</span> &mdash; Adobe Reader will validate this signature.'
+    : '<span style="color:#e65100;font-weight:600">Visual signature only</span> &mdash; PKI certificate was not available.';
 
   const dialog = document.createElement('div');
   dialog.id = 'hash-dialog';
@@ -869,7 +799,12 @@ function showHashDialog(hash, docId) {
   dialog.innerHTML = `
     <div class="hash-dialog-content">
       <h3>Document Signed Successfully</h3>
-      <p>Your signed PDF has been downloaded. Save this information for verification:</p>
+      <p>Two files have been downloaded:</p>
+      <div style="background:#f5f7fa;padding:10px 14px;border-radius:8px;margin-bottom:16px;font-size:13px;">
+        <div><strong>1.</strong> signed_${escapeHtml(state.pdfFile.name)} &mdash; your signed PDF</div>
+        <div><strong>2.</strong> ${escapeHtml(certFile)} &mdash; verification certificate (HTML)</div>
+      </div>
+      <div style="font-size:13px;margin-bottom:16px;">${pkiStatus}</div>
       <div class="hash-row">
         <span class="hash-label">Document ID</span>
         <code class="hash-value">${docId}</code>
@@ -879,18 +814,11 @@ function showHashDialog(hash, docId) {
         <code class="hash-value hash-long">${hash}</code>
       </div>
       <div class="hash-actions">
-        <button class="btn-secondary" onclick="navigator.clipboard.writeText('${hash}');this.textContent='Copied!'">
-          Copy Hash
-        </button>
-        <button class="btn-secondary" onclick="window.open('/verify','_blank')">
-          Open Verify Page
-        </button>
-        <button class="btn-primary" onclick="document.getElementById('hash-dialog').remove()">
-          Done
-        </button>
+        <button class="btn-secondary" onclick="navigator.clipboard.writeText('${hash}');this.textContent='Copied!'">Copy Hash</button>
+        <button class="btn-secondary" onclick="window.open('${VERIFY_URL}','_blank')">Verify Online</button>
+        <button class="btn-primary" onclick="document.getElementById('hash-dialog').remove()">Done</button>
       </div>
-    </div>
-  `;
+    </div>`;
   document.body.appendChild(dialog);
 }
 

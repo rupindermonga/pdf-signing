@@ -499,24 +499,22 @@ async function pkiSignPdf(pdfBytes, meta) {
   }
 }
 
-// ─── Stamp size controls (no CSS transform - changes data-scale and rebuilds overlay) ───
-document.addEventListener('click', (e) => {
-  const btn = e.target.closest('#stamp-smaller, #stamp-bigger');
-  if (!btn) return;
-  e.stopPropagation();
-  e.preventDefault();
+// ─── Stamp size controls ───
+function adjustStampScale(delta) {
   const cur = parseFloat(sigOverlay.dataset.scale || '1');
-  const next = btn.id === 'stamp-smaller'
-    ? Math.max(0.6, cur - 0.1)
-    : Math.min(1.8, cur + 0.1);
+  const next = Math.max(0.5, Math.min(2.0, cur + delta));
   sigOverlay.dataset.scale = next.toFixed(2);
-  // Rebuild overlay at new scale (font-size scales the whole thing)
-  const baseFontSize = 8;
-  sigOverlay.style.fontSize = (baseFontSize * next) + 'px';
+  sigOverlay.style.fontSize = (8 * next) + 'px';
   const display = document.getElementById('stamp-scale');
   if (display) display.textContent = Math.round(next * 100) + '%';
-  // Re-center at current position
   positionOverlayFromRel();
+}
+// Attach directly to buttons (they exist in the DOM at script load time)
+document.getElementById('stamp-smaller')?.addEventListener('click', (e) => {
+  e.stopPropagation(); adjustStampScale(-0.1);
+});
+document.getElementById('stamp-bigger')?.addEventListener('click', (e) => {
+  e.stopPropagation(); adjustStampScale(0.1);
 });
 
 // ─── Audit Trail Page ───
@@ -777,13 +775,13 @@ downloadBtn.addEventListener('click', async () => {
     page.drawRectangle({ x: pdfX, y: pdfY, width: stampW, height: stampH, color: rgb(1,1,1), borderColor: rgb(0.1,0.23,0.48), borderWidth: 1 });
 
     // Left column: DocSeal logo at top, QR at bottom
-    const leftW = 42 * s;
-    const logoX = pdfX + 4 * s;
+    const logoX = pdfX + 3 * s;
     page.drawText('Doc', { x: logoX, y: pdfY + stampH - 12 * s, size: logoFs, font: fontBold, color: rgb(0.1,0.23,0.48) });
     page.drawText('Seal', { x: logoX + fontBold.widthOfTextAtSize('Doc', logoFs), y: pdfY + stampH - 12 * s, size: logoFs, font: fontBold, color: rgb(0.18,0.37,0.72) });
 
-    // Divider
-    const divX = pdfX + leftW;
+    // Divider - position after the full "DocSeal" text width + padding
+    const logoTotalW = fontBold.widthOfTextAtSize('Doc', logoFs) + fontBold.widthOfTextAtSize('Seal', logoFs);
+    const divX = pdfX + Math.max(logoTotalW + 6 * s, 48 * s);
     page.drawLine({ start: { x: divX, y: pdfY + 3 }, end: { x: divX, y: pdfY + stampH - 3 }, thickness: 0.6, color: rgb(0.1,0.23,0.48) });
 
     // Right column: text details

@@ -11,8 +11,10 @@ const { P12Signer } = require('@signpdf/signer-p12');
 const { pdflibAddPlaceholder } = require('@signpdf/placeholder-pdf-lib');
 const { PDFDocument } = require('pdf-lib');
 
-const { userOps, otpOps, sessionOps, docOps, signerOps } = require('./database');
+const { userOps, otpOps, sessionOps, docOps, signerOps, templateOps, apiKeyOps, webhookOps } = require('./database');
 const email = require('./email');
+const stripe = require('./stripe');
+const sms = require('./sms');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -79,6 +81,10 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Storage dirs
 const storageDir = path.join(__dirname, 'data', 'files');
 if (!fs.existsSync(storageDir)) fs.mkdirSync(storageDir, { recursive: true });
+const templatesDir = path.join(__dirname, 'data', 'templates');
+if (!fs.existsSync(templatesDir)) fs.mkdirSync(templatesDir, { recursive: true });
+const idVerifDir = path.join(__dirname, 'data', 'idverif');
+if (!fs.existsSync(idVerifDir)) fs.mkdirSync(idVerifDir, { recursive: true });
 
 // P12 Certificate
 const certPath = path.join(__dirname, 'cert', 'docseal.p12');
@@ -112,6 +118,65 @@ function requireAuth(req, res, next) {
   if (req.session && req.session.userId) return next();
   if (req.headers.accept?.includes('json')) return res.status(401).json({ error: 'Not authenticated' });
   res.redirect('/login');
+}
+
+// API-key auth: requires Bearer token in Authorization header. Sets req.apiUser.
+function requireApiKey(scope = 'rw') {
+  return (req, res, next) => {
+    const auth = req.headers.authorization || '';
+    const m = auth.match(/^Bearer\s+(\S+)$/i);
+    if (!m) return res.status(401).json({ error: 'Missing Authorization: Bearer <api_key>' });
+    const key = apiKeyOps.findByPlaintext(m[1]);
+    if (!key) return res.status(401).json({ error: 'Invalid API key' });
+    if (scope === 'rw' && key.scope === 'ro') return res.status(403).json({ error: 'API key is read-only' });
+    req.apiUser = { id: key.user_id, email: key.email, name: key.user_name };
+    req.apiKey = { id: key.id, scope: key.scope };
+    next();
+  };
+}
+
+// ─── Webhook fire (async, fire-and-forget) ───
+async function fireWebhooks(userId, event, payload) {
+  const hooks = webhookOps.listForEvent(userId, event);
+  for (const w of hooks) {
+    const body = JSON.stringify({ event, created_at: new Date().toISOString(), data: payload });
+    const sig = crypto.createHmac('sha256', w.secret).update(body).digest('hex');
+    try {
+      const url = new URL(w.url);
+      // Block private IPs to prevent SSRF
+      const host = url.hostname.toLowerCase();
+      if (host === 'localhost' || host === '127.0.0.1' || host === '::1' ||
+          host.startsWith('10.') || host.startsWith('192.168.') ||
+          /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)) {
+        webhookOps.recordFire(w.id, 'blocked_private_ip');
+        continue;
+      }
+      const protocol = url.protocol === 'https:' ? require('https') : require('http');
+      const opts = {
+        method: 'POST',
+        hostname: url.hostname,
+        port: url.port || (url.protocol === 'https:' ? 443 : 80),
+        path: url.pathname + url.search,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+          'User-Agent': 'DocSeal-Webhook/1.0',
+          'X-DocSeal-Event': event,
+          'X-DocSeal-Signature': 'sha256=' + sig,
+        },
+        timeout: 8000,
+      };
+      const req2 = protocol.request(opts, (resp) => {
+        webhookOps.recordFire(w.id, String(resp.statusCode));
+      });
+      req2.on('error', (e) => webhookOps.recordFire(w.id, 'error:' + (e.code || 'unknown')));
+      req2.on('timeout', () => { req2.destroy(); webhookOps.recordFire(w.id, 'timeout'); });
+      req2.write(body);
+      req2.end();
+    } catch (e) {
+      webhookOps.recordFire(w.id, 'error:' + e.message.slice(0, 30));
+    }
+  }
 }
 
 // ─── Auth Routes ───
@@ -197,14 +262,33 @@ app.post('/api/documents/create', requireAuth, (req, res, next) => {
       return res.status(400).json({ error: 'Invalid PDF file' });
     }
 
-    const { title, message, signers } = req.body;
+    const { title, message, signers, signingMode, fields, paymentAmount, paymentCurrency, paymentDescription, requireIdVerification } = req.body;
+    const idRequired = requireIdVerification === 'true' || requireIdVerification === true || requireIdVerification === '1';
     const parsedSigners = JSON.parse(signers || '[]');
+    const parsedFields = JSON.parse(fields || '[]');
+    const amtCents = Math.max(0, Math.round(parseFloat(paymentAmount || '0') * 100) || 0);
+    const cur = (paymentCurrency || 'CAD').toUpperCase();
     if (!parsedSigners.length) return res.status(400).json({ error: 'At least one signer required' });
 
     // Sanitize all user inputs
     const cleanTitle = sanitize(title) || sanitize(req.file.originalname);
     const cleanMessage = sanitize(message);
-    const cleanSigners = parsedSigners.map(s => ({ name: sanitize(s.name), email: sanitize(s.email).toLowerCase() }));
+    const allowedRoles = ['sign', 'cc', 'approve'];
+    const allowedMethods = ['email', 'sms', 'both'];
+    const cleanSigners = parsedSigners.map(s => ({
+      name: sanitize(s.name),
+      email: sanitize(s.email).toLowerCase(),
+      role: allowedRoles.includes(s.role) ? s.role : 'sign',
+      phone: sanitize(s.phone || '').replace(/[^\d+]/g, '').slice(0, 20),
+      notifyMethod: allowedMethods.includes(s.notifyMethod) ? s.notifyMethod : 'email',
+    }));
+
+    // Must have at least one non-CC signer
+    if (!cleanSigners.some(s => s.role !== 'cc')) {
+      return res.status(400).json({ error: 'At least one signer must have role Sign or Approve (CC-only is not allowed).' });
+    }
+
+    const cleanMode = signingMode === 'parallel' ? 'parallel' : 'sequential';
 
     // Sanitize original filename
     const cleanFilename = sanitize(req.file.originalname).replace(/[^\w.\-() ]/g, '_');
@@ -213,20 +297,63 @@ app.post('/api/documents/create', requireAuth, (req, res, next) => {
     const hash = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
 
     // Create document record
-    const doc = docOps.create(req.session.userId, cleanTitle, cleanFilename, hash, cleanMessage);
+    const doc = docOps.create(req.session.userId, cleanTitle, cleanFilename, hash, cleanMessage, cleanMode);
 
     // Save PDF file
     fs.writeFileSync(path.join(storageDir, `${doc.uuid}.pdf`), req.file.buffer);
 
+    // Persist document-level payment defaults
+    if (amtCents > 0) {
+      require('./database').db.prepare('UPDATE documents SET payment_amount_cents = ?, payment_currency = ?, payment_description = ? WHERE id = ?')
+        .run(amtCents, cur, sanitize(paymentDescription || cleanTitle), doc.id);
+    }
+
+    // Persist document-level ID requirement
+    if (idRequired) {
+      require('./database').db.prepare('UPDATE documents SET id_verification_required = 1 WHERE id = ?').run(doc.id);
+    }
+
     // Add signers
     for (let i = 0; i < cleanSigners.length; i++) {
       const s = cleanSigners[i];
-      signerOps.addToDocument(doc.id, s.name, s.email, i + 1);
+      const created = signerOps.addToDocument(doc.id, s.name, s.email, i + 1, s.role, s.phone, s.notifyMethod);
+      // Each signing-required signer pays their share
+      if (amtCents > 0 && s.role !== 'cc') {
+        signerOps.setPayment(created.id, amtCents, cur);
+      }
+      if (idRequired && s.role !== 'cc') {
+        signerOps.setIdRequired(created.id, true);
+      }
     }
 
-    // Set status to pending and send to first signer
+    // Validate + persist fields (sender-defined)
+    const allowedTypes = ['text', 'date', 'checkbox', 'initials', 'signature', 'name', 'email'];
+    const cleanFields = (Array.isArray(parsedFields) ? parsedFields : []).map((f, idx) => ({
+      id: 'f' + (idx + 1),
+      type: allowedTypes.includes(f.type) ? f.type : 'text',
+      page: Math.max(1, parseInt(f.page, 10) || 1),
+      xPct: Math.min(1, Math.max(0, Number(f.xPct) || 0)),
+      yPct: Math.min(1, Math.max(0, Number(f.yPct) || 0)),
+      wPct: Math.min(1, Math.max(0.01, Number(f.wPct) || 0.15)),
+      hPct: Math.min(1, Math.max(0.01, Number(f.hPct) || 0.04)),
+      signerOrder: Math.max(1, parseInt(f.signerOrder, 10) || 1),
+      required: f.required !== false,
+      label: sanitize(f.label || ''),
+    }));
+    docOps.setFields(doc.id, cleanFields);
+
+    // Set status to pending and dispatch
     docOps.updateStatus(doc.id, 'pending');
-    await sendToNextSigner(doc.id);
+    if (cleanMode === 'parallel') {
+      await sendToAllParallel(doc.id);
+    } else {
+      await sendToNextSigner(doc.id);
+    }
+
+    fireWebhooks(req.session.userId, 'document.sent', {
+      document: { uuid: doc.uuid, title: cleanTitle, signing_mode: cleanMode },
+      signers: cleanSigners,
+    });
 
     res.json({ ok: true, uuid: doc.uuid });
   } catch (err) {
@@ -236,27 +363,116 @@ app.post('/api/documents/create', requireAuth, (req, res, next) => {
   }
 });
 
-// ─── Send to next pending signer ───
+// ─── Bulk send ───
+app.get('/bulk', requireAuth, (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'bulk.html'));
+});
+
+app.post('/api/documents/bulk-create', requireAuth, (req, res, next) => {
+  upload.single('pdf')(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    next();
+  });
+}, async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'PDF required' });
+    if (!req.file.buffer || req.file.buffer.length < 5 || req.file.buffer.toString('utf-8', 0, 5) !== '%PDF-') {
+      return res.status(400).json({ error: 'Invalid PDF file' });
+    }
+
+    const { title, message, recipients, fields } = req.body;
+    const parsedRecipients = JSON.parse(recipients || '[]');
+    const parsedFields = JSON.parse(fields || '[]');
+    if (!parsedRecipients.length) return res.status(400).json({ error: 'At least one recipient required' });
+    if (parsedRecipients.length > 500) return res.status(400).json({ error: 'Bulk size limited to 500 recipients per batch' });
+
+    const cleanRecipients = parsedRecipients
+      .map(r => ({ name: sanitize(r.name || ''), email: sanitize(r.email || '').toLowerCase() }))
+      .filter(r => r.name && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(r.email));
+    if (!cleanRecipients.length) return res.status(400).json({ error: 'No valid recipients (need name + valid email each)' });
+
+    const cleanFilename = sanitize(req.file.originalname).replace(/[^\w.\-() ]/g, '_');
+    const cleanTitle = sanitize(title) || cleanFilename;
+    const cleanMessage = sanitize(message);
+    const hash = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
+
+    const allowedTypes = ['text', 'date', 'checkbox', 'initials', 'signature', 'name', 'email'];
+    const cleanFields = (Array.isArray(parsedFields) ? parsedFields : []).map((f, idx) => ({
+      id: 'f' + (idx + 1),
+      type: allowedTypes.includes(f.type) ? f.type : 'text',
+      page: Math.max(1, parseInt(f.page, 10) || 1),
+      xPct: Math.min(1, Math.max(0, Number(f.xPct) || 0)),
+      yPct: Math.min(1, Math.max(0, Number(f.yPct) || 0)),
+      wPct: Math.min(1, Math.max(0.01, Number(f.wPct) || 0.15)),
+      hPct: Math.min(1, Math.max(0.01, Number(f.hPct) || 0.04)),
+      signerOrder: 1, // bulk is always single-signer per copy
+      required: f.required !== false,
+      label: sanitize(f.label || ''),
+    }));
+
+    const groupId = 'BULK-' + crypto.randomBytes(4).toString('hex').toUpperCase();
+    const created = [];
+
+    for (const r of cleanRecipients) {
+      const doc = docOps.create(req.session.userId, cleanTitle, cleanFilename, hash, cleanMessage, 'sequential');
+      docOps.setBulkGroup(doc.id, groupId);
+      // Each recipient gets their own copy of the PDF (saves bytes via hardlink? no, simpler to copy)
+      fs.writeFileSync(path.join(storageDir, `${doc.uuid}.pdf`), req.file.buffer);
+      signerOps.addToDocument(doc.id, r.name, r.email, 1, 'sign');
+      docOps.setFields(doc.id, cleanFields);
+      docOps.updateStatus(doc.id, 'pending');
+      await sendToNextSigner(doc.id);
+      created.push({ uuid: doc.uuid, recipient: r.email });
+    }
+
+    fireWebhooks(req.session.userId, 'document.sent', {
+      bulk_group_id: groupId, count: created.length,
+      document: { title: cleanTitle, signing_mode: 'sequential' },
+    });
+
+    res.json({ ok: true, bulk_group_id: groupId, count: created.length, documents: created });
+  } catch (err) {
+    console.error('Bulk send error:', err);
+    res.status(500).json({ error: 'Bulk send failed' });
+  }
+});
+
+// ─── Notify a signer via configured channels ───
+async function notifySigner(signer, doc, senderName) {
+  const signUrl = `${BASE_URL}/sign/${signer.token}`;
+  const method = signer.notify_method || 'email';
+  if (method === 'email' || method === 'both') {
+    await email.sendSigningRequest(signer.email, signer.name, senderName, doc.title, signUrl, doc.message);
+  }
+  if ((method === 'sms' || method === 'both') && signer.phone && sms.isConfigured()) {
+    await sms.sendSigningLinkSMS(signer.phone, signer.name, senderName, doc.title, signUrl);
+  }
+  return signUrl;
+}
+
+// ─── Send to next pending signer (sequential mode) ───
 async function sendToNextSigner(documentId) {
   const next = signerOps.getNextPending(documentId);
   if (!next) return;
-
   const doc = docOps.findById(documentId);
-  const creator = userOps.findByEmail(doc.created_by === 0 ? '' : '');
-  // get creator info
   const creatorUser = require('./database').db.prepare('SELECT * FROM users WHERE id = ?').get(doc.created_by);
-
+  const senderName = creatorUser?.name || creatorUser?.email || 'Someone';
   signerOps.updateStatus(next.id, 'sent');
-  const signUrl = `${BASE_URL}/sign/${next.token}`;
+  const signUrl = await notifySigner(next, doc, senderName);
+  return { signUrl, signer: next };
+}
 
-  const sent = await email.sendSigningRequest(
-    next.email, next.name,
-    creatorUser?.name || creatorUser?.email || 'Someone',
-    doc.title, signUrl, doc.message
-  );
-
-  // Return the sign URL for dashboard display regardless
-  return { signUrl, sent, signer: next };
+// ─── Send to ALL pending signers (parallel mode) ───
+async function sendToAllParallel(documentId) {
+  const all = signerOps.getAllPending(documentId);
+  if (!all.length) return;
+  const doc = docOps.findById(documentId);
+  const creatorUser = require('./database').db.prepare('SELECT * FROM users WHERE id = ?').get(doc.created_by);
+  const senderName = creatorUser?.name || creatorUser?.email || 'Someone';
+  for (const s of all) {
+    signerOps.updateStatus(s.id, 'sent');
+    await notifySigner(s, doc, senderName);
+  }
 }
 
 // ─── Signer Experience ───
@@ -265,38 +481,162 @@ app.get('/sign/:token', (req, res) => {
   if (!signer) return res.status(404).send('Signing link not found or expired.');
   if (signer.status === 'signed') return res.send('You have already signed this document.');
   if (signer.doc_status === 'completed') return res.send('This document has already been completed.');
+  if (signer.doc_status === 'cancelled') return res.send('This signing request was cancelled by the sender.');
   res.sendFile(path.join(__dirname, 'public', 'sign.html'));
 });
 
 app.get('/api/sign/:token/info', (req, res) => {
   const signer = signerOps.findByToken(req.params.token);
   if (!signer) return res.status(404).json({ error: 'Not found' });
+  // Filter fields: only this signer's fields (by sign_order) — others are hidden
+  const allFields = docOps.getFields(signer.document_id);
+  const myFields = allFields.filter(f => f.signerOrder === signer.sign_order);
+  const otherFields = allFields.filter(f => f.signerOrder !== signer.sign_order)
+    .map(f => ({ ...f, type: 'readonly', label: '(other signer)' })); // shown as locked overlays
   res.json({
     signerName: signer.name,
     signerEmail: signer.email,
     docTitle: signer.doc_title,
     docUUID: signer.doc_uuid,
     status: signer.status,
+    role: signer.role,
+    fields: myFields,
+    readonlyFields: otherFields,
+    paymentRequired: signer.payment_amount_cents > 0,
+    paymentAmountCents: signer.payment_amount_cents || 0,
+    paymentCurrency: signer.payment_currency || 'CAD',
+    paymentStatus: signer.payment_status || 'none',
+    paymentConfigured: stripe.isConfigured(),
+    idVerificationRequired: !!signer.id_verification_required,
+    idVerificationStatus: signer.id_verification_status || 'none',
     emailConfigured: email.isConfigured(),
   });
+});
+
+// ─── ID verification upload (multipart: id, selfie) ───
+app.post('/api/sign/:token/id-verify', (req, res, next) => {
+  const idUpload = multer({
+    storage: multer.memoryStorage(),
+    fileFilter: (req, file, cb) => {
+      if (['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) return cb(null, true);
+      cb(new Error('Only JPG/PNG/WebP images allowed'), false);
+    },
+    limits: { fileSize: 8 * 1024 * 1024 },
+  }).fields([{ name: 'id', maxCount: 1 }, { name: 'selfie', maxCount: 1 }]);
+  idUpload(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    next();
+  });
+}, (req, res) => {
+  const signer = signerOps.findByToken(req.params.token);
+  if (!signer) return res.status(404).json({ error: 'Not found' });
+  if (signer.doc_status === 'cancelled') return res.status(410).json({ error: 'Cancelled' });
+  if (signer.status !== 'sent') return res.status(403).json({ error: 'Not your turn' });
+  if (!signer.id_verification_required) return res.status(400).json({ error: 'ID verification not required' });
+  if (!req.session.verifiedSigners?.[req.params.token]) return res.status(403).json({ error: 'Email not verified first' });
+
+  const idFile = req.files?.id?.[0];
+  const selfieFile = req.files?.selfie?.[0];
+  if (!idFile || !selfieFile) return res.status(400).json({ error: 'Both ID photo and selfie are required' });
+
+  // Verify image magic bytes (basic check)
+  function isImage(buf) {
+    if (!buf || buf.length < 4) return false;
+    const h = buf.slice(0, 4);
+    return (h[0] === 0xFF && h[1] === 0xD8) || // JPEG
+           (h[0] === 0x89 && h[1] === 0x50) || // PNG
+           (buf.slice(0, 4).toString() === 'RIFF'); // WebP
+  }
+  if (!isImage(idFile.buffer) || !isImage(selfieFile.buffer)) {
+    return res.status(400).json({ error: 'Files do not appear to be valid images' });
+  }
+
+  const ext = (file) => file.mimetype === 'image/png' ? 'png' : (file.mimetype === 'image/webp' ? 'webp' : 'jpg');
+  const idPath = path.join(idVerifDir, `${signer.doc_uuid}_${signer.id}_id.${ext(idFile)}`);
+  const selfiePath = path.join(idVerifDir, `${signer.doc_uuid}_${signer.id}_selfie.${ext(selfieFile)}`);
+  fs.writeFileSync(idPath, idFile.buffer);
+  fs.writeFileSync(selfiePath, selfieFile.buffer);
+
+  signerOps.setIdFiles(signer.id, idPath, selfiePath);
+  res.json({ ok: true, status: 'verified' });
+});
+
+// ─── Stripe payment for signer ───
+app.post('/api/sign/:token/payment-checkout', rateLimit(60000, 5), async (req, res) => {
+  const signer = signerOps.findByToken(req.params.token);
+  if (!signer) return res.status(404).json({ error: 'Not found' });
+  if (signer.doc_status === 'cancelled') return res.status(410).json({ error: 'Cancelled' });
+  if (signer.status !== 'sent') return res.status(403).json({ error: 'Not your turn' });
+  if (signer.payment_amount_cents <= 0) return res.status(400).json({ error: 'No payment required' });
+  if (signer.payment_status === 'paid') return res.status(400).json({ error: 'Already paid' });
+  if (!stripe.isConfigured()) return res.status(503).json({ error: 'Payments not configured on this server' });
+
+  const doc = docOps.findById(signer.document_id);
+  try {
+    const session = await stripe.createCheckoutSession({
+      amountCents: signer.payment_amount_cents,
+      currency: signer.payment_currency,
+      description: doc.payment_description || doc.title,
+      signerEmail: signer.email,
+      successUrl: `${BASE_URL}/sign/${req.params.token}?stripe_session={CHECKOUT_SESSION_ID}`,
+      cancelUrl: `${BASE_URL}/sign/${req.params.token}?paid=cancel`,
+    });
+    signerOps.setPaymentSession(signer.id, session.id);
+    res.json({ url: session.url });
+  } catch (e) {
+    console.error('Stripe checkout error:', e.message);
+    res.status(500).json({ error: 'Could not start checkout: ' + e.message });
+  }
+});
+
+// Verify a returning Stripe session and mark paid
+app.post('/api/sign/:token/payment-verify', async (req, res) => {
+  const signer = signerOps.findByToken(req.params.token);
+  if (!signer) return res.status(404).json({ error: 'Not found' });
+  if (signer.payment_status === 'paid') return res.json({ ok: true, status: 'paid' });
+  if (!signer.payment_session_id) return res.status(400).json({ error: 'No checkout session on file' });
+  if (!stripe.isConfigured()) return res.status(503).json({ error: 'Payments not configured' });
+
+  try {
+    const session = await stripe.retrieveSession(signer.payment_session_id);
+    if (session.payment_status === 'paid') {
+      signerOps.markPaid(signer.id);
+      return res.json({ ok: true, status: 'paid' });
+    }
+    return res.json({ ok: false, status: session.payment_status });
+  } catch (e) {
+    res.status(500).json({ error: 'Could not verify: ' + e.message });
+  }
 });
 
 app.post('/api/sign/:token/send-otp', rateLimit(60000, 5), async (req, res) => {
   const signer = signerOps.findByToken(req.params.token);
   if (!signer) return res.status(404).json({ error: 'Not found' });
+  if (signer.doc_status === 'cancelled') return res.status(410).json({ error: 'This signing request was cancelled' });
   if (signer.status !== 'sent') return res.status(403).json({ error: 'It is not your turn to sign yet' });
 
   const otp = signerOps.setOTP(signer.id);
-  const sent = await email.sendSignerOTP(signer.email, signer.name, otp);
+  // Channel: client may request 'sms' explicitly; otherwise honor the signer's preference
+  const reqChannel = req.body && req.body.channel;
+  const channel = (reqChannel === 'sms' || (!reqChannel && signer.notify_method === 'sms')) ? 'sms' : 'email';
 
-  if (!sent && IS_DEV) return res.json({ ok: true, devOtp: otp });
-  if (!sent) return res.status(500).json({ error: 'Email delivery failed' });
-  res.json({ ok: true });
+  let sent = false;
+  if (channel === 'sms' && signer.phone && sms.isConfigured()) {
+    const r = await sms.sendOTPSMS(signer.phone, otp);
+    sent = r.ok;
+  } else {
+    sent = await email.sendSignerOTP(signer.email, signer.name, otp);
+  }
+
+  if (!sent && IS_DEV) return res.json({ ok: true, devOtp: otp, channel });
+  if (!sent) return res.status(500).json({ error: 'Code delivery failed' });
+  res.json({ ok: true, channel });
 });
 
 app.post('/api/sign/:token/verify-otp', rateLimit(60000, 10), (req, res) => {
   const signer = signerOps.findByToken(req.params.token);
   if (!signer) return res.status(404).json({ error: 'Not found' });
+  if (signer.doc_status === 'cancelled') return res.status(410).json({ error: 'This signing request was cancelled' });
   if (signer.status !== 'sent') return res.status(403).json({ error: 'It is not your turn to sign yet' });
 
   if (!signerOps.verifyOTP(signer.id, req.body.code)) {
@@ -313,6 +653,7 @@ app.post('/api/sign/:token/verify-otp', rateLimit(60000, 10), (req, res) => {
 app.get('/api/sign/:token/pdf', (req, res) => {
   const signer = signerOps.findByToken(req.params.token);
   if (!signer) return res.status(404).json({ error: 'Not found' });
+  if (signer.doc_status === 'cancelled') return res.status(410).json({ error: 'This signing request was cancelled' });
   if (signer.status !== 'sent') return res.status(403).json({ error: 'It is not your turn to sign yet' });
 
   // Check OTP verified
@@ -331,16 +672,42 @@ app.post('/api/sign/:token/submit', async (req, res) => {
   const signer = signerOps.findByToken(req.params.token);
   if (!signer) return res.status(404).json({ error: 'Not found' });
   if (signer.status === 'signed') return res.status(400).json({ error: 'Already signed' });
+  if (signer.doc_status === 'cancelled') return res.status(410).json({ error: 'This signing request was cancelled' });
   if (signer.status !== 'sent') return res.status(403).json({ error: 'It is not your turn to sign yet' });
 
   if (!req.session.verifiedSigners?.[req.params.token]) {
     return res.status(403).json({ error: 'Email not verified' });
   }
 
-  const { signatureData, location, browserInfo, geoCoords, publicIp } = req.body;
+  if (signer.payment_amount_cents > 0 && signer.payment_status !== 'paid') {
+    return res.status(402).json({ error: 'Payment required before signing' });
+  }
+  if (signer.id_verification_required && signer.id_verification_status !== 'verified') {
+    return res.status(403).json({ error: 'ID verification required before signing' });
+  }
+
+  const { signatureData, location, browserInfo, geoCoords, publicIp, fieldValues } = req.body;
   // Prefer client-reported public IP (from ipify.org), fall back to socket IP
   const socketIp = (req.socket.remoteAddress || '').replace('::ffff:', '').replace('::1', '127.0.0.1');
   const ip = sanitize(publicIp || '') || socketIp;
+
+  // Validate field values: only this signer's fields, all required ones must be filled
+  const allFields = docOps.getFields(signer.document_id);
+  const myFields = allFields.filter(f => f.signerOrder === signer.sign_order);
+  const cleanValues = {};
+  for (const f of myFields) {
+    const raw = fieldValues && Object.prototype.hasOwnProperty.call(fieldValues, f.id) ? fieldValues[f.id] : '';
+    let val;
+    if (f.type === 'checkbox') val = raw === true || raw === 'true' || raw === '1';
+    else val = sanitize(String(raw == null ? '' : raw)).slice(0, 500);
+    if (f.required && (val === '' || val === false)) {
+      // signature field is auto-filled by the drawn signature; skip validation for it
+      if (f.type !== 'signature') {
+        return res.status(400).json({ error: `Required field "${f.label || f.type}" was not filled.` });
+      }
+    }
+    cleanValues[f.id] = val;
+  }
 
   const signed = signerOps.markSigned(signer.id, {
     signatureData: sanitize(signatureData || ''),
@@ -348,28 +715,85 @@ app.post('/api/sign/:token/submit', async (req, res) => {
     location: sanitize(location || ''),
     browserInfo: sanitize(browserInfo || ''),
     geoCoords: sanitize(geoCoords || ''),
+    fieldValues: cleanValues,
   });
   if (!signed) return res.status(409).json({ error: 'Signature already recorded (concurrent request)' });
+
+  const signerDoc = docOps.findById(signer.document_id);
+  fireWebhooks(signerDoc.created_by, 'document.signed_by', {
+    document: { uuid: signerDoc.uuid, title: signerDoc.title },
+    signer: { name: signer.name, email: signer.email, sign_order: signer.sign_order, role: signer.role },
+  });
 
   // Check if all signers are done
   if (signerOps.allSigned(signer.document_id)) {
     docOps.updateStatus(signer.document_id, 'completed');
-    // Generate final signed PDF
     await generateFinalPdf(signer.document_id);
-    // Notify all parties
     const doc = docOps.findById(signer.document_id);
     const allSigners = signerOps.listByDocument(signer.document_id);
     const creator = require('./database').db.prepare('SELECT * FROM users WHERE id = ?').get(doc.created_by);
     await email.sendCompletionNotice(creator.email, creator.name, doc.title, doc.uuid);
     for (const s of allSigners) {
+      // Includes signers, approvers, and CCs (CCs only get this notice)
       await email.sendCompletionNotice(s.email, s.name, doc.title, doc.uuid);
     }
+    fireWebhooks(doc.created_by, 'document.completed', {
+      document: { uuid: doc.uuid, title: doc.title, completed_at: doc.completed_at },
+      signers: allSigners.map(s => ({ name: s.name, email: s.email, role: s.role, signed_at: s.signed_at })),
+    });
     return res.json({ ok: true, completed: true });
   }
 
-  // Send to next signer
-  await sendToNextSigner(signer.document_id);
+  // Sequential mode: send to next signer. Parallel: do nothing (others were already notified).
+  if (signer.signing_mode !== 'parallel') {
+    await sendToNextSigner(signer.document_id);
+  }
   res.json({ ok: true, completed: false });
+});
+
+// ─── Cancel a document (creator only, while pending) ───
+app.post('/api/documents/:uuid/cancel', requireAuth, (req, res) => {
+  const doc = docOps.findByUUID(req.params.uuid);
+  if (!doc) return res.status(404).json({ error: 'Not found' });
+  if (doc.created_by !== req.session.userId) return res.status(403).json({ error: 'Access denied' });
+  if (doc.status === 'completed') return res.status(400).json({ error: 'Already completed' });
+  if (doc.status === 'cancelled') return res.status(400).json({ error: 'Already cancelled' });
+  docOps.cancel(doc.id);
+  fireWebhooks(req.session.userId, 'document.cancelled', {
+    document: { uuid: doc.uuid, title: doc.title },
+  });
+  res.json({ ok: true });
+});
+
+// ─── Resend signing request to a specific signer (creator only) ───
+app.post('/api/documents/:uuid/signers/:signerId/resend', requireAuth, async (req, res) => {
+  const doc = docOps.findByUUID(req.params.uuid);
+  if (!doc) return res.status(404).json({ error: 'Not found' });
+  if (doc.created_by !== req.session.userId) return res.status(403).json({ error: 'Access denied' });
+  if (doc.status !== 'pending') return res.status(400).json({ error: 'Document not pending' });
+
+  const signer = signerOps.findById(parseInt(req.params.signerId, 10));
+  if (!signer || signer.document_id !== doc.id) return res.status(404).json({ error: 'Signer not found' });
+  if (signer.status === 'signed') return res.status(400).json({ error: 'Signer already signed' });
+  if (signer.role === 'cc') return res.status(400).json({ error: 'CCs are not sent signing requests' });
+
+  // Sequential mode: only resend to the currently-active signer (status=sent)
+  if (doc.signing_mode === 'sequential' && signer.status !== 'sent') {
+    return res.status(400).json({ error: 'Not this signer\'s turn yet' });
+  }
+
+  // Rotate token (invalidates the old link — fresh secret on resend)
+  const newToken = signerOps.rotateToken(signer.id);
+  if (signer.status === 'pending') signerOps.updateStatus(signer.id, 'sent');
+
+  const creatorUser = require('./database').db.prepare('SELECT * FROM users WHERE id = ?').get(doc.created_by);
+  const signUrl = `${BASE_URL}/sign/${newToken}`;
+  await email.sendSigningRequest(
+    signer.email, signer.name,
+    creatorUser?.name || creatorUser?.email || 'Someone',
+    doc.title, signUrl, doc.message
+  );
+  res.json({ ok: true });
 });
 
 // ─── Generate final signed PDF with all signatures ───
@@ -386,6 +810,59 @@ async function generateFinalPdf(documentId) {
   const fontMono = await pdfDoc.embedFont(StandardFonts.Courier);
 
   const pages = pdfDoc.getPages();
+
+  // ── Draw filled fields on their respective pages ──
+  const fields = docOps.getFields(documentId);
+  if (fields.length) {
+    for (const signer of signers) {
+      if (signer.status !== 'signed') continue;
+      let signerValues = {};
+      try { signerValues = JSON.parse(signer.field_values_json || '{}'); } catch {}
+      const myFields = fields.filter(f => f.signerOrder === signer.sign_order);
+      for (const f of myFields) {
+        const pageIdx = Math.min(pages.length, Math.max(1, f.page)) - 1;
+        const page = pages[pageIdx];
+        const { width: pageW, height: pageH } = page.getSize();
+        // PDF coords: origin bottom-left. Our yPct measured from top.
+        const x = f.xPct * pageW;
+        const w = f.wPct * pageW;
+        const h = f.hPct * pageH;
+        const yTop = (1 - f.yPct) * pageH;
+        const y = yTop - h;
+
+        const value = signerValues[f.id];
+
+        if (f.type === 'checkbox') {
+          page.drawRectangle({ x, y, width: h, height: h, borderColor: rgb(0.2,0.2,0.2), borderWidth: 1 });
+          if (value === true || value === 'true') {
+            page.drawText('X', { x: x + h * 0.2, y: y + h * 0.15, size: h * 0.7, font: fontBold, color: rgb(0.1,0.23,0.48) });
+          }
+        } else if (f.type === 'signature' && signer.signature_data && signer.signature_data.startsWith('data:image/png')) {
+          try {
+            const sigBytes = Buffer.from(signer.signature_data.split(',')[1], 'base64');
+            const sigImg = await pdfDoc.embedPng(sigBytes);
+            const aspect = sigImg.width / sigImg.height;
+            let drawW = w, drawH = w / aspect;
+            if (drawH > h) { drawH = h; drawW = h * aspect; }
+            page.drawImage(sigImg, { x, y: y + (h - drawH) / 2, width: drawW, height: drawH });
+          } catch {}
+        } else {
+          let displayValue = String(value || '');
+          if (f.type === 'date' && !displayValue) displayValue = new Date().toISOString().slice(0, 10);
+          if (f.type === 'name' && !displayValue) displayValue = signer.name;
+          if (f.type === 'email' && !displayValue) displayValue = signer.email;
+          if (f.type === 'initials' && !displayValue) {
+            displayValue = (signer.name || '').split(' ').map(p => p[0] || '').join('').toUpperCase().slice(0, 4);
+          }
+          if (displayValue) {
+            const fontSize = Math.min(h * 0.7, 14);
+            page.drawText(displayValue, { x: x + 2, y: y + (h - fontSize) / 2 + 1, size: fontSize, font, color: rgb(0.05,0.1,0.25) });
+          }
+        }
+      }
+    }
+  }
+
   const lastPage = pages[pages.length - 1];
   const { width: pw } = lastPage.getSize();
 
@@ -538,16 +1015,309 @@ app.get('/api/documents/:uuid', requireAuth, (req, res) => {
     name: s.name,
     email: s.email,
     sign_order: s.sign_order,
+    role: s.role,
     status: s.status,
     signed_at: s.signed_at,
     ip_address: s.ip_address,
     location: s.location,
     browser_info: s.browser_info,
-    // Only expose sign URL if email is not configured AND signer is currently active
     signUrl: (!email.isConfigured() && (s.status === 'sent' || s.status === 'pending'))
       ? `${BASE_URL}/sign/${s.token}` : undefined,
   }));
   res.json({ document: doc, signers: safeSigner, emailConfigured: email.isConfigured() });
+});
+
+// ─── Templates ───
+app.get('/templates', requireAuth, (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'templates.html'));
+});
+
+app.get('/api/templates', requireAuth, (req, res) => {
+  const list = templateOps.listByUser(req.session.userId).map(t => ({
+    uuid: t.uuid, name: t.name, title: t.title, message: t.message,
+    signing_mode: t.signing_mode, has_pdf: !!t.has_pdf, pdf_filename: t.pdf_filename,
+    signers: JSON.parse(t.signers_json || '[]'),
+    fields_count: JSON.parse(t.fields_json || '[]').length,
+    created_at: t.created_at,
+  }));
+  res.json({ templates: list });
+});
+
+app.get('/api/templates/:uuid', requireAuth, (req, res) => {
+  const tpl = templateOps.findByUUID(req.params.uuid, req.session.userId);
+  if (!tpl) return res.status(404).json({ error: 'Not found' });
+  res.json({
+    uuid: tpl.uuid, name: tpl.name, title: tpl.title, message: tpl.message,
+    signing_mode: tpl.signing_mode, has_pdf: !!tpl.has_pdf, pdf_filename: tpl.pdf_filename,
+    signers: tpl.signers, fields: tpl.fields,
+  });
+});
+
+app.post('/api/templates', requireAuth, (req, res, next) => {
+  upload.single('pdf')(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    next();
+  });
+}, (req, res) => {
+  try {
+    const { name, title, message, signingMode, signers, fields } = req.body;
+    const cleanName = sanitize(name);
+    if (!cleanName) return res.status(400).json({ error: 'Template name is required' });
+
+    const parsedSigners = JSON.parse(signers || '[]');
+    const allowedRoles = ['sign', 'cc', 'approve'];
+    const cleanSigners = parsedSigners.map(s => ({
+      name: sanitize(s.name || ''),
+      email: sanitize(s.email || '').toLowerCase(),
+      role: allowedRoles.includes(s.role) ? s.role : 'sign',
+    }));
+
+    let hasPdf = false, pdfHash = null, pdfFilename = null;
+    let pdfBuffer = null;
+    if (req.file) {
+      if (!req.file.buffer || req.file.buffer.length < 5 || req.file.buffer.toString('utf-8', 0, 5) !== '%PDF-') {
+        return res.status(400).json({ error: 'Invalid PDF file' });
+      }
+      hasPdf = true;
+      pdfBuffer = req.file.buffer;
+      pdfHash = crypto.createHash('sha256').update(pdfBuffer).digest('hex');
+      pdfFilename = sanitize(req.file.originalname).replace(/[^\w.\-() ]/g, '_');
+    }
+
+    const tpl = templateOps.create(req.session.userId, {
+      name: cleanName,
+      title: sanitize(title),
+      message: sanitize(message),
+      signingMode,
+      signers: cleanSigners,
+      hasPdf,
+      pdfHash,
+      pdfFilename,
+      fields: fields ? JSON.parse(fields) : [],
+    });
+
+    if (pdfBuffer) {
+      fs.writeFileSync(path.join(templatesDir, `${tpl.uuid}.pdf`), pdfBuffer);
+    }
+
+    res.json({ ok: true, uuid: tpl.uuid });
+  } catch (err) {
+    console.error('Template create error:', err);
+    res.status(500).json({ error: 'Failed to save template' });
+  }
+});
+
+app.delete('/api/templates/:uuid', requireAuth, (req, res) => {
+  const tpl = templateOps.findByUUID(req.params.uuid, req.session.userId);
+  if (!tpl) return res.status(404).json({ error: 'Not found' });
+  templateOps.delete(req.params.uuid, req.session.userId);
+  const pdfPath = path.join(templatesDir, `${req.params.uuid}.pdf`);
+  if (fs.existsSync(pdfPath)) fs.unlinkSync(pdfPath);
+  res.json({ ok: true });
+});
+
+// Serve a template PDF (used by send.html when the user picks a template)
+app.get('/api/templates/:uuid/pdf', requireAuth, (req, res) => {
+  const tpl = templateOps.findByUUID(req.params.uuid, req.session.userId);
+  if (!tpl || !tpl.has_pdf) return res.status(404).json({ error: 'No PDF in template' });
+  const pdfPath = path.join(templatesDir, `${tpl.uuid}.pdf`);
+  if (!fs.existsSync(pdfPath)) return res.status(404).json({ error: 'PDF file missing' });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.sendFile(pdfPath);
+});
+
+// ─── Settings page (API keys + webhooks) ───
+app.get('/settings', requireAuth, (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'settings.html'));
+});
+
+// API key management (session auth)
+app.get('/api/settings/keys', requireAuth, (req, res) => {
+  res.json({ keys: apiKeyOps.listByUser(req.session.userId) });
+});
+app.post('/api/settings/keys', requireAuth, (req, res) => {
+  const name = sanitize(req.body.name || '');
+  if (!name) return res.status(400).json({ error: 'Name required' });
+  const scope = req.body.scope === 'ro' ? 'ro' : 'rw';
+  const created = apiKeyOps.create(req.session.userId, name, scope);
+  res.json({ ok: true, name, plaintext: created.plaintext, prefix: created.prefix, scope: created.scope });
+});
+app.delete('/api/settings/keys/:id', requireAuth, (req, res) => {
+  const ok = apiKeyOps.revoke(parseInt(req.params.id, 10), req.session.userId);
+  res.json({ ok });
+});
+
+// Webhook management
+app.get('/api/settings/webhooks', requireAuth, (req, res) => {
+  const list = webhookOps.listByUser(req.session.userId).map(w => ({
+    id: w.id, url: w.url, secret: w.secret,
+    events: JSON.parse(w.events_json || '[]'),
+    active: !!w.active, last_status: w.last_status, last_fired_at: w.last_fired_at,
+    created_at: w.created_at,
+  }));
+  res.json({ webhooks: list });
+});
+app.post('/api/settings/webhooks', requireAuth, (req, res) => {
+  const url = (req.body.url || '').trim();
+  if (!url || !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Valid http(s) URL required' });
+  const events = Array.isArray(req.body.events) ? req.body.events : ['*'];
+  const allowed = ['*', 'document.sent', 'document.signed_by', 'document.completed', 'document.cancelled'];
+  const cleanEvents = events.filter(e => allowed.includes(e));
+  if (!cleanEvents.length) return res.status(400).json({ error: 'No valid events' });
+  const created = webhookOps.create(req.session.userId, url, cleanEvents);
+  res.json({ ok: true, id: created.id, secret: created.secret });
+});
+app.post('/api/settings/webhooks/:id/toggle', requireAuth, (req, res) => {
+  const ok = webhookOps.toggle(parseInt(req.params.id, 10), req.session.userId, !!req.body.active);
+  res.json({ ok });
+});
+app.delete('/api/settings/webhooks/:id', requireAuth, (req, res) => {
+  const ok = webhookOps.delete(parseInt(req.params.id, 10), req.session.userId);
+  res.json({ ok });
+});
+
+// ─── PUBLIC REST API v1 (Bearer token auth) ───
+app.get('/api/v1/me', requireApiKey('ro'), (req, res) => {
+  res.json({ user: { email: req.apiUser.email, name: req.apiUser.name }, scope: req.apiKey.scope });
+});
+
+app.get('/api/v1/documents', requireApiKey('ro'), (req, res) => {
+  const docs = docOps.listByUser(req.apiUser.id).map(d => {
+    const signers = signerOps.listByDocument(d.id);
+    return {
+      uuid: d.uuid, title: d.title, status: d.status, signing_mode: d.signing_mode,
+      created_at: d.created_at, completed_at: d.completed_at,
+      signers: signers.map(s => ({
+        name: s.name, email: s.email, sign_order: s.sign_order, role: s.role,
+        status: s.status, signed_at: s.signed_at,
+      })),
+    };
+  });
+  res.json({ documents: docs });
+});
+
+app.get('/api/v1/documents/:uuid', requireApiKey('ro'), (req, res) => {
+  const doc = docOps.findByUUID(req.params.uuid);
+  if (!doc || doc.created_by !== req.apiUser.id) return res.status(404).json({ error: 'Not found' });
+  const signers = signerOps.listByDocument(doc.id);
+  res.json({
+    uuid: doc.uuid, title: doc.title, status: doc.status, signing_mode: doc.signing_mode,
+    created_at: doc.created_at, completed_at: doc.completed_at,
+    fields: docOps.getFields(doc.id),
+    signers: signers.map(s => ({
+      name: s.name, email: s.email, sign_order: s.sign_order, role: s.role,
+      status: s.status, signed_at: s.signed_at, ip_address: s.ip_address,
+      sign_url: (s.status === 'sent' || s.status === 'pending') ? `${BASE_URL}/sign/${s.token}` : undefined,
+    })),
+  });
+});
+
+app.post('/api/v1/documents', requireApiKey('rw'), (req, res, next) => {
+  upload.single('pdf')(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    next();
+  });
+}, async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'PDF file required (multipart field "pdf")' });
+    if (!req.file.buffer || req.file.buffer.length < 5 || req.file.buffer.toString('utf-8', 0, 5) !== '%PDF-') {
+      return res.status(400).json({ error: 'Invalid PDF file' });
+    }
+
+    const { title, message, signers, signingMode, fields } = req.body;
+    let parsedSigners, parsedFields;
+    try {
+      parsedSigners = typeof signers === 'string' ? JSON.parse(signers) : (signers || []);
+      parsedFields = typeof fields === 'string' ? JSON.parse(fields || '[]') : (fields || []);
+    } catch { return res.status(400).json({ error: 'signers/fields must be JSON arrays' }); }
+
+    if (!parsedSigners.length) return res.status(400).json({ error: 'At least one signer required' });
+
+    const allowedRoles = ['sign', 'cc', 'approve'];
+    const cleanSigners = parsedSigners.map(s => ({
+      name: sanitize(s.name || ''),
+      email: sanitize(s.email || '').toLowerCase(),
+      role: allowedRoles.includes(s.role) ? s.role : 'sign',
+    }));
+    if (!cleanSigners.some(s => s.role !== 'cc')) {
+      return res.status(400).json({ error: 'At least one signer must have role Sign or Approve' });
+    }
+
+    const cleanMode = signingMode === 'parallel' ? 'parallel' : 'sequential';
+    const cleanFilename = sanitize(req.file.originalname).replace(/[^\w.\-() ]/g, '_');
+    const cleanTitle = sanitize(title) || cleanFilename;
+    const cleanMessage = sanitize(message);
+    const hash = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
+
+    const doc = docOps.create(req.apiUser.id, cleanTitle, cleanFilename, hash, cleanMessage, cleanMode);
+    fs.writeFileSync(path.join(storageDir, `${doc.uuid}.pdf`), req.file.buffer);
+
+    for (let i = 0; i < cleanSigners.length; i++) {
+      signerOps.addToDocument(doc.id, cleanSigners[i].name, cleanSigners[i].email, i + 1, cleanSigners[i].role);
+    }
+
+    const allowedTypes = ['text', 'date', 'checkbox', 'initials', 'signature', 'name', 'email'];
+    const cleanFields = (Array.isArray(parsedFields) ? parsedFields : []).map((f, idx) => ({
+      id: 'f' + (idx + 1),
+      type: allowedTypes.includes(f.type) ? f.type : 'text',
+      page: Math.max(1, parseInt(f.page, 10) || 1),
+      xPct: Math.min(1, Math.max(0, Number(f.xPct) || 0)),
+      yPct: Math.min(1, Math.max(0, Number(f.yPct) || 0)),
+      wPct: Math.min(1, Math.max(0.01, Number(f.wPct) || 0.15)),
+      hPct: Math.min(1, Math.max(0.01, Number(f.hPct) || 0.04)),
+      signerOrder: Math.max(1, parseInt(f.signerOrder, 10) || 1),
+      required: f.required !== false,
+      label: sanitize(f.label || ''),
+    }));
+    docOps.setFields(doc.id, cleanFields);
+
+    docOps.updateStatus(doc.id, 'pending');
+    if (cleanMode === 'parallel') await sendToAllParallel(doc.id);
+    else await sendToNextSigner(doc.id);
+
+    fireWebhooks(req.apiUser.id, 'document.sent', {
+      document: { uuid: doc.uuid, title: cleanTitle, signing_mode: cleanMode },
+      signers: cleanSigners,
+    });
+
+    res.status(201).json({
+      uuid: doc.uuid, title: cleanTitle, status: 'pending', signing_mode: cleanMode,
+      view_url: `${BASE_URL}/dashboard`,
+    });
+  } catch (err) {
+    console.error('API v1 create error:', err);
+    res.status(500).json({ error: 'Failed to create document' });
+  }
+});
+
+app.post('/api/v1/documents/:uuid/cancel', requireApiKey('rw'), (req, res) => {
+  const doc = docOps.findByUUID(req.params.uuid);
+  if (!doc || doc.created_by !== req.apiUser.id) return res.status(404).json({ error: 'Not found' });
+  if (doc.status === 'completed') return res.status(400).json({ error: 'Already completed' });
+  if (doc.status === 'cancelled') return res.status(400).json({ error: 'Already cancelled' });
+  docOps.cancel(doc.id);
+  fireWebhooks(req.apiUser.id, 'document.cancelled', { document: { uuid: doc.uuid, title: doc.title } });
+  res.json({ ok: true, status: 'cancelled' });
+});
+
+app.get('/api/v1/documents/:uuid/download', requireApiKey('ro'), (req, res) => {
+  const doc = docOps.findByUUID(req.params.uuid);
+  if (!doc || doc.created_by !== req.apiUser.id) return res.status(404).json({ error: 'Not found' });
+  if (doc.status !== 'completed') return res.status(409).json({ error: 'Document not completed yet' });
+  const signedPath = path.join(storageDir, `${doc.uuid}_signed.pdf`);
+  const finalPath = fs.existsSync(signedPath) ? signedPath : path.join(storageDir, `${doc.uuid}.pdf`);
+  if (!fs.existsSync(finalPath)) return res.status(404).json({ error: 'PDF file missing' });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="signed_${doc.uuid}.pdf"`);
+  res.sendFile(finalPath);
+});
+
+app.get('/api/v1/templates', requireApiKey('ro'), (req, res) => {
+  const list = templateOps.listByUser(req.apiUser.id).map(t => ({
+    uuid: t.uuid, name: t.name, title: t.title, signing_mode: t.signing_mode,
+    has_pdf: !!t.has_pdf, created_at: t.created_at,
+  }));
+  res.json({ templates: list });
 });
 
 // ─── QR Code ───
@@ -600,6 +1370,11 @@ app.get('/api/ip', (req, res) => {
 // ─── Verify page ───
 app.get('/verify', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'verify.html'));
+});
+
+// ─── Compliance page ───
+app.get('/compliance', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'compliance.html'));
 });
 
 // ─── Solo sign page (original feature) ───

@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DocSeal - Bulk Send</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <script src="/js/i18n.js" defer></script>
+  <style>
+    .bulk-container { max-width: 760px; margin: 24px auto; padding: 0 20px; }
+    .card { background: white; border-radius: 12px; padding: 24px; box-shadow: 0 1px 4px rgba(0,0,0,0.07); margin-bottom: 18px; }
+    .card h2 { color: #1a3b7a; font-size: 18px; margin-bottom: 14px; }
+    .form-group { margin-bottom: 14px; }
+    .form-group label { display: block; font-size: 13px; font-weight: 600; color: #555; margin-bottom: 6px; }
+    .form-group input, .form-group textarea { width: 100%; padding: 10px 14px; border: 1px solid #d0d5dd; border-radius: 8px; font-size: 14px; font-family: inherit; }
+    .form-group textarea { resize: vertical; min-height: 100px; font-family: monospace; }
+    .upload-area { border: 2px dashed #b0c4de; border-radius: 10px; padding: 30px 20px; text-align: center; cursor: pointer; background: #f8fafd; }
+    .upload-area:hover { border-color: #1a3b7a; background: #eef3fb; }
+    .file-loaded { background: #e8f5e9; border-radius: 8px; padding: 10px 16px; display: flex; align-items: center; gap: 10px; font-size: 14px; color: #2e7d32; font-weight: 500; }
+    .file-loaded .remove { cursor: pointer; color: #c62828; font-size: 18px; margin-left: auto; }
+    .recipient-tabs { display: flex; gap: 4px; margin-bottom: 14px; }
+    .tab { padding: 8px 14px; cursor: pointer; border-radius: 6px 6px 0 0; font-size: 13px; font-weight: 600; color: #888; border-bottom: 2px solid transparent; }
+    .tab.active { color: #1a3b7a; border-bottom-color: #1a3b7a; background: #eef3fb; }
+    .tab-pane { display: none; }
+    .tab-pane.active { display: block; }
+    .row-add { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+    .row-add input { flex: 1; padding: 9px 12px; border: 1px solid #d0d5dd; border-radius: 6px; font-size: 13px; }
+    .row-add .remove { background: none; border: none; color: #c62828; font-size: 20px; cursor: pointer; }
+    .recipient-count { background: #1a3b7a; color: white; border-radius: 14px; padding: 3px 12px; font-size: 12px; font-weight: 600; }
+    .csv-help { font-size: 12px; color: #888; margin: 6px 0 10px; }
+    .actions { display: flex; gap: 12px; justify-content: space-between; }
+    .error { background: #ffebee; border: 1px solid #ef5350; color: #c62828; padding: 10px 14px; border-radius: 8px; font-size: 13px; display: none; margin-bottom: 16px; }
+    .error.show { display: block; }
+    .success { background: #e8f5e9; border: 1px solid #4caf50; color: #2e7d32; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo"><span class="logo-doc">Doc</span><span class="logo-seal">Seal</span></div>
+    <h1>Bulk Send</h1>
+    <a href="/dashboard" class="header-link" data-i18n="common.dashboard">Dashboard</a>
+  </header>
+
+  <div class="bulk-container">
+    <div class="card">
+      <h2>1. Upload PDF</h2>
+      <div id="upload-area" class="upload-area">
+        <div style="font-size:32px;">&#128196;</div>
+        <p>Drop a PDF here or click to browse — each recipient gets their own copy to sign.</p>
+        <input type="file" id="file-input" accept=".pdf" hidden>
+      </div>
+      <div id="file-loaded" class="file-loaded" style="display:none;">
+        <span id="file-name-display"></span>
+        <span class="remove" id="remove-file">&times;</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>2. Document Details</h2>
+      <div class="form-group">
+        <label>Title</label>
+        <input type="text" id="doc-title" placeholder="e.g. 2026 Employee Acknowledgment">
+      </div>
+      <div class="form-group">
+        <label>Message to all recipients (optional)</label>
+        <textarea id="doc-message" style="font-family:inherit;min-height:60px;" placeholder="Please review and sign by Friday."></textarea>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>3. Recipients <span class="recipient-count" id="rcount">0</span></h2>
+      <div class="recipient-tabs">
+        <div class="tab active" data-tab="manual">Manual entry</div>
+        <div class="tab" data-tab="csv">Paste CSV</div>
+      </div>
+
+      <div class="tab-pane active" id="tab-manual">
+        <div id="rows"></div>
+        <button class="btn-secondary" id="add-row" type="button">+ Add row</button>
+      </div>
+
+      <div class="tab-pane" id="tab-csv">
+        <p class="csv-help">One recipient per line: <code>Name, Email</code>. Header row optional.</p>
+        <textarea id="csv-input" placeholder="Alice Smith, alice@example.com&#10;Bob Jones, bob@example.com&#10;..."></textarea>
+        <button class="btn-secondary" id="parse-csv" type="button" style="margin-top:8px;">Parse CSV &rarr; recipients list</button>
+      </div>
+    </div>
+
+    <div id="msg" class="error"></div>
+
+    <div class="actions">
+      <a href="/dashboard" class="btn-secondary" style="text-decoration:none;" data-i18n="common.cancel">Cancel</a>
+      <button class="btn-primary" id="send-btn">Send to All Recipients</button>
+    </div>
+  </div>
+
+  <script>
+    let selectedFile = null;
+    let recipients = [{ name: '', email: '' }];
+
+    const uploadArea = document.getElementById('upload-area');
+    const fileInput = document.getElementById('file-input');
+    const fileLoaded = document.getElementById('file-loaded');
+    const fileNameDisplay = document.getElementById('file-name-display');
+    const msgDiv = document.getElementById('msg');
+
+    uploadArea.addEventListener('click', () => fileInput.click());
+    uploadArea.addEventListener('dragover', e => e.preventDefault());
+    uploadArea.addEventListener('drop', e => { e.preventDefault(); if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]); });
+    fileInput.addEventListener('change', e => { if (e.target.files[0]) setFile(e.target.files[0]); });
+
+    function setFile(f) {
+      if (f.type !== 'application/pdf') return showMsg('Only PDF files are supported.');
+      selectedFile = f;
+      fileNameDisplay.textContent = f.name;
+      uploadArea.style.display = 'none';
+      fileLoaded.style.display = 'flex';
+      if (!document.getElementById('doc-title').value) document.getElementById('doc-title').value = f.name.replace('.pdf', '');
+    }
+    document.getElementById('remove-file').addEventListener('click', () => {
+      selectedFile = null; fileInput.value = '';
+      uploadArea.style.display = ''; fileLoaded.style.display = 'none';
+    });
+
+    // Tabs
+    document.querySelectorAll('.tab').forEach(t => {
+      t.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+        document.querySelectorAll('.tab-pane').forEach(x => x.classList.remove('active'));
+        t.classList.add('active');
+        document.getElementById('tab-' + t.dataset.tab).classList.add('active');
+      });
+    });
+
+    // Recipients list
+    function renderRows() {
+      const wrap = document.getElementById('rows');
+      wrap.innerHTML = '';
+      recipients.forEach((r, i) => {
+        const div = document.createElement('div');
+        div.className = 'row-add';
+        div.innerHTML = `
+          <input type="text" placeholder="Name" value="${esc(r.name)}" data-i="${i}" data-field="name">
+          <input type="email" placeholder="Email" value="${esc(r.email)}" data-i="${i}" data-field="email">
+          <button class="remove" type="button" data-rm="${i}" title="Remove">&times;</button>`;
+        wrap.appendChild(div);
+      });
+      wrap.querySelectorAll('input').forEach(inp => {
+        inp.addEventListener('input', e => {
+          const i = +e.target.dataset.i;
+          recipients[i][e.target.dataset.field] = e.target.value;
+          updateCount();
+        });
+      });
+      wrap.querySelectorAll('button[data-rm]').forEach(b => {
+        b.addEventListener('click', () => {
+          recipients.splice(+b.dataset.rm, 1);
+          if (!recipients.length) recipients.push({ name: '', email: '' });
+          renderRows(); updateCount();
+        });
+      });
+      updateCount();
+    }
+    function updateCount() {
+      const valid = recipients.filter(r => r.name.trim() && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(r.email.trim())).length;
+      document.getElementById('rcount').textContent = valid;
+    }
+    document.getElementById('add-row').addEventListener('click', () => {
+      recipients.push({ name: '', email: '' }); renderRows();
+    });
+
+    // CSV parse
+    document.getElementById('parse-csv').addEventListener('click', () => {
+      const text = document.getElementById('csv-input').value;
+      const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      const parsed = [];
+      for (const line of lines) {
+        // Skip header row if first line looks like a header
+        if (parsed.length === 0 && /name/i.test(line) && /email/i.test(line)) continue;
+        const parts = line.split(/[,;\t]/).map(p => p.trim());
+        if (parts.length < 2) continue;
+        parsed.push({ name: parts[0], email: parts[1] });
+      }
+      if (!parsed.length) return showMsg('No recipients parsed. Use "Name, Email" per line.');
+      recipients = parsed;
+      document.querySelector('.tab[data-tab="manual"]').click();
+      renderRows();
+      hideMsg();
+    });
+
+    function showMsg(t) { msgDiv.textContent = t; msgDiv.classList.add('show'); }
+    function hideMsg() { msgDiv.classList.remove('show'); }
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+    // Send
+    document.getElementById('send-btn').addEventListener('click', async () => {
+      hideMsg();
+      if (!selectedFile) return showMsg('Upload a PDF.');
+      const valid = recipients.filter(r => r.name.trim() && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(r.email.trim()));
+      if (!valid.length) return showMsg('Add at least one recipient with name + valid email.');
+
+      if (!confirm(`Send signing request to ${valid.length} recipient(s)? Each gets their own copy.`)) return;
+
+      const btn = document.getElementById('send-btn');
+      btn.disabled = true; btn.textContent = `Sending to ${valid.length}...`;
+      try {
+        const fd = new FormData();
+        fd.append('pdf', selectedFile);
+        fd.append('title', document.getElementById('doc-title').value.trim() || selectedFile.name);
+        fd.append('message', document.getElementById('doc-message').value.trim());
+        fd.append('recipients', JSON.stringify(valid));
+        fd.append('fields', '[]');
+        const resp = await fetch('/api/documents/bulk-create', { method: 'POST', body: fd });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Failed');
+        document.querySelector('.bulk-container').innerHTML = `<div class="success"><b>Sent to ${data.count} recipient(s).</b><br>Group ID: <code>${esc(data.bulk_group_id)}</code></div><a href="/dashboard" class="btn-primary" style="text-decoration:none;display:inline-block;">Back to Dashboard</a>`;
+      } catch (e) {
+        showMsg(e.message);
+        btn.disabled = false; btn.textContent = 'Send to All Recipients';
+      }
+    });
+
+    renderRows();
+  </script>
+</body>
+</html>

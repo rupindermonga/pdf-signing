@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DocSeal - New Signing Request</title>
   <link rel="stylesheet" href="/css/style.css">
+  <script src="/js/i18n.js" defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" integrity="sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e" crossorigin="anonymous"></script>
   <style>
     .send-container { max-width: 680px; margin: 24px auto; padding: 0 20px; }
     .card { background: white; border-radius: 12px; padding: 28px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); margin-bottom: 20px; }
@@ -21,14 +23,45 @@
     .file-loaded .remove { cursor: pointer; color: #c62828; font-size: 18px; margin-left: auto; }
     /* Signers */
     .signers-list { margin-bottom: 16px; }
-    .signer-entry { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
-    .signer-entry input { flex: 1; padding: 10px 12px; border: 1px solid #d0d5dd; border-radius: 8px; font-size: 14px; }
-    .signer-entry input:focus { outline: none; border-color: #1a3b7a; }
-    .signer-num { background: #1a3b7a; color: white; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; flex-shrink: 0; }
+    .signer-entry { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; padding: 8px; border-radius: 8px; background: #fafbfd; border: 1px solid transparent; }
+    .signer-entry.dragging { opacity: 0.4; }
+    .signer-entry.drag-over { border-color: #1a3b7a; background: #eef3fb; }
+    .signer-entry input, .signer-entry select { padding: 9px 10px; border: 1px solid #d0d5dd; border-radius: 6px; font-size: 13px; font-family: inherit; }
+    .signer-entry input.signer-name { flex: 1.2; min-width: 0; }
+    .signer-entry input.signer-email { flex: 1.5; min-width: 0; }
+    .signer-entry select.signer-role { flex: 0 0 90px; background: white; }
+    .signer-entry input:focus, .signer-entry select:focus { outline: none; border-color: #1a3b7a; }
+    .drag-handle { cursor: grab; color: #aaa; padding: 0 4px; user-select: none; font-size: 18px; flex-shrink: 0; }
+    .drag-handle:active { cursor: grabbing; }
+    .signer-num { background: #1a3b7a; color: white; width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0; }
     .remove-signer { background: none; border: none; color: #c62828; font-size: 20px; cursor: pointer; padding: 4px 8px; flex-shrink: 0; }
     .add-signer-btn { font-size: 13px; color: #1a3b7a; background: none; border: 1px dashed #1a3b7a; padding: 8px 16px; border-radius: 8px; cursor: pointer; }
     .add-signer-btn:hover { background: #f0f4fb; }
     .order-hint { font-size: 12px; color: #888; margin-bottom: 12px; }
+    /* Mode toggle */
+    .mode-toggle { display: flex; gap: 8px; margin-bottom: 14px; }
+    .mode-option { flex: 1; padding: 12px; border: 2px solid #e0e4ec; border-radius: 8px; cursor: pointer; transition: all 0.15s; }
+    .mode-option.active { border-color: #1a3b7a; background: #eef3fb; }
+    .mode-option .mode-title { font-weight: 600; font-size: 13px; color: #1a3b7a; margin-bottom: 2px; }
+    .mode-option .mode-desc { font-size: 11px; color: #666; }
+    /* Field placement */
+    .field-toolbar { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+    .field-tool { background: #eef3fb; color: #1a3b7a; border: 1px solid #1a3b7a; padding: 6px 10px; border-radius: 6px; font-size: 12px; cursor: grab; user-select: none; font-weight: 600; }
+    .field-tool:active { cursor: grabbing; }
+    .field-tool.active { background: #1a3b7a; color: white; }
+    .pdf-stage { position: relative; border: 1px solid #d0d5dd; border-radius: 8px; background: #e8e8e8; padding: 16px; max-height: 600px; overflow: auto; }
+    .pdf-stage-page { position: relative; margin: 0 auto 16px auto; box-shadow: 0 2px 8px rgba(0,0,0,0.12); background: white; }
+    .pdf-stage-page canvas { display: block; }
+    .placed-field { position: absolute; border: 2px dashed #1a3b7a; background: rgba(26,59,122,0.08); border-radius: 3px; cursor: move; font-size: 11px; color: #1a3b7a; padding: 2px 4px; box-sizing: border-box; user-select: none; min-width: 40px; min-height: 18px; }
+    .placed-field.selected { border-style: solid; background: rgba(26,59,122,0.18); }
+    .placed-field .pf-resize { position: absolute; bottom: -4px; right: -4px; width: 10px; height: 10px; background: #1a3b7a; cursor: se-resize; border-radius: 2px; }
+    .placed-field .pf-del { position: absolute; top: -10px; right: -10px; width: 18px; height: 18px; background: #c62828; color: white; border: none; border-radius: 50%; cursor: pointer; font-size: 12px; line-height: 16px; padding: 0; }
+    .field-inspector { background: #fafbfd; padding: 10px; border-radius: 6px; margin-top: 10px; font-size: 13px; display: none; }
+    .field-inspector.show { display: block; }
+    .field-inspector label { display: block; font-size: 11px; color: #555; margin: 6px 0 2px; font-weight: 600; }
+    .field-inspector input, .field-inspector select { width: 100%; padding: 6px 8px; border: 1px solid #d0d5dd; border-radius: 4px; font-size: 13px; }
+    .pdf-pg-label { font-size: 11px; color: #888; text-align: center; margin-bottom: 6px; }
+    .field-help { font-size: 12px; color: #666; margin-bottom: 10px; }
     .actions { display: flex; gap: 12px; justify-content: space-between; }
     .error { background: #ffebee; border: 1px solid #ef5350; color: #c62828; padding: 10px 14px; border-radius: 8px; font-size: 13px; display: none; margin-bottom: 16px; }
     .error.show { display: block; }
@@ -37,16 +70,28 @@
 <body>
   <header>
     <div class="logo"><span class="logo-doc">Doc</span><span class="logo-seal">Seal</span></div>
-    <h1>New Signing Request</h1>
-    <a href="/dashboard" class="header-link">Dashboard</a>
+    <h1 data-i18n="send.title">New Signing Request</h1>
+    <a href="/templates" class="header-link" data-i18n="common.templates">Templates</a>
+    <a href="/dashboard" class="header-link" data-i18n="common.dashboard">Dashboard</a>
   </header>
 
   <div class="send-container">
+    <div class="card" id="tpl-picker-card" style="display:none;">
+      <h2 data-i18n="send.start_template">Start from Template</h2>
+      <div style="display:flex;gap:10px;align-items:center;">
+        <select id="tpl-picker" style="flex:1;padding:10px;border:1px solid #d0d5dd;border-radius:8px;font-size:14px;">
+          <option value="">-- None (start blank) --</option>
+        </select>
+        <button id="tpl-load-btn" class="btn-secondary" style="display:none;">Load</button>
+      </div>
+      <div id="tpl-loaded-note" style="display:none;margin-top:10px;font-size:12px;color:#2e7d32;">&#10003; Loaded from template. Edit anything before sending.</div>
+    </div>
+
     <div class="card">
-      <h2>1. Upload Document</h2>
+      <h2 data-i18n="send.upload_doc">1. Upload Document</h2>
       <div id="upload-area" class="upload-area">
         <div class="icon">&#128196;</div>
-        <p>Drop your PDF here or click to browse</p>
+        <p data-i18n="send.upload_hint">Drop your PDF here or click to browse</p>
         <input type="file" id="file-input" accept=".pdf" hidden>
       </div>
       <div id="file-loaded" class="file-loaded" style="display:none;">
@@ -56,35 +101,115 @@
     </div>
 
     <div class="card">
-      <h2>2. Document Details</h2>
+      <h2 data-i18n="send.doc_details">2. Document Details</h2>
       <div class="form-group">
-        <label>Title</label>
-        <input type="text" id="doc-title" placeholder="e.g. Q4 Contract Agreement">
+        <label data-i18n="send.title_label">Title</label>
+        <input type="text" id="doc-title" data-i18n-placeholder="send.title_ph" placeholder="e.g. Q4 Contract Agreement">
       </div>
       <div class="form-group">
-        <label>Message to signers (optional)</label>
-        <textarea id="doc-message" placeholder="Please review and sign this document by Friday."></textarea>
+        <label data-i18n="send.message_label">Message to signers (optional)</label>
+        <textarea id="doc-message" data-i18n-placeholder="send.message_ph" placeholder="Please review and sign this document by Friday."></textarea>
       </div>
     </div>
 
     <div class="card">
-      <h2>3. Add Signers</h2>
-      <p class="order-hint">Signers will be contacted in order. Each signer must complete before the next one is notified.</p>
+      <h2 data-i18n="send.add_signers">3. Add Signers</h2>
+      <div class="mode-toggle">
+        <div class="mode-option active" data-mode="sequential" id="mode-seq">
+          <div class="mode-title" data-i18n="send.mode_seq_title">Sequential</div>
+          <div class="mode-desc" data-i18n="send.mode_seq_desc">Each signer is notified after the previous one signs.</div>
+        </div>
+        <div class="mode-option" data-mode="parallel" id="mode-par">
+          <div class="mode-title" data-i18n="send.mode_par_title">Parallel</div>
+          <div class="mode-desc" data-i18n="send.mode_par_desc">All signers are notified at once and can sign in any order.</div>
+        </div>
+      </div>
+      <p class="order-hint" data-i18n="send.signer_hint">Drag the handle to reorder.</p>
       <div id="signers-list" class="signers-list">
-        <div class="signer-entry">
+        <div class="signer-entry" draggable="true">
+          <span class="drag-handle">&#9776;</span>
           <span class="signer-num">1</span>
           <input type="text" placeholder="Name" class="signer-name">
           <input type="email" placeholder="Email" class="signer-email">
+          <input type="tel" placeholder="+1 555…" class="signer-phone" style="flex:0 0 110px;padding:9px 10px;border:1px solid #d0d5dd;border-radius:6px;font-size:13px;">
+          <select class="signer-notify" style="flex:0 0 80px;padding:9px;border:1px solid #d0d5dd;border-radius:6px;font-size:12px;background:white;" title="Notification channel">
+            <option value="email">Email</option>
+            <option value="sms">SMS</option>
+            <option value="both">Both</option>
+          </select>
+          <select class="signer-role">
+            <option value="sign">Sign</option>
+            <option value="approve">Approve</option>
+            <option value="cc">CC</option>
+          </select>
         </div>
       </div>
-      <button class="add-signer-btn" id="add-signer">+ Add another signer</button>
+      <button class="add-signer-btn" id="add-signer" data-i18n="send.add_another">+ Add another signer</button>
+    </div>
+
+    <div class="card" id="fields-card" style="display:none;">
+      <h2 data-i18n="send.place_fields">4. Place Fields (optional)</h2>
+      <p class="field-help" data-i18n="send.fields_help">Click a field type, then click on the PDF where you want it. Click a placed field to assign it to a signer or change its label. Drag to move, drag the corner to resize, or use the &times; to delete.</p>
+      <div class="field-toolbar" id="field-toolbar">
+        <button type="button" class="field-tool" data-type="signature">&#9998; Signature</button>
+        <button type="button" class="field-tool" data-type="initials">A.B Initials</button>
+        <button type="button" class="field-tool" data-type="name">&#128100; Name</button>
+        <button type="button" class="field-tool" data-type="email">&#9993; Email</button>
+        <button type="button" class="field-tool" data-type="date">&#128197; Date</button>
+        <button type="button" class="field-tool" data-type="text">&#128221; Text</button>
+        <button type="button" class="field-tool" data-type="checkbox">&#9745; Checkbox</button>
+        <button type="button" id="autodetect-btn" style="margin-left:auto;background:#7c3aed;color:white;border:none;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">&#10024; Auto-detect</button>
+      </div>
+      <div id="autodetect-result" style="display:none;font-size:12px;color:#555;margin-bottom:10px;"></div>
+      <div class="pdf-stage" id="pdf-stage"></div>
+      <div class="field-inspector" id="field-inspector">
+        <label>Assigned Signer</label>
+        <select id="insp-signer"></select>
+        <label>Label</label>
+        <input type="text" id="insp-label" placeholder="(optional)">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;">
+          <input type="checkbox" id="insp-required"> Required
+        </label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Identity Verification (optional)</h2>
+      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+        <input type="checkbox" id="require-id" style="width:18px;height:18px;cursor:pointer;">
+        <span>Require each signer to upload a government ID and a selfie before signing.</span>
+      </label>
+      <p style="font-size:11px;color:#888;margin-top:6px;">Files are stored encrypted-at-rest on the DocSeal server and never shared with third parties.</p>
+    </div>
+
+    <div class="card">
+      <h2>5. Collect Payment (optional)</h2>
+      <p style="font-size:12px;color:#888;margin-bottom:10px;">If set, each signer (Sign/Approve role) must pay this amount via Stripe before they can sign. Requires <code>STRIPE_SECRET_KEY</code> on the server.</p>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <input type="number" id="pay-amount" step="0.01" min="0" placeholder="0.00" style="width:140px;padding:10px;border:1px solid #d0d5dd;border-radius:8px;font-size:14px;">
+        <select id="pay-currency" style="padding:10px;border:1px solid #d0d5dd;border-radius:8px;font-size:14px;">
+          <option value="CAD">CAD</option><option value="USD">USD</option><option value="EUR">EUR</option><option value="GBP">GBP</option>
+        </select>
+        <input type="text" id="pay-desc" placeholder="Description (e.g. Deposit, Booking fee)" style="flex:1;min-width:200px;padding:10px;border:1px solid #d0d5dd;border-radius:8px;font-size:14px;">
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 data-i18n="send.save_template">6. Save as Template (optional)</h2>
+      <label style="display:flex;align-items:center;gap:10px;font-size:14px;cursor:pointer;">
+        <input type="checkbox" id="save-tpl" style="width:18px;height:18px;cursor:pointer;">
+        <span data-i18n="send.save_template_label">Save these settings as a template for future use</span>
+      </label>
+      <div id="tpl-name-wrap" style="display:none;margin-top:10px;">
+        <input type="text" id="tpl-name" data-i18n-placeholder="send.template_name_ph" placeholder="Template name (e.g. Standard NDA)" style="width:100%;padding:10px 14px;border:1px solid #d0d5dd;border-radius:8px;font-size:14px;">
+      </div>
     </div>
 
     <div id="error" class="error"></div>
 
     <div class="actions">
-      <a href="/dashboard" class="btn-secondary" style="text-decoration:none;">Cancel</a>
-      <button class="btn-primary" id="send-btn">Send for Signing</button>
+      <a href="/dashboard" class="btn-secondary" style="text-decoration:none;" data-i18n="common.cancel">Cancel</a>
+      <button class="btn-primary" id="send-btn" data-i18n="send.send_btn">Send for Signing</button>
     </div>
   </div>
 
@@ -113,24 +238,361 @@
       if (!document.getElementById('doc-title').value) {
         document.getElementById('doc-title').value = file.name.replace('.pdf', '');
       }
+      // Render PDF for field placement
+      renderPdfForFields(file);
     }
 
     document.getElementById('remove-file').addEventListener('click', () => {
       selectedFile = null; fileInput.value = '';
       uploadArea.style.display = ''; fileLoaded.style.display = 'none';
+      placedFields = [];
+      document.getElementById('pdf-stage').innerHTML = '';
+      document.getElementById('fields-card').style.display = 'none';
+    });
+
+    // ───────── Field placement ─────────
+    let placedFields = [];        // [{ id, type, page, xPct, yPct, wPct, hPct, signerOrder, label, required }]
+    let fieldSeq = 0;
+    let activeTool = null;        // type to drop on next click
+    let selectedFieldId = null;
+    let pageSizes = [];           // [{ wPx, hPx }] for each page in screen pixels
+
+    const defaultSizes = {
+      signature: [0.22, 0.06], initials: [0.08, 0.05], name: [0.22, 0.04],
+      email: [0.22, 0.04], date: [0.12, 0.04], text: [0.18, 0.04], checkbox: [0.025, 0.025],
+    };
+
+    document.querySelectorAll('.field-tool').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (activeTool === btn.dataset.type) {
+          activeTool = null; btn.classList.remove('active');
+        } else {
+          document.querySelectorAll('.field-tool').forEach(b => b.classList.remove('active'));
+          activeTool = btn.dataset.type; btn.classList.add('active');
+        }
+      });
+    });
+
+    async function renderPdfForFields(file) {
+      try {
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        const buf = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+        const stage = document.getElementById('pdf-stage');
+        stage.innerHTML = '';
+        pageSizes = [];
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const vp = page.getViewport({ scale: 1.2 });
+          const wrap = document.createElement('div');
+          wrap.className = 'pdf-stage-page';
+          wrap.dataset.page = i;
+          wrap.style.width = vp.width + 'px';
+          wrap.style.height = vp.height + 'px';
+          const label = document.createElement('div');
+          label.className = 'pdf-pg-label';
+          label.textContent = `Page ${i}`;
+          stage.appendChild(label);
+          const canvas = document.createElement('canvas');
+          canvas.width = vp.width; canvas.height = vp.height;
+          wrap.appendChild(canvas);
+          stage.appendChild(wrap);
+          await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+          pageSizes[i - 1] = { wPx: vp.width, hPx: vp.height };
+          attachStageClick(wrap, i);
+        }
+        document.getElementById('fields-card').style.display = '';
+        rebuildSignerSelect();
+        rerenderFields();
+      } catch (e) {
+        console.error('PDF render error:', e);
+      }
+    }
+
+    function attachStageClick(pageEl, pageNum) {
+      pageEl.addEventListener('click', (e) => {
+        if (!activeTool) return;
+        if (e.target.classList.contains('placed-field') || e.target.closest('.placed-field')) return;
+        const rect = pageEl.getBoundingClientRect();
+        const xPct = (e.clientX - rect.left) / rect.width;
+        const yPct = (e.clientY - rect.top) / rect.height;
+        const [w, h] = defaultSizes[activeTool] || [0.18, 0.04];
+        fieldSeq++;
+        const f = {
+          id: 'pf' + fieldSeq, type: activeTool, page: pageNum,
+          xPct, yPct, wPct: w, hPct: h,
+          signerOrder: 1, label: '', required: true,
+        };
+        placedFields.push(f);
+        renderField(f);
+        selectField(f.id);
+      });
+    }
+
+    function rerenderFields() {
+      document.querySelectorAll('.placed-field').forEach(el => el.remove());
+      placedFields.forEach(renderField);
+    }
+
+    function renderField(f) {
+      const pageEl = document.querySelector(`.pdf-stage-page[data-page="${f.page}"]`);
+      if (!pageEl) return;
+      let el = pageEl.querySelector(`[data-fid="${f.id}"]`);
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'placed-field';
+        el.dataset.fid = f.id;
+        el.innerHTML = `<span class="pf-label"></span><button type="button" class="pf-del">&times;</button><div class="pf-resize"></div>`;
+        pageEl.appendChild(el);
+        attachFieldHandlers(el, f);
+      }
+      const r = pageEl.getBoundingClientRect();
+      el.style.left = (f.xPct * r.width) + 'px';
+      el.style.top = (f.yPct * r.height) + 'px';
+      el.style.width = (f.wPct * r.width) + 'px';
+      el.style.height = (f.hPct * r.height) + 'px';
+      el.querySelector('.pf-label').textContent = (f.label ? f.label + ' · ' : '') + `${f.type} (S${f.signerOrder})`;
+      el.classList.toggle('selected', selectedFieldId === f.id);
+    }
+
+    function attachFieldHandlers(el, f) {
+      el.addEventListener('click', (e) => { e.stopPropagation(); selectField(f.id); });
+      el.querySelector('.pf-del').addEventListener('click', (e) => {
+        e.stopPropagation();
+        placedFields = placedFields.filter(x => x.id !== f.id);
+        el.remove();
+        if (selectedFieldId === f.id) { selectedFieldId = null; document.getElementById('field-inspector').classList.remove('show'); }
+      });
+      // Drag-move
+      let dragging = false, sx = 0, sy = 0, sLeft = 0, sTop = 0;
+      el.addEventListener('mousedown', (e) => {
+        if (e.target.classList.contains('pf-resize') || e.target.classList.contains('pf-del')) return;
+        dragging = true; sx = e.clientX; sy = e.clientY;
+        sLeft = parseFloat(el.style.left); sTop = parseFloat(el.style.top);
+        e.preventDefault();
+      });
+      window.addEventListener('mousemove', (e) => {
+        if (!dragging) return;
+        const pageEl = el.parentElement;
+        const r = pageEl.getBoundingClientRect();
+        const newLeft = Math.max(0, Math.min(r.width - parseFloat(el.style.width), sLeft + (e.clientX - sx)));
+        const newTop = Math.max(0, Math.min(r.height - parseFloat(el.style.height), sTop + (e.clientY - sy)));
+        el.style.left = newLeft + 'px'; el.style.top = newTop + 'px';
+        f.xPct = newLeft / r.width; f.yPct = newTop / r.height;
+      });
+      window.addEventListener('mouseup', () => { dragging = false; });
+      // Resize
+      const rh = el.querySelector('.pf-resize');
+      let resizing = false, rsx = 0, rsy = 0, sW = 0, sH = 0;
+      rh.addEventListener('mousedown', (e) => {
+        e.stopPropagation(); resizing = true;
+        rsx = e.clientX; rsy = e.clientY;
+        sW = parseFloat(el.style.width); sH = parseFloat(el.style.height);
+        e.preventDefault();
+      });
+      window.addEventListener('mousemove', (e) => {
+        if (!resizing) return;
+        const pageEl = el.parentElement;
+        const r = pageEl.getBoundingClientRect();
+        const newW = Math.max(20, sW + (e.clientX - rsx));
+        const newH = Math.max(14, sH + (e.clientY - rsy));
+        el.style.width = newW + 'px'; el.style.height = newH + 'px';
+        f.wPct = newW / r.width; f.hPct = newH / r.height;
+      });
+      window.addEventListener('mouseup', () => { resizing = false; });
+    }
+
+    function selectField(fid) {
+      selectedFieldId = fid;
+      document.querySelectorAll('.placed-field').forEach(el => el.classList.toggle('selected', el.dataset.fid === fid));
+      const f = placedFields.find(x => x.id === fid);
+      const insp = document.getElementById('field-inspector');
+      if (!f) { insp.classList.remove('show'); return; }
+      insp.classList.add('show');
+      rebuildSignerSelect();
+      document.getElementById('insp-signer').value = String(f.signerOrder);
+      document.getElementById('insp-label').value = f.label;
+      document.getElementById('insp-required').checked = f.required !== false;
+    }
+
+    document.getElementById('insp-signer').addEventListener('change', (e) => {
+      const f = placedFields.find(x => x.id === selectedFieldId);
+      if (f) { f.signerOrder = parseInt(e.target.value, 10) || 1; renderField(f); }
+    });
+    document.getElementById('insp-label').addEventListener('input', (e) => {
+      const f = placedFields.find(x => x.id === selectedFieldId);
+      if (f) { f.label = e.target.value; renderField(f); }
+    });
+    document.getElementById('insp-required').addEventListener('change', (e) => {
+      const f = placedFields.find(x => x.id === selectedFieldId);
+      if (f) f.required = e.target.checked;
+    });
+
+    function rebuildSignerSelect() {
+      const sel = document.getElementById('insp-signer');
+      const cur = sel.value;
+      sel.innerHTML = '';
+      const rows = signersList.querySelectorAll('.signer-entry');
+      rows.forEach((row, i) => {
+        const name = row.querySelector('.signer-name').value || `Signer ${i + 1}`;
+        const opt = document.createElement('option');
+        opt.value = String(i + 1);
+        opt.textContent = `${i + 1}. ${name}`;
+        sel.appendChild(opt);
+      });
+      if (cur) sel.value = cur;
+    }
+    // Re-build signer dropdown whenever signer rows change
+    signersList.addEventListener('input', rebuildSignerSelect);
+
+    // ─── Auto-detect fields (heuristic, scans extracted text) ───
+    document.getElementById('autodetect-btn').addEventListener('click', async () => {
+      if (!selectedFile) return alert('Upload a PDF first.');
+      const result = document.getElementById('autodetect-result');
+      result.style.display = '';
+      result.textContent = 'Scanning PDF for signature lines, dates, names...';
+      try {
+        const buf = await selectedFile.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+        const detected = [];
+        const patterns = [
+          { type: 'signature', re: /\b(signature|signed by|sign here|please sign|x_+|x ___)\b/i, w: 0.22, h: 0.05, dx: 0.01, dy: -0.005, anchor: 'right' },
+          { type: 'initials',  re: /\b(initials?|initial here)\b[:\s]*$/i,                       w: 0.06, h: 0.04, dx: 0.005, dy: 0, anchor: 'right' },
+          { type: 'name',      re: /\b(print name|full name|printed name|name)\b[:\s]*$/i,      w: 0.22, h: 0.04, dx: 0.005, dy: 0, anchor: 'right' },
+          { type: 'email',     re: /\b(e-?mail|email address)\b[:\s]*$/i,                       w: 0.22, h: 0.04, dx: 0.005, dy: 0, anchor: 'right' },
+          { type: 'date',      re: /\b(date|signed on|date signed|dated)\b[:\s]*$/i,            w: 0.12, h: 0.04, dx: 0.005, dy: 0, anchor: 'right' },
+          { type: 'text',      re: /\b(title|company|address|phone|position)\b[:\s]*$/i,        w: 0.20, h: 0.04, dx: 0.005, dy: 0, anchor: 'right' },
+        ];
+
+        for (let p = 1; p <= pdf.numPages; p++) {
+          const page = await pdf.getPage(p);
+          const vp = page.getViewport({ scale: 1 });
+          const text = await page.getTextContent();
+          for (const item of text.items) {
+            const s = (item.str || '').trim();
+            if (!s) continue;
+            for (const pat of patterns) {
+              if (pat.re.test(s)) {
+                // pdf.js transform: [a, b, c, d, e, f] — e/f is the position. yPDF (origin bottom-left).
+                const t = item.transform;
+                const xPdf = t[4];
+                const yPdf = t[5];
+                const widthPdf = item.width || (s.length * 5);
+                const heightPdf = item.height || 10;
+                // Convert to top-left percentages of the page
+                const xPct = (xPdf + widthPdf) / vp.width + pat.dx;
+                const yPct = 1 - (yPdf + heightPdf) / vp.height + pat.dy;
+                if (xPct < 0 || xPct > 0.95 || yPct < 0 || yPct > 0.95) continue;
+                detected.push({
+                  type: pat.type, page: p,
+                  xPct: Math.min(0.95, xPct), yPct: Math.min(0.95, yPct),
+                  wPct: Math.min(pat.w, 0.95 - xPct), hPct: pat.h,
+                  signerOrder: 1, label: s.replace(/[:\s]+$/, '').slice(0, 24), required: true,
+                });
+                break; // one pattern per text item
+              }
+            }
+          }
+        }
+
+        // De-duplicate near-identical detections (within 1% page distance)
+        const unique = [];
+        for (const d of detected) {
+          if (!unique.some(u => u.page === d.page && u.type === d.type
+              && Math.abs(u.xPct - d.xPct) < 0.02 && Math.abs(u.yPct - d.yPct) < 0.02)) {
+            unique.push(d);
+          }
+        }
+
+        if (!unique.length) {
+          result.textContent = 'No common labels found. You can place fields manually.';
+          return;
+        }
+
+        // Add to placedFields
+        unique.forEach(d => {
+          fieldSeq++;
+          placedFields.push({
+            id: 'pf' + fieldSeq, type: d.type, page: d.page,
+            xPct: d.xPct, yPct: d.yPct, wPct: d.wPct, hPct: d.hPct,
+            signerOrder: d.signerOrder, label: d.label, required: d.required,
+          });
+        });
+        rerenderFields();
+
+        const counts = unique.reduce((a, d) => { a[d.type] = (a[d.type] || 0) + 1; return a; }, {});
+        const summary = Object.entries(counts).map(([t, c]) => `${c}× ${t}`).join(', ');
+        result.innerHTML = `&#10024; Detected ${unique.length} field(s): ${summary}. Review and adjust as needed.`;
+      } catch (e) {
+        console.error('Auto-detect error:', e);
+        result.textContent = 'Auto-detect failed: ' + e.message;
+      }
+    });
+
+    // Signing mode toggle
+    let signingMode = 'sequential';
+    document.querySelectorAll('.mode-option').forEach(opt => {
+      opt.addEventListener('click', () => {
+        document.querySelectorAll('.mode-option').forEach(o => o.classList.remove('active'));
+        opt.classList.add('active');
+        signingMode = opt.dataset.mode;
+        document.querySelector('.order-hint').style.opacity = signingMode === 'parallel' ? '0.6' : '1';
+      });
     });
 
     // Signers
+    function attachDragHandlers(el) {
+      el.addEventListener('dragstart', (e) => {
+        el.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+      });
+      el.addEventListener('dragend', () => {
+        el.classList.remove('dragging');
+        document.querySelectorAll('.signer-entry').forEach(x => x.classList.remove('drag-over'));
+      });
+      el.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        const dragging = document.querySelector('.signer-entry.dragging');
+        if (!dragging || dragging === el) return;
+        el.classList.add('drag-over');
+      });
+      el.addEventListener('dragleave', () => el.classList.remove('drag-over'));
+      el.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const dragging = document.querySelector('.signer-entry.dragging');
+        if (!dragging || dragging === el) return;
+        const rect = el.getBoundingClientRect();
+        const after = (e.clientY - rect.top) > rect.height / 2;
+        signersList.insertBefore(dragging, after ? el.nextSibling : el);
+        renumber();
+      });
+    }
+    attachDragHandlers(signersList.firstElementChild);
+
     document.getElementById('add-signer').addEventListener('click', () => {
       const count = signersList.children.length + 1;
       const div = document.createElement('div');
       div.className = 'signer-entry';
+      div.draggable = true;
       div.innerHTML = `
+        <span class="drag-handle">&#9776;</span>
         <span class="signer-num">${count}</span>
         <input type="text" placeholder="Name" class="signer-name">
         <input type="email" placeholder="Email" class="signer-email">
+        <input type="tel" placeholder="+1 555…" class="signer-phone" style="flex:0 0 110px;padding:9px 10px;border:1px solid #d0d5dd;border-radius:6px;font-size:13px;">
+        <select class="signer-notify" style="flex:0 0 80px;padding:9px;border:1px solid #d0d5dd;border-radius:6px;font-size:12px;background:white;" title="Notification channel">
+          <option value="email">Email</option>
+          <option value="sms">SMS</option>
+          <option value="both">Both</option>
+        </select>
+        <select class="signer-role">
+          <option value="sign">Sign</option>
+          <option value="approve">Approve</option>
+          <option value="cc">CC</option>
+        </select>
         <button class="remove-signer" onclick="this.parentElement.remove();renumber();">&times;</button>`;
       signersList.appendChild(div);
+      attachDragHandlers(div);
     });
 
     window.renumber = function() {
@@ -141,6 +603,115 @@
 
     function showError(msg) { errorDiv.textContent = msg; errorDiv.classList.add('show'); }
 
+    // ─── Templates ───
+    const tplPickerCard = document.getElementById('tpl-picker-card');
+    const tplPicker = document.getElementById('tpl-picker');
+    const tplLoadBtn = document.getElementById('tpl-load-btn');
+    const tplLoadedNote = document.getElementById('tpl-loaded-note');
+    const saveTplCb = document.getElementById('save-tpl');
+    const tplNameWrap = document.getElementById('tpl-name-wrap');
+    const tplNameInput = document.getElementById('tpl-name');
+
+    saveTplCb.addEventListener('change', () => {
+      tplNameWrap.style.display = saveTplCb.checked ? '' : 'none';
+    });
+
+    async function loadTemplateList() {
+      try {
+        const resp = await fetch('/api/templates');
+        if (!resp.ok) return;
+        const { templates } = await resp.json();
+        if (!templates.length) return;
+        tplPickerCard.style.display = '';
+        templates.forEach(t => {
+          const o = document.createElement('option');
+          o.value = t.uuid;
+          o.textContent = `${t.name} (${t.signers.length} signer${t.signers.length === 1 ? '' : 's'}, ${t.signing_mode})`;
+          tplPicker.appendChild(o);
+        });
+        tplPicker.addEventListener('change', () => {
+          tplLoadBtn.style.display = tplPicker.value ? '' : 'none';
+        });
+        tplLoadBtn.addEventListener('click', () => loadTemplate(tplPicker.value));
+      } catch {}
+    }
+
+    async function loadTemplate(uuid) {
+      const resp = await fetch('/api/templates/' + uuid);
+      if (!resp.ok) { showError('Template not found'); return; }
+      const tpl = await resp.json();
+      document.getElementById('doc-title').value = tpl.title || '';
+      document.getElementById('doc-message').value = tpl.message || '';
+      // Set signing mode
+      signingMode = tpl.signing_mode || 'sequential';
+      document.querySelectorAll('.mode-option').forEach(o => o.classList.toggle('active', o.dataset.mode === signingMode));
+      // Replace signers
+      signersList.innerHTML = '';
+      (tpl.signers || []).forEach((s, i) => {
+        const div = document.createElement('div');
+        div.className = 'signer-entry';
+        div.draggable = true;
+        const nm = s.notifyMethod || s.notify_method || 'email';
+        div.innerHTML = `
+          <span class="drag-handle">&#9776;</span>
+          <span class="signer-num">${i + 1}</span>
+          <input type="text" placeholder="Name" class="signer-name" value="${esc(s.name || '')}">
+          <input type="email" placeholder="Email" class="signer-email" value="${esc(s.email || '')}">
+          <input type="tel" placeholder="+1 555…" class="signer-phone" value="${esc(s.phone || '')}" style="flex:0 0 110px;padding:9px 10px;border:1px solid #d0d5dd;border-radius:6px;font-size:13px;">
+          <select class="signer-notify" style="flex:0 0 80px;padding:9px;border:1px solid #d0d5dd;border-radius:6px;font-size:12px;background:white;">
+            <option value="email"${nm === 'email' ? ' selected' : ''}>Email</option>
+            <option value="sms"${nm === 'sms' ? ' selected' : ''}>SMS</option>
+            <option value="both"${nm === 'both' ? ' selected' : ''}>Both</option>
+          </select>
+          <select class="signer-role">
+            <option value="sign"${s.role === 'sign' ? ' selected' : ''}>Sign</option>
+            <option value="approve"${s.role === 'approve' ? ' selected' : ''}>Approve</option>
+            <option value="cc"${s.role === 'cc' ? ' selected' : ''}>CC</option>
+          </select>
+          <button class="remove-signer" onclick="this.parentElement.remove();renumber();">&times;</button>`;
+        signersList.appendChild(div);
+        attachDragHandlers(div);
+      });
+      if (!signersList.children.length) {
+        // ensure at least one empty row exists
+        document.getElementById('add-signer').click();
+      }
+      // Load PDF if template includes one
+      if (tpl.has_pdf) {
+        const pdfResp = await fetch('/api/templates/' + uuid + '/pdf');
+        if (pdfResp.ok) {
+          const blob = await pdfResp.blob();
+          selectedFile = new File([blob], tpl.pdf_filename || 'template.pdf', { type: 'application/pdf' });
+          fileNameDisplay.textContent = selectedFile.name;
+          uploadArea.style.display = 'none';
+          fileLoaded.style.display = 'flex';
+          await renderPdfForFields(selectedFile);
+        }
+      }
+      // Restore field placements from template
+      if (tpl.fields && tpl.fields.length) {
+        placedFields = tpl.fields.map((f, i) => ({
+          id: 'pf' + (++fieldSeq),
+          type: f.type, page: f.page, xPct: f.xPct, yPct: f.yPct,
+          wPct: f.wPct, hPct: f.hPct, signerOrder: f.signerOrder || 1,
+          label: f.label || '', required: f.required !== false,
+        }));
+        rerenderFields();
+      }
+      tplLoadedNote.style.display = '';
+    }
+
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+    loadTemplateList().then(() => {
+      const params = new URLSearchParams(window.location.search);
+      const tplUuid = params.get('template');
+      if (tplUuid) {
+        tplPicker.value = tplUuid;
+        loadTemplate(tplUuid);
+      }
+    });
+
     // Send
     document.getElementById('send-btn').addEventListener('click', async () => {
       errorDiv.classList.remove('show');
@@ -150,10 +721,14 @@
       signersList.querySelectorAll('.signer-entry').forEach(el => {
         const name = el.querySelector('.signer-name').value.trim();
         const email = el.querySelector('.signer-email').value.trim();
-        if (name && email) signers.push({ name, email });
+        const role = el.querySelector('.signer-role').value;
+        const phone = (el.querySelector('.signer-phone')?.value || '').trim();
+        const notifyMethod = el.querySelector('.signer-notify')?.value || 'email';
+        if (name && email) signers.push({ name, email, role, phone, notifyMethod });
       });
 
       if (!signers.length) return showError('Add at least one signer with name and email.');
+      if (!signers.some(s => s.role !== 'cc')) return showError('At least one signer must have role Sign or Approve.');
 
       const btn = document.getElementById('send-btn');
       btn.disabled = true; btn.textContent = 'Sending...';
@@ -164,10 +739,44 @@
         formData.append('title', document.getElementById('doc-title').value.trim() || selectedFile.name);
         formData.append('message', document.getElementById('doc-message').value.trim());
         formData.append('signers', JSON.stringify(signers));
+        formData.append('signingMode', signingMode);
+        formData.append('fields', JSON.stringify(placedFields.map(f => ({
+          type: f.type, page: f.page, xPct: f.xPct, yPct: f.yPct,
+          wPct: f.wPct, hPct: f.hPct, signerOrder: f.signerOrder,
+          label: f.label, required: f.required,
+        }))));
+        formData.append('paymentAmount', document.getElementById('pay-amount').value || '0');
+        formData.append('paymentCurrency', document.getElementById('pay-currency').value);
+        formData.append('paymentDescription', document.getElementById('pay-desc').value);
+        formData.append('requireIdVerification', document.getElementById('require-id').checked ? 'true' : 'false');
 
         const resp = await fetch('/api/documents/create', { method: 'POST', body: formData });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.error);
+
+        // Optional: save as template
+        if (saveTplCb.checked) {
+          const tplName = (tplNameInput.value || '').trim();
+          if (!tplName) { alert('Document sent, but template was not saved (name was empty).'); }
+          else {
+            const tplFd = new FormData();
+            tplFd.append('pdf', selectedFile);
+            tplFd.append('name', tplName);
+            tplFd.append('title', document.getElementById('doc-title').value.trim());
+            tplFd.append('message', document.getElementById('doc-message').value.trim());
+            tplFd.append('signingMode', signingMode);
+            tplFd.append('signers', JSON.stringify(signers));
+            tplFd.append('fields', JSON.stringify(placedFields.map(f => ({
+              type: f.type, page: f.page, xPct: f.xPct, yPct: f.yPct,
+              wPct: f.wPct, hPct: f.hPct, signerOrder: f.signerOrder,
+              label: f.label, required: f.required,
+            }))));
+            try {
+              const tr = await fetch('/api/templates', { method: 'POST', body: tplFd });
+              if (!tr.ok) { const td = await tr.json(); console.warn('Template save failed:', td.error); }
+            } catch (e) { console.warn('Template save error:', e); }
+          }
+        }
 
         window.location.href = '/dashboard';
       } catch (err) {

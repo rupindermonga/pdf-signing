@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DocSeal - Dashboard</title>
   <link rel="stylesheet" href="/css/style.css">
+  <script src="/js/i18n.js" defer></script>
   <style>
     .dash-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }
     .dash-header h2 { color: #1a3b7a; font-size: 22px; }
@@ -22,6 +23,16 @@
     .status-draft { background: #f5f5f5; color: #888; }
     .status-pending { background: #fff8e1; color: #f57c00; }
     .status-completed { background: #e8f5e9; color: #2e7d32; }
+    .status-cancelled { background: #fbe9e7; color: #c62828; }
+    .role-badge { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.5px; margin-left: 6px; }
+    .role-sign { background: #e3f2fd; color: #1565c0; }
+    .role-approve { background: #f3e5f5; color: #6a1b9a; }
+    .role-cc { background: #f5f5f5; color: #757575; }
+    .resend-btn { font-size: 11px; padding: 4px 10px; background: #fff; border: 1px solid #1a3b7a; color: #1a3b7a; border-radius: 4px; cursor: pointer; margin-left: 8px; }
+    .resend-btn:hover { background: #eef3fb; }
+    .resend-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .cancel-doc-btn { font-size: 12px; padding: 6px 14px; background: #fff; color: #c62828; border: 1px solid #c62828; border-radius: 6px; cursor: pointer; }
+    .cancel-doc-btn:hover { background: #ffebee; }
     .doc-actions { display: flex; gap: 8px; flex-shrink: 0; }
     .doc-actions a, .doc-actions button { font-size: 12px; padding: 6px 14px; border-radius: 6px; text-decoration: none; border: none; cursor: pointer; }
     .empty-state { text-align: center; padding: 60px 20px; color: #888; }
@@ -45,19 +56,22 @@
 <body>
   <header>
     <div class="logo"><span class="logo-doc">Doc</span><span class="logo-seal">Seal</span></div>
-    <h1>Dashboard</h1>
-    <a href="/verify" class="header-link">Verify</a>
+    <h1 data-i18n="common.dashboard">Dashboard</h1>
+    <a href="/templates" class="header-link" data-i18n="common.templates">Templates</a>
+    <a href="/settings" class="header-link">API</a>
+    <a href="/verify" class="header-link" data-i18n="common.verify">Verify</a>
   </header>
 
   <main>
     <div class="dash-header">
       <div>
-        <h2>Your Documents</h2>
-        <div class="user-info"><span id="user-email"></span> &middot; <a href="#" id="logout-btn" style="color:#c62828;font-size:13px;">Logout</a></div>
+        <h2 data-i18n="dash.your_documents">Your Documents</h2>
+        <div class="user-info"><span id="user-email"></span> &middot; <a href="#" id="logout-btn" style="color:#c62828;font-size:13px;" data-i18n="common.logout">Logout</a></div>
       </div>
       <div class="actions">
-        <a href="/send" class="btn-primary" style="text-decoration:none;display:inline-block;">Send for Others to Sign</a>
-        <a href="/solo" class="btn-primary" style="text-decoration:none;display:inline-block;background:#2d5db8;">Sign Myself</a>
+        <a href="/send" class="btn-primary" style="text-decoration:none;display:inline-block;" data-i18n="dash.send_for_others">Send for Others to Sign</a>
+        <a href="/bulk" class="btn-primary" style="text-decoration:none;display:inline-block;background:#2d5db8;">Bulk Send</a>
+        <a href="/solo" class="btn-primary" style="text-decoration:none;display:inline-block;background:#2d5db8;" data-i18n="dash.sign_myself">Sign Myself</a>
       </div>
     </div>
 
@@ -110,31 +124,66 @@
       const resp = await fetch('/api/documents/' + uuid);
       const { document: doc, signers, emailConfigured } = await resp.json();
 
+      const mode = doc.signing_mode || 'sequential';
+      const canCancel = doc.status === 'pending';
+
       modalContent.innerHTML = `
         <button class="close" onclick="modalBg.classList.remove('show')">&times;</button>
         <h3>${esc(doc.title)}</h3>
         <div style="font-size:13px;color:#666;margin-bottom:16px;">
           <div>ID: <code style="color:#1a3b7a;">${doc.uuid}</code></div>
-          <div>Status: <span class="status-badge status-${esc(doc.status)}">${esc(doc.status)}</span></div>
+          <div>Status: <span class="status-badge status-${esc(doc.status)}">${esc(doc.status)}</span> &middot; Mode: <b>${esc(mode)}</b></div>
           <div>Created: ${esc(new Date(doc.created_at).toLocaleString())}</div>
           ${doc.completed_at ? '<div>Completed: ' + esc(new Date(doc.completed_at).toLocaleString()) + '</div>' : ''}
         </div>
         <h4 style="color:#1a3b7a;margin-bottom:10px;">Signers</h4>
-        ${signers.map(s => `
+        ${signers.map(s => {
+          const role = s.role || 'sign';
+          const canResend = doc.status === 'pending' && s.status !== 'signed' && role !== 'cc';
+          return `
           <div class="signer-row">
             <span class="signer-order">${esc(String(s.sign_order))}</span>
-            <div>
-              <div style="font-weight:600;">${esc(s.name)}</div>
+            <div style="flex:1;min-width:0;">
+              <div style="font-weight:600;">${esc(s.name)}<span class="role-badge role-${esc(role)}">${esc(role)}</span></div>
               <div style="color:#888;font-size:12px;">${esc(s.email)}</div>
               ${(!emailConfigured && s.signUrl && (s.status === 'sent' || s.status === 'pending')) ? '<div class="link-box" onclick="copyLink(this)" title="Click to copy">' + esc(s.signUrl) + '</div>' : ''}
             </div>
-            <span class="signer-status"><span class="status-badge status-${s.status === 'signed' ? 'completed' : 'pending'}">${esc(s.status)}</span></span>
-          </div>
-        `).join('')}
+            <span class="signer-status">
+              <span class="status-badge status-${s.status === 'signed' ? 'completed' : 'pending'}">${esc(s.status)}</span>
+              ${canResend ? '<button class="resend-btn" onclick="resendSigner(\'' + esc(doc.uuid) + '\',' + s.id + ',this)">Resend</button>' : ''}
+            </span>
+          </div>`;
+        }).join('')}
         ${!emailConfigured ? '<p style="font-size:12px;color:#e65100;margin-top:12px;">Email not configured. Share the signing links above manually.</p>' : ''}
-        ${doc.status === 'completed' ? '<a href="/api/documents/' + esc(doc.uuid) + '/download" class="btn-primary" style="display:inline-block;margin-top:16px;text-decoration:none;">Download Signed PDF</a>' : ''}
+        <div style="margin-top:18px;display:flex;gap:10px;align-items:center;">
+          ${doc.status === 'completed' ? '<a href="/api/documents/' + esc(doc.uuid) + '/download" class="btn-primary" style="text-decoration:none;">Download Signed PDF</a>' : ''}
+          ${canCancel ? '<button class="cancel-doc-btn" onclick="cancelDoc(\'' + esc(doc.uuid) + '\')">Cancel Request</button>' : ''}
+        </div>
       `;
       modalBg.classList.add('show');
+    }
+
+    async function resendSigner(uuid, signerId, btn) {
+      btn.disabled = true; btn.textContent = '...';
+      try {
+        const resp = await fetch(`/api/documents/${uuid}/signers/${signerId}/resend`, { method: 'POST' });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Resend failed');
+        btn.textContent = 'Sent!';
+        setTimeout(() => showDetail(uuid), 800);
+      } catch (e) {
+        btn.disabled = false; btn.textContent = 'Resend';
+        alert(e.message);
+      }
+    }
+
+    async function cancelDoc(uuid) {
+      if (!confirm('Cancel this signing request? Signers will no longer be able to sign. This cannot be undone.')) return;
+      const resp = await fetch(`/api/documents/${uuid}/cancel`, { method: 'POST' });
+      const data = await resp.json();
+      if (!resp.ok) return alert(data.error || 'Cancel failed');
+      modalBg.classList.remove('show');
+      loadDocuments();
     }
 
     function copyLink(el) {

@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DocSeal - Settings</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <script src="/js/i18n.js" defer></script>
+  <style>
+    .settings-container { max-width: 880px; margin: 24px auto; padding: 0 20px; }
+    .card { background: white; border-radius: 12px; padding: 24px; box-shadow: 0 1px 4px rgba(0,0,0,0.07); margin-bottom: 18px; }
+    .card h2 { color: #1a3b7a; font-size: 18px; margin-bottom: 6px; }
+    .card .desc { font-size: 13px; color: #666; margin-bottom: 16px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; padding: 8px 10px; background: #f4f6fa; color: #1a3b7a; font-weight: 600; }
+    td { padding: 10px; border-bottom: 1px solid #eee; vertical-align: middle; }
+    .mono { font-family: monospace; font-size: 12px; color: #333; }
+    .btn-small { font-size: 12px; padding: 5px 10px; border-radius: 5px; cursor: pointer; border: none; }
+    .btn-revoke { background: white; color: #c62828; border: 1px solid #c62828; }
+    .btn-revoke:hover { background: #ffebee; }
+    .row-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+    .row-form input, .row-form select { padding: 8px 12px; border: 1px solid #d0d5dd; border-radius: 6px; font-size: 13px; }
+    .row-form input[type="text"], .row-form input[type="url"] { flex: 1; min-width: 200px; }
+    .new-key-banner { background: #fff8e1; border: 1px solid #ffa000; border-radius: 8px; padding: 12px 14px; margin-top: 12px; font-size: 13px; }
+    .new-key-banner .key { font-family: monospace; font-size: 13px; background: white; padding: 6px 10px; border-radius: 4px; word-break: break-all; display: block; margin-top: 6px; cursor: pointer; }
+    .api-docs { background: #f8fafd; border-left: 3px solid #1a3b7a; padding: 12px 16px; font-size: 13px; color: #555; line-height: 1.5; }
+    .api-docs code { background: #eef3fb; padding: 1px 6px; border-radius: 3px; font-family: monospace; font-size: 12px; color: #1a3b7a; }
+    .events-checks { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0; font-size: 12px; }
+    .events-checks label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+    .badge-ro { background: #fff3e0; color: #e65100; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .badge-rw { background: #e8f5e9; color: #2e7d32; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .status-pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .status-ok { background: #e8f5e9; color: #2e7d32; }
+    .status-err { background: #ffebee; color: #c62828; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo"><span class="logo-doc">Doc</span><span class="logo-seal">Seal</span></div>
+    <h1>Settings</h1>
+    <a href="/dashboard" class="header-link" data-i18n="common.dashboard">Dashboard</a>
+  </header>
+
+  <div class="settings-container">
+    <!-- API KEYS -->
+    <div class="card">
+      <h2>API Keys</h2>
+      <p class="desc">Use these to call the DocSeal REST API from your apps. <b>Treat them like passwords.</b></p>
+      <table>
+        <thead><tr><th>Name</th><th>Key prefix</th><th>Scope</th><th>Last used</th><th></th></tr></thead>
+        <tbody id="keys-tbody"><tr><td colspan="5" style="text-align:center;color:#888;padding:16px;">Loading...</td></tr></tbody>
+      </table>
+      <div id="new-key-banner"></div>
+      <div class="row-form">
+        <input type="text" id="new-key-name" placeholder="Key name (e.g. Production server)">
+        <select id="new-key-scope">
+          <option value="rw">Read &amp; Write</option>
+          <option value="ro">Read only</option>
+        </select>
+        <button class="btn-primary" id="create-key-btn">Create API Key</button>
+      </div>
+    </div>
+
+    <!-- WEBHOOKS -->
+    <div class="card">
+      <h2>Webhooks</h2>
+      <p class="desc">Receive HTTP POSTs when documents are sent, signed, completed, or cancelled. Each request is signed with HMAC-SHA256 in the <code>X-DocSeal-Signature</code> header.</p>
+      <table>
+        <thead><tr><th>URL</th><th>Events</th><th>Last status</th><th>Active</th><th></th></tr></thead>
+        <tbody id="hooks-tbody"><tr><td colspan="5" style="text-align:center;color:#888;padding:16px;">Loading...</td></tr></tbody>
+      </table>
+      <div class="row-form">
+        <input type="url" id="new-hook-url" placeholder="https://your-app.example.com/webhooks/docseal">
+      </div>
+      <div class="events-checks" id="event-checks">
+        <label><input type="checkbox" value="*" checked> All events</label>
+        <label><input type="checkbox" value="document.sent"> document.sent</label>
+        <label><input type="checkbox" value="document.signed_by"> document.signed_by</label>
+        <label><input type="checkbox" value="document.completed"> document.completed</label>
+        <label><input type="checkbox" value="document.cancelled"> document.cancelled</label>
+      </div>
+      <button class="btn-primary" id="create-hook-btn">Add Webhook</button>
+    </div>
+
+    <!-- API DOCS -->
+    <div class="card">
+      <h2>REST API Quick Reference</h2>
+      <div class="api-docs">
+        Base URL: <code id="base-url"></code><br>
+        Auth header: <code>Authorization: Bearer ds_live_…</code><br><br>
+        <b>Endpoints:</b><br>
+        &bull; <code>GET /api/v1/me</code> — current user info<br>
+        &bull; <code>GET /api/v1/documents</code> — list your documents<br>
+        &bull; <code>POST /api/v1/documents</code> — create (multipart: <code>pdf</code>, <code>signers</code>, <code>title</code>, optional <code>fields</code>, <code>signingMode</code>)<br>
+        &bull; <code>GET /api/v1/documents/:uuid</code> — document detail<br>
+        &bull; <code>POST /api/v1/documents/:uuid/cancel</code> — cancel pending document<br>
+        &bull; <code>GET /api/v1/documents/:uuid/download</code> — download signed PDF (when completed)<br>
+        &bull; <code>GET /api/v1/templates</code> — list your templates<br>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    document.getElementById('base-url').textContent = window.location.origin;
+
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+    // ── API keys ──
+    async function loadKeys() {
+      const resp = await fetch('/api/settings/keys');
+      if (resp.status === 401) return window.location.href = '/login';
+      const { keys } = await resp.json();
+      const tbody = document.getElementById('keys-tbody');
+      if (!keys.length) { tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#888;padding:16px;">No API keys yet.</td></tr>'; return; }
+      tbody.innerHTML = keys.map(k => `
+        <tr>
+          <td>${esc(k.name)}</td>
+          <td class="mono">${esc(k.prefix)}…</td>
+          <td><span class="badge-${esc(k.scope)}">${esc(k.scope.toUpperCase())}</span></td>
+          <td>${k.last_used_at ? esc(new Date(k.last_used_at).toLocaleString()) : '<span style="color:#aaa;">never</span>'}</td>
+          <td><button class="btn-small btn-revoke" onclick="revokeKey(${k.id}, '${esc(k.name).replace(/'/g, "\\'")}')">Revoke</button></td>
+        </tr>`).join('');
+    }
+    async function revokeKey(id, name) {
+      if (!confirm(`Revoke API key "${name}"? Apps using it will stop working immediately.`)) return;
+      await fetch('/api/settings/keys/' + id, { method: 'DELETE' });
+      loadKeys();
+    }
+    document.getElementById('create-key-btn').addEventListener('click', async () => {
+      const name = document.getElementById('new-key-name').value.trim();
+      const scope = document.getElementById('new-key-scope').value;
+      if (!name) return alert('Please enter a key name.');
+      const resp = await fetch('/api/settings/keys', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, scope }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) return alert(data.error || 'Failed');
+      document.getElementById('new-key-banner').innerHTML = `
+        <div class="new-key-banner">
+          <b>New API key created.</b> Copy it now — you won't see it again.
+          <span class="key" onclick="navigator.clipboard.writeText(this.textContent.trim()); this.style.background='#e8f5e9';">${esc(data.plaintext)}</span>
+        </div>`;
+      document.getElementById('new-key-name').value = '';
+      loadKeys();
+    });
+
+    // ── Webhooks ──
+    async function loadHooks() {
+      const resp = await fetch('/api/settings/webhooks');
+      const { webhooks } = await resp.json();
+      const tbody = document.getElementById('hooks-tbody');
+      if (!webhooks.length) { tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#888;padding:16px;">No webhooks configured.</td></tr>'; return; }
+      tbody.innerHTML = webhooks.map(w => `
+        <tr>
+          <td class="mono" style="word-break:break-all;">${esc(w.url)}<br><span style="color:#888;">secret: ${esc(w.secret.slice(0, 16))}…</span></td>
+          <td style="font-size:11px;">${esc(w.events.join(', '))}</td>
+          <td>${w.last_status ? `<span class="status-pill ${w.last_status.startsWith('2') ? 'status-ok' : 'status-err'}">${esc(w.last_status)}</span>` : '<span style="color:#aaa;">—</span>'}</td>
+          <td><label style="cursor:pointer;"><input type="checkbox" ${w.active ? 'checked' : ''} onchange="toggleHook(${w.id}, this.checked)"> ${w.active ? 'On' : 'Off'}</label></td>
+          <td><button class="btn-small btn-revoke" onclick="delHook(${w.id})">Delete</button></td>
+        </tr>`).join('');
+    }
+    async function toggleHook(id, active) {
+      await fetch('/api/settings/webhooks/' + id + '/toggle', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active }),
+      });
+      loadHooks();
+    }
+    async function delHook(id) {
+      if (!confirm('Delete this webhook?')) return;
+      await fetch('/api/settings/webhooks/' + id, { method: 'DELETE' });
+      loadHooks();
+    }
+    document.getElementById('create-hook-btn').addEventListener('click', async () => {
+      const url = document.getElementById('new-hook-url').value.trim();
+      if (!url) return alert('Enter a webhook URL.');
+      const checks = document.querySelectorAll('#event-checks input:checked');
+      const events = Array.from(checks).map(c => c.value);
+      if (!events.length) return alert('Pick at least one event.');
+      const resp = await fetch('/api/settings/webhooks', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, events }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) return alert(data.error || 'Failed');
+      alert('Webhook added. Secret: ' + data.secret + '\n\n(Save it — used to verify HMAC signatures.)');
+      document.getElementById('new-hook-url').value = '';
+      loadHooks();
+    });
+
+    loadKeys(); loadHooks();
+  </script>
+</body>
+</html>

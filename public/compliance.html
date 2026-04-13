@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DocSeal - Compliance &amp; Privacy</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <script src="/js/i18n.js" defer></script>
+  <style>
+    .compliance { max-width: 820px; margin: 24px auto; padding: 0 22px 60px; }
+    .compliance h2 { color: #1a3b7a; margin: 28px 0 12px; font-size: 22px; }
+    .compliance h3 { color: #2d5db8; margin: 18px 0 6px; font-size: 16px; }
+    .compliance p, .compliance li { font-size: 14px; line-height: 1.6; color: #333; }
+    .compliance ul { margin: 8px 0 16px 22px; }
+    .compliance .lead { font-size: 16px; color: #555; margin-bottom: 14px; }
+    .badges { display: flex; gap: 12px; flex-wrap: wrap; margin: 16px 0 28px; }
+    .badge-card { background: white; border: 1px solid #e0e6f0; border-radius: 10px; padding: 14px 18px; flex: 1 1 220px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+    .badge-card .b-title { color: #1a3b7a; font-weight: 700; font-size: 14px; margin-bottom: 4px; }
+    .badge-card .b-desc { font-size: 12px; color: #666; }
+    .callout { background: #eef3fb; border-left: 4px solid #1a3b7a; padding: 14px 18px; border-radius: 6px; margin: 16px 0; }
+    .callout b { color: #1a3b7a; }
+    code { background: #eef3fb; padding: 1px 6px; border-radius: 3px; font-size: 12px; color: #1a3b7a; }
+    .toc { background: #f8fafd; border-radius: 8px; padding: 14px 18px; margin-bottom: 24px; font-size: 13px; }
+    .toc a { color: #1a3b7a; text-decoration: none; margin-right: 12px; }
+    .toc a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo"><span class="logo-doc">Doc</span><span class="logo-seal">Seal</span></div>
+    <h1>Compliance &amp; Privacy</h1>
+    <a href="/dashboard" class="header-link" data-i18n="common.dashboard">Dashboard</a>
+  </header>
+
+  <div class="compliance">
+    <p class="lead">DocSeal is a Canadian-built electronic-signature platform designed for businesses that need legally-binding, auditable signatures with strong privacy protection.</p>
+
+    <div class="toc">
+      <b>On this page:</b>
+      <a href="#pipeda">PIPEDA</a>
+      <a href="#esign-laws">E-signature laws</a>
+      <a href="#data-residency">Data residency</a>
+      <a href="#security">Security</a>
+      <a href="#audit-trail">Audit trail</a>
+      <a href="#retention">Retention &amp; deletion</a>
+      <a href="#dpo">Privacy contact</a>
+    </div>
+
+    <div class="badges">
+      <div class="badge-card">
+        <div class="b-title">&#127464;&#127462; PIPEDA-aligned</div>
+        <div class="b-desc">Canadian privacy law (federal) compliance</div>
+      </div>
+      <div class="badge-card">
+        <div class="b-title">&#9878; PIPA / Quebec Law 25</div>
+        <div class="b-desc">Provincial private-sector privacy laws considered</div>
+      </div>
+      <div class="badge-card">
+        <div class="b-title">&#128274; PKCS#7 / X.509</div>
+        <div class="b-desc">Cryptographic digital signatures, not just images</div>
+      </div>
+      <div class="badge-card">
+        <div class="b-title">&#128737; SHA-256 integrity</div>
+        <div class="b-desc">Original-document hash recorded at upload</div>
+      </div>
+    </div>
+
+    <h2 id="pipeda">PIPEDA — Personal Information Protection and Electronic Documents Act</h2>
+    <p>DocSeal handles personal information (names, email addresses, signatures, IP addresses, geolocation) as a service provider on behalf of our customers. We follow the ten fair-information principles set out in PIPEDA Schedule 1:</p>
+    <ul>
+      <li><b>Accountability</b> — we maintain a privacy contact (see below) and are responsible for personal information under our control.</li>
+      <li><b>Identifying purposes</b> — personal information is collected only to deliver e-signature, audit-trail, and verification services.</li>
+      <li><b>Consent</b> — signers consent to processing each time they verify their email and submit a signature.</li>
+      <li><b>Limiting collection</b> — we collect the minimum needed: signer name, email, IP, optional location, browser fingerprint, and the signature image.</li>
+      <li><b>Limiting use, disclosure, retention</b> — data is used only to fulfill the signing request and is not sold or shared with third parties for marketing.</li>
+      <li><b>Accuracy</b> — signers verify their own information at the time of signing.</li>
+      <li><b>Safeguards</b> — see <a href="#security">Security</a> below.</li>
+      <li><b>Openness</b> — this page documents our practices.</li>
+      <li><b>Individual access</b> — signers may request a copy of their data via the privacy contact.</li>
+      <li><b>Challenging compliance</b> — concerns may be addressed to our privacy contact and, if unresolved, to the Office of the Privacy Commissioner of Canada.</li>
+    </ul>
+
+    <h2 id="esign-laws">Electronic-signature laws</h2>
+    <p>DocSeal-generated signatures are designed to satisfy the legal requirements of:</p>
+    <ul>
+      <li><b>PIPEDA Part 2</b> (federal e-document framework) — secure electronic signatures with signer identity, intent, and association to the document.</li>
+      <li><b>UECA / provincial e-signature acts</b> (BC, Alberta, Ontario, Saskatchewan, etc.) and Quebec's <i>Act to establish a legal framework for IT</i>.</li>
+      <li><b>U.S. ESIGN Act &amp; UETA</b> for cross-border use.</li>
+      <li><b>EU eIDAS</b> "advanced electronic signature" — when a qualified PKCS#12 certificate is configured.</li>
+    </ul>
+    <div class="callout">
+      <b>Note on QES.</b> The standard DocSeal certificate produces an <i>advanced</i> electronic signature. To produce a <i>qualified</i> electronic signature (QES) under eIDAS, a Qualified Trust Service Provider certificate must be configured.
+    </div>
+
+    <h2 id="data-residency">Data residency</h2>
+    <p>By default, DocSeal stores all uploaded PDFs, signature images, and audit data on the server you have deployed it to. When self-hosted in a Canadian region, all customer data remains on Canadian soil at rest and in transit, satisfying provincial data-residency requirements such as BC FIPPA s. 30.1 and Quebec Law 25.</p>
+    <p><b>SaaS users:</b> the production region is documented in your service agreement. Contact us to confirm your active region.</p>
+
+    <h2 id="security">Security controls</h2>
+    <ul>
+      <li>HTTPS with HSTS, X-Frame-Options DENY, strict Content-Security-Policy.</li>
+      <li>Session cookies: <code>HttpOnly</code>, <code>SameSite=Lax</code>, secure in production.</li>
+      <li>Password-less email-OTP authentication (10-minute expiry, timing-safe comparison).</li>
+      <li>Rate limiting on OTP and signing endpoints.</li>
+      <li>SHA-256 hashing of every original PDF on upload.</li>
+      <li>PKCS#7 / X.509 cryptographic digital signature on completed PDFs.</li>
+      <li>API keys hashed (SHA-256) at rest; plaintext shown only at creation time.</li>
+      <li>Webhooks signed with HMAC-SHA256 (<code>X-DocSeal-Signature</code> header).</li>
+      <li>SSRF protections on outbound webhook calls (private IP ranges blocked).</li>
+    </ul>
+
+    <h2 id="audit-trail">Audit trail</h2>
+    <p>Every completed document includes a <b>Certificate of Signing</b> page recording, for each signer:</p>
+    <ul>
+      <li>Document UUID and SHA-256 hash of the original</li>
+      <li>Signer name, email, role, signing order</li>
+      <li>Signed-at timestamp (UTC)</li>
+      <li>IP address (public IP when reported by client)</li>
+      <li>Approximate geolocation (when permission granted)</li>
+      <li>Browser and operating system</li>
+    </ul>
+    <p>The audit page is part of the signed PDF and protected by the same digital signature as the rest of the document — any tampering breaks the signature.</p>
+
+    <h2 id="retention">Retention &amp; deletion</h2>
+    <p>Documents and audit trails are retained for the lifetime of the customer account. Customers may delete documents from their dashboard at any time; deletion is immediate and irreversible. On account closure, all customer data is deleted within 30 days unless a longer retention period is required by applicable law.</p>
+
+    <h2 id="dpo">Privacy contact</h2>
+    <p>Privacy questions, access requests, or PIPEDA complaints may be directed to:</p>
+    <p style="background:#f8fafd;padding:12px 16px;border-radius:6px;">
+      <b>Privacy Officer, DocSeal</b><br>
+      Email: <a href="mailto:privacy@docseal.example">privacy@docseal.example</a><br>
+      <span style="font-size:12px;color:#888;">(Replace with your organization's contact before going to production.)</span>
+    </p>
+
+    <p style="margin-top:30px;font-size:11px;color:#999;">Last updated: 2026-04-12. This page is a plain-language summary of our practices and is not legal advice. Customers requiring formal compliance documentation (DPA, sub-processor list, SOC reports) should contact us via the privacy address above.</p>
+  </div>
+</body>
+</html>

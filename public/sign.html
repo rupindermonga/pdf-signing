@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DocSeal - Sign Document</title>
   <link rel="stylesheet" href="/css/style.css">
+  <script src="/js/i18n.js" defer></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" integrity="sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e" crossorigin="anonymous"></script>
   <style>
     .sign-container { max-width: 800px; margin: 24px auto; padding: 0 20px; }
@@ -24,8 +25,16 @@
     .error-msg.show { display: block; }
     .hidden { display: none !important; }
     /* PDF Viewer */
-    .pdf-viewer { border: 1px solid #d0d5dd; border-radius: 8px; overflow: auto; background: #e8e8e8; max-height: 500px; display: flex; justify-content: center; padding: 16px; }
-    .pdf-viewer canvas { box-shadow: 0 2px 12px rgba(0,0,0,0.15); background: white; }
+    .pdf-viewer { border: 1px solid #d0d5dd; border-radius: 8px; overflow: auto; background: #e8e8e8; max-height: 500px; padding: 16px; }
+    .pdf-page-wrap { position: relative; margin: 0 auto 16px auto; box-shadow: 0 2px 12px rgba(0,0,0,0.15); background: white; }
+    .pdf-page-wrap canvas { display: block; }
+    .pdf-field { position: absolute; box-sizing: border-box; border: 2px dashed #f57c00; background: rgba(255,193,7,0.18); border-radius: 3px; cursor: pointer; }
+    .pdf-field.readonly { border-color: #aaa; background: rgba(150,150,150,0.18); cursor: not-allowed; }
+    .pdf-field.filled { border-style: solid; border-color: #2e7d32; background: rgba(46,125,50,0.12); }
+    .pdf-field input, .pdf-field select { width: 100%; height: 100%; border: none; background: transparent; font: inherit; padding: 0 2px; outline: none; box-sizing: border-box; font-size: 12px; color: #1a3b7a; }
+    .pdf-field .field-label-tag { position: absolute; top: -16px; left: 0; font-size: 10px; background: #f57c00; color: white; padding: 1px 5px; border-radius: 3px; white-space: nowrap; }
+    .pdf-field.readonly .field-label-tag { background: #888; }
+    .field-summary { background: #fff8e1; border: 1px solid #ffc107; border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; color: #6d4c00; }
     .pdf-nav { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
     .pdf-nav span { font-size: 13px; color: #555; }
     /* Signature pad */
@@ -43,7 +52,7 @@
 <body>
   <header>
     <div class="logo"><span class="logo-doc">Doc</span><span class="logo-seal">Seal</span></div>
-    <h1>Sign Document</h1>
+    <h1 data-i18n="sign.title">Sign Document</h1>
   </header>
 
   <div class="sign-container">
@@ -51,50 +60,75 @@
       <div class="icon">&#128196;</div>
       <div class="info">
         <h3 id="doc-title">Loading...</h3>
-        <p>Signing as: <strong id="signer-name"></strong> (<span id="signer-email"></span>)</p>
+        <p><span data-i18n="sign.signing_as">Signing as</span>: <strong id="signer-name"></strong> (<span id="signer-email"></span>)</p>
       </div>
     </div>
 
     <!-- Step 1: Email verification -->
     <div class="card otp-card" id="otp-card">
-      <h2>Verify Your Identity</h2>
-      <p>A verification code will be sent to your email.</p>
-      <button class="btn-primary" id="request-otp-btn">Send Verification Code</button>
+      <h2 data-i18n="sign.verify_id">Verify Your Identity</h2>
+      <p data-i18n="sign.code_will_be_sent">A verification code will be sent to your email.</p>
+      <button class="btn-primary" id="request-otp-btn" data-i18n="sign.send_code">Send Verification Code</button>
       <div id="otp-form" class="hidden" style="margin-top:20px;">
-        <p>Enter the 6-digit code sent to <strong id="otp-email"></strong></p>
-        <input type="text" class="otp-input" id="otp-input" maxlength="6" placeholder="------">
+        <p><span data-i18n="sign.enter_code_to">Enter the 6-digit code sent to</span> <strong id="otp-email"></strong></p>
+        <input type="text" class="otp-input" id="otp-input" maxlength="6" data-i18n-placeholder="login.code_placeholder" placeholder="------">
         <div id="dev-otp" class="dev-otp hidden"></div>
-        <button class="btn-primary" id="verify-otp-btn" style="margin-top:12px;">Verify</button>
+        <button class="btn-primary" id="verify-otp-btn" style="margin-top:12px;" data-i18n="login.verify">Verify</button>
       </div>
       <div id="otp-error" class="error-msg"></div>
     </div>
 
+    <!-- Step 1.4: ID verification (if required) -->
+    <div class="card hidden" id="idv-card">
+      <h2>Identity Verification</h2>
+      <p>Before signing, please upload a clear photo of your government-issued ID and a selfie.</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px;">
+        <div>
+          <label style="display:block;font-size:13px;color:#555;margin-bottom:6px;font-weight:600;">Government ID (front)</label>
+          <input type="file" id="idv-id" accept="image/*" capture="environment" style="width:100%;">
+          <img id="idv-id-preview" style="display:none;max-width:100%;margin-top:8px;border-radius:6px;border:1px solid #d0d5dd;">
+        </div>
+        <div>
+          <label style="display:block;font-size:13px;color:#555;margin-bottom:6px;font-weight:600;">Selfie</label>
+          <input type="file" id="idv-selfie" accept="image/*" capture="user" style="width:100%;">
+          <img id="idv-selfie-preview" style="display:none;max-width:100%;margin-top:8px;border-radius:6px;border:1px solid #d0d5dd;">
+        </div>
+      </div>
+      <div id="idv-error" class="error-msg" style="margin-top:14px;"></div>
+      <button class="btn-primary" id="idv-submit-btn" style="margin-top:14px;" disabled>Submit for Verification</button>
+      <p style="font-size:11px;color:#888;margin-top:8px;">Both files are required. JPG/PNG/WebP, up to 8 MB each.</p>
+    </div>
+
+    <!-- Step 1.5: Payment (if required) -->
+    <div class="card hidden" id="pay-card">
+      <h2>Payment Required</h2>
+      <p>This document requires a payment of <b id="pay-display"></b> before you can sign.</p>
+      <div id="pay-status" style="margin:12px 0;font-size:13px;"></div>
+      <button class="btn-primary" id="pay-btn">Pay with Card</button>
+      <p style="font-size:12px;color:#888;margin-top:10px;">Powered by Stripe. Your card details never touch DocSeal.</p>
+      <div id="pay-error" class="error-msg"></div>
+    </div>
+
     <!-- Step 2: Review & Sign -->
     <div class="card hidden" id="sign-card">
-      <h2>Review Document</h2>
-      <div class="pdf-nav">
-        <button class="btn-secondary" id="prev-pg" disabled>&laquo;</button>
-        <span id="pg-info">Page 1 / 1</span>
-        <button class="btn-secondary" id="next-pg" disabled>&raquo;</button>
-      </div>
-      <div class="pdf-viewer" id="pdf-viewer">
-        <canvas id="pdf-canvas"></canvas>
-      </div>
+      <h2 data-i18n="sign.review_doc">Review Document</h2>
+      <div id="field-summary" class="field-summary hidden"></div>
+      <div class="pdf-viewer" id="pdf-viewer"></div>
 
       <div class="sig-section">
-        <h3>Draw Your Signature</h3>
+        <h3 data-i18n="sign.draw_signature">Draw Your Signature</h3>
         <canvas id="sign-canvas" width="480" height="140"></canvas>
         <div class="sig-controls">
-          <button class="btn-secondary" id="clear-sig">Clear</button>
-          <span style="font-size:12px;color:#888;">Draw your signature above</span>
+          <button class="btn-secondary" id="clear-sig" data-i18n="sign.clear">Clear</button>
+          <span style="font-size:12px;color:#888;" data-i18n="sign.draw_above">Draw your signature above</span>
         </div>
       </div>
 
       <div id="sign-error" class="error-msg"></div>
 
       <div class="submit-area">
-        <button class="btn-primary" id="submit-btn">Sign Document</button>
-        <span style="font-size:12px;color:#888;">By signing, you agree this is your legal signature.</span>
+        <button class="btn-primary" id="submit-btn" data-i18n="sign.sign_btn">Sign Document</button>
+        <span style="font-size:12px;color:#888;" data-i18n="sign.legal_disclaimer">By signing, you agree this is your legal signature.</span>
       </div>
     </div>
 
@@ -102,21 +136,24 @@
     <div class="card hidden" id="success-card">
       <div class="success-card">
         <div class="icon">&#9989;</div>
-        <h2>Document Signed!</h2>
-        <p id="success-msg">Your signature has been recorded. The document owner will be notified.</p>
+        <h2 data-i18n="sign.success">Document Signed!</h2>
+        <p id="success-msg" data-i18n="sign.success_msg">Your signature has been recorded. The document owner will be notified.</p>
       </div>
     </div>
   </div>
 
   <script>
     const token = window.location.pathname.split('/sign/')[1];
-    let pdfDoc = null, currentPage = 1, totalPages = 1;
+    let pdfDoc = null;
+    let signerInfo = null;        // { signerName, signerEmail, fields, readonlyFields, ... }
+    const fieldValues = {};       // { fieldId: value }
 
     // Load document info
     async function init() {
       const resp = await fetch(`/api/sign/${token}/info`);
       if (!resp.ok) { document.body.innerHTML = '<div style="text-align:center;padding:60px;"><h2>Link not found or expired</h2></div>'; return; }
       const info = await resp.json();
+      signerInfo = info;
       document.getElementById('doc-title').textContent = info.docTitle;
       document.getElementById('signer-name').textContent = info.signerName;
       document.getElementById('signer-email').textContent = info.signerEmail;
@@ -163,39 +200,226 @@
       const data = await resp.json();
       if (!resp.ok) { errDiv.textContent = data.error; errDiv.classList.add('show'); return; }
 
-      // Show PDF + signing
+      // Sequence after OTP: ID verify → payment → sign
       document.getElementById('otp-card').classList.add('hidden');
+      proceedAfterOTP();
+    });
+
+    function proceedAfterOTP() {
+      if (signerInfo.idVerificationRequired && signerInfo.idVerificationStatus !== 'verified') {
+        document.getElementById('idv-card').classList.remove('hidden');
+        return;
+      }
+      if (signerInfo.paymentRequired && signerInfo.paymentStatus !== 'paid') {
+        showPaymentCard();
+        return;
+      }
       document.getElementById('sign-card').classList.remove('hidden');
       loadPdf();
+    }
+
+    // ── ID verify flow ──
+    let idvFiles = { id: null, selfie: null };
+    function previewFile(input, imgEl, key) {
+      input.addEventListener('change', () => {
+        const f = input.files[0];
+        if (!f) return;
+        idvFiles[key] = f;
+        const reader = new FileReader();
+        reader.onload = (e) => { imgEl.src = e.target.result; imgEl.style.display = 'block'; };
+        reader.readAsDataURL(f);
+        document.getElementById('idv-submit-btn').disabled = !(idvFiles.id && idvFiles.selfie);
+      });
+    }
+    previewFile(document.getElementById('idv-id'), document.getElementById('idv-id-preview'), 'id');
+    previewFile(document.getElementById('idv-selfie'), document.getElementById('idv-selfie-preview'), 'selfie');
+
+    document.getElementById('idv-submit-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('idv-submit-btn');
+      const err = document.getElementById('idv-error');
+      err.classList.remove('show');
+      if (!idvFiles.id || !idvFiles.selfie) return;
+      btn.disabled = true; btn.textContent = 'Uploading...';
+      try {
+        const fd = new FormData();
+        fd.append('id', idvFiles.id);
+        fd.append('selfie', idvFiles.selfie);
+        const resp = await fetch(`/api/sign/${token}/id-verify`, { method: 'POST', body: fd });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Upload failed');
+        signerInfo.idVerificationStatus = 'verified';
+        document.getElementById('idv-card').classList.add('hidden');
+        proceedAfterOTP();
+      } catch (e) {
+        err.textContent = e.message; err.classList.add('show');
+        btn.disabled = false; btn.textContent = 'Submit for Verification';
+      }
     });
+
+    // ── Payment flow ──
+    function showPaymentCard() {
+      const card = document.getElementById('pay-card');
+      card.classList.remove('hidden');
+      const cents = signerInfo.paymentAmountCents;
+      const cur = signerInfo.paymentCurrency || 'CAD';
+      document.getElementById('pay-display').textContent = (cents / 100).toFixed(2) + ' ' + cur;
+      if (!signerInfo.paymentConfigured) {
+        document.getElementById('pay-btn').disabled = true;
+        document.getElementById('pay-error').textContent = 'Payments are not configured on this server. Contact the document sender.';
+        document.getElementById('pay-error').classList.add('show');
+      }
+    }
+    document.getElementById('pay-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('pay-btn');
+      btn.disabled = true; btn.textContent = 'Opening checkout...';
+      try {
+        const resp = await fetch(`/api/sign/${token}/payment-checkout`, { method: 'POST' });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Could not start checkout');
+        window.location.href = data.url;
+      } catch (e) {
+        document.getElementById('pay-error').textContent = e.message;
+        document.getElementById('pay-error').classList.add('show');
+        btn.disabled = false; btn.textContent = 'Pay with Card';
+      }
+    });
+
+    // On return from Stripe, verify and proceed
+    (async function() {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('stripe_session')) {
+        // Wait until OTP-verified before verify; for simplicity just attempt verify
+        try {
+          const resp = await fetch(`/api/sign/${token}/payment-verify`, { method: 'POST' });
+          const data = await resp.json();
+          if (data.ok && data.status === 'paid') {
+            // Strip the query and reload (info will now show paymentStatus=paid)
+            history.replaceState({}, '', window.location.pathname);
+            // Re-init to refresh status
+            location.reload();
+          }
+        } catch {}
+      }
+    })();
 
     document.getElementById('otp-input').addEventListener('keydown', e => {
       if (e.key === 'Enter') document.getElementById('verify-otp-btn').click();
     });
 
-    // PDF viewer
+    // PDF viewer (multi-page, with field overlays)
     async function loadPdf() {
       pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
       const resp = await fetch(`/api/sign/${token}/pdf`);
       const buf = await resp.arrayBuffer();
       pdfDoc = await pdfjsLib.getDocument({ data: buf }).promise;
-      totalPages = pdfDoc.numPages;
-      await renderPage();
+      const viewer = document.getElementById('pdf-viewer');
+      viewer.innerHTML = '';
+
+      const pageWraps = [];
+      for (let i = 1; i <= pdfDoc.numPages; i++) {
+        const page = await pdfDoc.getPage(i);
+        const vp = page.getViewport({ scale: 1.3 });
+        const wrap = document.createElement('div');
+        wrap.className = 'pdf-page-wrap';
+        wrap.style.width = vp.width + 'px';
+        wrap.style.height = vp.height + 'px';
+        wrap.dataset.page = i;
+        const canvas = document.createElement('canvas');
+        canvas.width = vp.width; canvas.height = vp.height;
+        wrap.appendChild(canvas);
+        viewer.appendChild(wrap);
+        await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+        pageWraps[i] = wrap;
+      }
+
+      // Render this signer's fields
+      const myFields = signerInfo.fields || [];
+      const otherFields = signerInfo.readonlyFields || [];
+      myFields.forEach(f => renderSignerField(pageWraps[f.page], f, false));
+      otherFields.forEach(f => renderSignerField(pageWraps[f.page], f, true));
+
+      updateFieldSummary();
     }
 
-    async function renderPage() {
-      const page = await pdfDoc.getPage(currentPage);
-      const vp = page.getViewport({ scale: 1.3 });
-      const canvas = document.getElementById('pdf-canvas');
-      canvas.width = vp.width; canvas.height = vp.height;
-      await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
-      document.getElementById('pg-info').textContent = `Page ${currentPage} / ${totalPages}`;
-      document.getElementById('prev-pg').disabled = currentPage <= 1;
-      document.getElementById('next-pg').disabled = currentPage >= totalPages;
+    function renderSignerField(pageEl, f, readonly) {
+      if (!pageEl) return;
+      const r = pageEl.getBoundingClientRect();
+      const w = pageEl.offsetWidth, h = pageEl.offsetHeight;
+      const div = document.createElement('div');
+      div.className = 'pdf-field' + (readonly ? ' readonly' : '');
+      div.style.left = (f.xPct * w) + 'px';
+      div.style.top = (f.yPct * h) + 'px';
+      div.style.width = (f.wPct * w) + 'px';
+      div.style.height = (f.hPct * h) + 'px';
+      div.dataset.fid = f.id;
+
+      const tag = document.createElement('span');
+      tag.className = 'field-label-tag';
+      tag.textContent = readonly ? 'Locked' : (f.label || f.type) + (f.required ? ' *' : '');
+      div.appendChild(tag);
+
+      if (readonly) {
+        pageEl.appendChild(div);
+        return;
+      }
+
+      // Auto-fill defaults
+      let initial = '';
+      if (f.type === 'name') initial = signerInfo.signerName;
+      else if (f.type === 'email') initial = signerInfo.signerEmail;
+      else if (f.type === 'date') initial = new Date().toISOString().slice(0, 10);
+      else if (f.type === 'initials') initial = (signerInfo.signerName || '').split(' ').map(p => p[0] || '').join('').toUpperCase().slice(0, 4);
+
+      if (f.type === 'checkbox') {
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.style.width = '100%'; cb.style.height = '100%'; cb.style.cursor = 'pointer';
+        cb.addEventListener('change', () => {
+          fieldValues[f.id] = cb.checked;
+          div.classList.toggle('filled', cb.checked);
+          updateFieldSummary();
+        });
+        div.appendChild(cb);
+      } else if (f.type === 'signature') {
+        // Click opens signature pad (the existing canvas at the bottom)
+        div.style.display = 'flex'; div.style.alignItems = 'center'; div.style.justifyContent = 'center';
+        div.style.fontSize = '11px'; div.style.color = '#f57c00'; div.style.fontWeight = '600';
+        div.appendChild(document.createTextNode('Click "Sign" below'));
+        // Mark as auto-filled when signature canvas has content
+        fieldValues[f.id] = '';
+      } else {
+        const input = document.createElement('input');
+        input.type = (f.type === 'date') ? 'date' : 'text';
+        input.value = initial;
+        if (initial) { fieldValues[f.id] = initial; div.classList.add('filled'); }
+        input.addEventListener('input', () => {
+          fieldValues[f.id] = input.value;
+          div.classList.toggle('filled', !!input.value);
+          updateFieldSummary();
+        });
+        div.appendChild(input);
+      }
+
+      pageEl.appendChild(div);
     }
 
-    document.getElementById('prev-pg').addEventListener('click', async () => { if (currentPage > 1) { currentPage--; await renderPage(); } });
-    document.getElementById('next-pg').addEventListener('click', async () => { if (currentPage < totalPages) { currentPage++; await renderPage(); } });
+    function updateFieldSummary() {
+      const s = document.getElementById('field-summary');
+      const myFields = (signerInfo && signerInfo.fields) || [];
+      if (!myFields.length) { s.classList.add('hidden'); return; }
+      const required = myFields.filter(f => f.required && f.type !== 'signature');
+      const filled = required.filter(f => {
+        const v = fieldValues[f.id];
+        return f.type === 'checkbox' ? v === true : (v != null && String(v).trim() !== '');
+      });
+      s.classList.remove('hidden');
+      s.textContent = `Fields to fill: ${filled.length}/${required.length} required completed.`;
+      if (filled.length === required.length) {
+        s.style.background = '#e8f5e9'; s.style.borderColor = '#4caf50'; s.style.color = '#2e7d32';
+      } else {
+        s.style.background = '#fff8e1'; s.style.borderColor = '#ffc107'; s.style.color = '#6d4c00';
+      }
+    }
 
     // Signature canvas
     const sigCanvas = document.getElementById('sign-canvas');
@@ -274,6 +498,7 @@
             browserInfo: `${browser} on ${os}`,
             geoCoords,
             publicIp,
+            fieldValues,
           })
         });
         const data = await resp.json();

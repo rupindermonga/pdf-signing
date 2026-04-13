@@ -10,7 +10,8 @@ const state = {
   totalPages: 1,
   zoom: 1.0,
   sigPlaced: false,
-  stampRelX: 0.55, // stamp position as fraction of PDF page (0-1)
+  // Stamp position stored as top-left fraction of the visible PDF page.
+  stampRelX: 0.55,
   stampRelY: 0.85,
   // Security
   documentId: '',
@@ -357,6 +358,9 @@ async function renderPage() {
   prevPage.disabled = state.currentPage <= 1;
   nextPage.disabled = state.currentPage >= state.totalPages;
   zoomLevel.textContent = Math.round(state.zoom * 100) + '%';
+  if (state.sigPlaced && !sigOverlay.classList.contains('hidden')) {
+    positionOverlayFromRel();
+  }
 }
 
 prevPage.addEventListener('click', async () => { if (state.currentPage > 1) { state.currentPage--; await renderPage(); } });
@@ -404,9 +408,9 @@ function createSigOverlay() {
     <div class="resize-handle" style="position:absolute;bottom:-3px;right:-3px;width:10px;height:10px;background:#1a3b7a;border-radius:2px;cursor:nwse-resize;" title="Drag to resize"></div>
     <div class="width-handle" style="position:absolute;top:50%;right:-4px;transform:translateY(-50%);width:6px;height:20px;background:#1a3b7a;border-radius:2px;cursor:ew-resize;" title="Drag to change width"></div>`;
   sigOverlay.classList.remove('hidden');
-  // Default: bottom-right area
-  state.stampRelX = 0.75;
-  state.stampRelY = 0.88;
+  // Default: bottom-right area, stored as top-left fractions.
+  state.stampRelX = 0.58;
+  state.stampRelY = 0.72;
   positionOverlayFromRel();
   state.sigPlaced = true; downloadBtn.disabled = false;
   makeDraggable(sigOverlay);
@@ -419,28 +423,36 @@ function positionOverlayFromRel() {
   const wh = parseFloat(pdfCanvas.style.height);
   if (!ww || !wh) return;
   const ow = sigOverlay.offsetWidth, oh = sigOverlay.offsetHeight;
-  // Position overlay, clamped inside the full canvas area
-  const left = Math.max(0, Math.min(state.stampRelX * ww - ow / 2, ww - ow));
-  const top = Math.max(0, Math.min(state.stampRelY * wh - oh / 2, wh - oh));
+  // Position overlay from stored top-left fractions, clamped to the page.
+  const left = Math.max(0, Math.min(state.stampRelX * ww, ww - ow));
+  const top = Math.max(0, Math.min(state.stampRelY * wh, wh - oh));
   sigOverlay.style.left = left + 'px';
   sigOverlay.style.top = top + 'px';
 }
 
 function makeDraggable(el) {
-  let isDragging = false, startX, startY, origRelX, origRelY;
+  let isDragging = false, startX, startY, origLeft, origTop;
 
   function onMove(cx, cy) {
-    const wrapper = document.getElementById('pdf-wrapper');
-    // Drag delta as fraction of wrapper size (scroll-independent since it's a delta)
-    state.stampRelX = Math.max(0.02, Math.min(0.98, origRelX + (cx - startX) / wrapper.offsetWidth));
-    state.stampRelY = Math.max(0.02, Math.min(0.98, origRelY + (cy - startY) / wrapper.offsetHeight));
+    const ww = parseFloat(pdfCanvas.style.width);
+    const wh = parseFloat(pdfCanvas.style.height);
+    const ow = el.offsetWidth;
+    const oh = el.offsetHeight;
+    if (!ww || !wh) return;
+
+    const nextLeft = Math.max(0, Math.min(origLeft + (cx - startX), ww - ow));
+    const nextTop = Math.max(0, Math.min(origTop + (cy - startY), wh - oh));
+    state.stampRelX = nextLeft / ww;
+    state.stampRelY = nextTop / wh;
     positionOverlayFromRel();
   }
 
   el.addEventListener('mousedown', (e) => {
     if (e.target.classList.contains('resize-handle') || e.target.classList.contains('width-handle')) return;
     isDragging = true; startX = e.clientX; startY = e.clientY;
-    origRelX = state.stampRelX; origRelY = state.stampRelY; e.preventDefault();
+    origLeft = el.offsetLeft;
+    origTop = el.offsetTop;
+    e.preventDefault();
   });
   document.addEventListener('mousemove', (e) => { if (isDragging) onMove(e.clientX, e.clientY); });
   document.addEventListener('mouseup', () => { isDragging = false; });
@@ -448,7 +460,9 @@ function makeDraggable(el) {
   el.addEventListener('touchstart', (e) => {
     if (e.target.classList.contains('resize-handle') || e.target.classList.contains('width-handle')) return;
     isDragging = true; startX = e.touches[0].clientX; startY = e.touches[0].clientY;
-    origRelX = state.stampRelX; origRelY = state.stampRelY; e.preventDefault();
+    origLeft = el.offsetLeft;
+    origTop = el.offsetTop;
+    e.preventDefault();
   });
   document.addEventListener('touchmove', (e) => { if (isDragging) onMove(e.touches[0].clientX, e.touches[0].clientY); });
   document.addEventListener('touchend', () => { isDragging = false; });
@@ -467,6 +481,7 @@ function makeResizable(el) {
     // Scale font with the smaller of width/height ratios so text fits
     const scale = Math.min(newW / origW, newH / origH);
     el.style.fontSize = Math.max(5, 8 * scale) + 'px';
+    positionOverlayFromRel();
   }
 
   handle.addEventListener('mousedown', (e) => {
@@ -497,6 +512,7 @@ function makeResizable(el) {
   document.addEventListener('mousemove', (e) => {
     if (!isWResizing) return;
     el.style.width = Math.max(80, wOrigW + e.clientX - wStartX) + 'px';
+    positionOverlayFromRel();
   });
   document.addEventListener('mouseup', () => { isWResizing = false; });
 
@@ -507,21 +523,25 @@ function makeResizable(el) {
   document.addEventListener('touchmove', (e) => {
     if (!isWResizing) return;
     el.style.width = Math.max(80, wOrigW + e.touches[0].clientX - wStartX) + 'px';
+    positionOverlayFromRel();
   });
   document.addEventListener('touchend', () => { isWResizing = false; });
 }
 
 pdfCanvas.addEventListener('click', (e) => {
-  // Get click position relative to the full canvas using scroll-aware math
-  const contRect = pdfContainer.getBoundingClientRect();
-  const wrapper = document.getElementById('pdf-wrapper');
+  const canvasRect = pdfCanvas.getBoundingClientRect();
   const cw = parseFloat(pdfCanvas.style.width);
   const ch = parseFloat(pdfCanvas.style.height);
-  // Click position in container viewport + scroll offset - wrapper padding
-  const x = e.clientX - contRect.left + pdfContainer.scrollLeft - wrapper.offsetLeft;
-  const y = e.clientY - contRect.top + pdfContainer.scrollTop - wrapper.offsetTop;
-  state.stampRelX = Math.max(0.02, Math.min(0.98, x / cw));
-  state.stampRelY = Math.max(0.02, Math.min(0.98, y / ch));
+  const ow = sigOverlay.offsetWidth;
+  const oh = sigOverlay.offsetHeight;
+  if (!cw || !ch) return;
+
+  const x = e.clientX - canvasRect.left;
+  const y = e.clientY - canvasRect.top;
+  const left = Math.max(0, Math.min(x - ow / 2, cw - ow));
+  const top = Math.max(0, Math.min(y - oh / 2, ch - oh));
+  state.stampRelX = left / cw;
+  state.stampRelY = top / ch;
   positionOverlayFromRel();
   sigOverlay.classList.remove('hidden'); state.sigPlaced = true; downloadBtn.disabled = false;
 });
@@ -806,24 +826,22 @@ downloadBtn.addEventListener('click', async () => {
 
     // WYSIWYG: calculate PDF stamp size from overlay's actual screen size
     // relative to the canvas/page ratio
-    const canvasCSSW = parseFloat(pdfCanvas.style.width);
-    const canvasCSSH = parseFloat(pdfCanvas.style.height);
-    const overlayW = sigOverlay.offsetWidth;
-    const overlayH = sigOverlay.offsetHeight;
+    const canvasRect = pdfCanvas.getBoundingClientRect();
+    const overlayRect = sigOverlay.getBoundingClientRect();
+    const canvasCSSW = canvasRect.width;
+    const canvasCSSH = canvasRect.height;
+    const overlayW = overlayRect.width;
+    const overlayH = overlayRect.height;
     // Convert overlay CSS pixels to PDF points
     const stampW = Math.round((overlayW / canvasCSSW) * pageWidth);
     const stampH = Math.round((overlayH / canvasCSSH) * pageHeight);
     const userScale = stampW / 170 || 1; // for font scaling
 
-    // Map position using stored relative coordinates
-    const rx = Math.max(0.02, Math.min(0.98, state.stampRelX));
-    const ry = Math.max(0.02, Math.min(0.98, state.stampRelY));
-    // stampRelX/Y = top-left corner as fraction (set by positionOverlayFromRel)
-    // Convert overlay top-left position to PDF coordinates
-    const olLeft = sigOverlay.offsetLeft;
-    const olTop = sigOverlay.offsetTop;
-    let pdfX = (olLeft / canvasCSSW) * pageWidth;
-    let pdfY = pageHeight - ((olTop / canvasCSSH) * pageHeight) - stampH;
+    // Convert the actual on-screen overlay rectangle to PDF coordinates.
+    const leftPx = overlayRect.left - canvasRect.left;
+    const topPx = overlayRect.top - canvasRect.top;
+    let pdfX = (leftPx / canvasCSSW) * pageWidth;
+    let pdfY = pageHeight - ((topPx / canvasCSSH) * pageHeight) - stampH;
     pdfX = Math.max(2, Math.min(pdfX, pageWidth - stampW - 2));
     pdfY = Math.max(2, Math.min(pdfY, pageHeight - stampH - 2));
 

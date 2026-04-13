@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DocSeal - Templates</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <script src="/js/i18n.js" defer></script>
+  <style>
+    .tpl-container { max-width: 900px; margin: 24px auto; padding: 0 20px; }
+    .tpl-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+    .tpl-header h2 { color: #1a3b7a; font-size: 22px; }
+    .tpl-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+    .tpl-card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.07); display: flex; flex-direction: column; gap: 6px; }
+    .tpl-card h3 { color: #1a3b7a; font-size: 16px; margin: 0; }
+    .tpl-meta { font-size: 12px; color: #888; }
+    .tpl-actions { display: flex; gap: 8px; margin-top: 12px; }
+    .tpl-actions a, .tpl-actions button { flex: 1; padding: 7px 12px; font-size: 12px; border-radius: 6px; cursor: pointer; text-align: center; text-decoration: none; }
+    .tpl-use { background: #1a3b7a; color: white; border: none; }
+    .tpl-use:hover { background: #133066; }
+    .tpl-del { background: white; color: #c62828; border: 1px solid #c62828; }
+    .tpl-del:hover { background: #ffebee; }
+    .empty-state { text-align: center; padding: 60px 20px; color: #888; grid-column: 1 / -1; }
+    .empty-state .icon { font-size: 48px; margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo"><span class="logo-doc">Doc</span><span class="logo-seal">Seal</span></div>
+    <h1 data-i18n="tpl.title">Templates</h1>
+    <a href="/dashboard" class="header-link" data-i18n="common.dashboard">Dashboard</a>
+  </header>
+
+  <div class="tpl-container">
+    <div class="tpl-header">
+      <h2 data-i18n="tpl.saved">Saved Templates</h2>
+      <a href="/send" class="btn-primary" style="text-decoration:none;" data-i18n="tpl.create">+ Create Document (and save as template)</a>
+    </div>
+    <div id="tpl-list" class="tpl-list">
+      <div class="empty-state"><div class="icon">&#128196;</div><h3>Loading...</h3></div>
+    </div>
+  </div>
+
+  <script>
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+    async function load() {
+      const resp = await fetch('/api/templates');
+      if (resp.status === 401) return window.location.href = '/login';
+      const { templates } = await resp.json();
+      const list = document.getElementById('tpl-list');
+      if (!templates.length) {
+        list.innerHTML = '<div class="empty-state"><div class="icon">&#128196;</div><h3>No templates yet</h3><p>Create a signing request and tick "Save as template" to add one.</p></div>';
+        return;
+      }
+      list.innerHTML = templates.map(t => `
+        <div class="tpl-card">
+          <h3>${esc(t.name)}</h3>
+          <div class="tpl-meta">${esc(t.signers.length)} signer(s) &middot; ${esc(t.signing_mode)} &middot; ${t.has_pdf ? 'PDF included' : 'No PDF'}</div>
+          ${t.title ? `<div style="font-size:13px;color:#444;">Title: ${esc(t.title)}</div>` : ''}
+          <div class="tpl-meta">Created ${esc(new Date(t.created_at).toLocaleDateString())}</div>
+          <div class="tpl-actions">
+            <a class="tpl-use" href="/send?template=${esc(t.uuid)}">Use</a>
+            <button class="tpl-del" onclick="del('${esc(t.uuid)}', '${esc(t.name).replace(/'/g, "\\'")}')">Delete</button>
+          </div>
+        </div>`).join('');
+    }
+
+    async function del(uuid, name) {
+      if (!confirm(`Delete template "${name}"? This cannot be undone.`)) return;
+      const resp = await fetch('/api/templates/' + uuid, { method: 'DELETE' });
+      if (!resp.ok) { const d = await resp.json(); return alert(d.error || 'Delete failed'); }
+      load();
+    }
+
+    load();
+  </script>
+</body>
+</html>

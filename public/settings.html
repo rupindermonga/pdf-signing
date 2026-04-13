@@ -64,13 +64,13 @@
     <!-- WEBHOOKS -->
     <div class="card">
       <h2>Webhooks</h2>
-      <p class="desc">Receive HTTP POSTs when documents are sent, signed, completed, or cancelled. Each request is signed with HMAC-SHA256 in the <code>X-DocSeal-Signature</code> header.</p>
+      <p class="desc">Receive HTTPS POSTs when documents are sent, signed, completed, or cancelled. Each request is signed with HMAC-SHA256 in the <code>X-DocSeal-Signature</code> header (format: <code>t=&lt;unix&gt;, v1=&lt;sha256&gt;</code> where the signed payload is <code>&lt;t&gt;.&lt;body&gt;</code>). Only <code>https://</code> URLs are accepted — consumers should reject requests older than 5 minutes to prevent replay.</p>
       <table>
         <thead><tr><th>URL</th><th>Events</th><th>Last status</th><th>Active</th><th></th></tr></thead>
         <tbody id="hooks-tbody"><tr><td colspan="5" style="text-align:center;color:#888;padding:16px;">Loading...</td></tr></tbody>
       </table>
       <div class="row-form">
-        <input type="url" id="new-hook-url" placeholder="https://your-app.example.com/webhooks/docseal">
+        <input type="url" id="new-hook-url" placeholder="https://your-app.example.com/webhooks/docseal" pattern="https://.*">
       </div>
       <div class="events-checks" id="event-checks">
         <label><input type="checkbox" value="*" checked> All events</label>

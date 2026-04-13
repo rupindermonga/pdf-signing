@@ -6,10 +6,19 @@ services:
     buildCommand: npm install
     startCommand: npm start
     envVars:
+      # NEVER set to "development" in a public deployment: dev mode returns
+      # OTPs in API responses and omits the Secure cookie flag.
       - key: NODE_ENV
-        value: development
+        value: production
+      # Render terminates TLS at one reverse-proxy hop, so trust 1 X-Forwarded-* layer.
+      # This makes req.ip reflect the real client (not the proxy IP) for both audit
+      # logs and the per-IP rate limiter, and lets Express set req.secure correctly.
+      - key: TRUST_PROXY
+        value: "1"
       - key: SESSION_SECRET
         generateValue: true
+      # Set SMTP_* (and TWILIO_*, STRIPE_SECRET_KEY, ID_VERIF_KEY) via the
+      # Render dashboard — they are intentionally not committed here.
       - key: BASE_URL
         fromService:
           type: web

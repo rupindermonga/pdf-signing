@@ -8,7 +8,18 @@ const https = require('https');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { signerOps, docOps } = require('./database');
+const { signerOps, docOps, db } = require('./database');
+
+// In production-safe mode the API does not echo OTPs. The test suite still
+// needs a code to drive the auth flow, so we read it from the DB directly.
+function latestOtpFor(email) {
+  const row = db.prepare("SELECT code FROM otp_codes WHERE email = ? AND used = 0 ORDER BY rowid DESC LIMIT 1").get(email.toLowerCase());
+  return row?.code || null;
+}
+function latestSignerOtp(signerId) {
+  const row = db.prepare('SELECT otp FROM signers WHERE id = ?').get(signerId);
+  return row?.otp || null;
+}
 
 const BASE = 'http://localhost:3000';
 let passed = 0, failed = 0, warnings = 0;
@@ -133,20 +144,21 @@ async function run() {
   // ════════════════════════════════════════
   console.log('\x1b[1m[1] PAGE AVAILABILITY\x1b[0m');
   // ════════════════════════════════════════
+  // Public pages
   for (const [url, expect] of [
     ['/login', 200],
     ['/verify', 200],
-    ['/solo', 200],
+    ['/compliance', 200],
     ['/api/ip', 200],
   ]) {
     const r = await req('GET', url);
     r.status === expect ? log('PASS', `GET ${url}`, `${r.status}`) : log('FAIL', `GET ${url}`, `Expected ${expect}, got ${r.status}`);
   }
 
-  // Auth-protected pages should redirect
-  for (const url of ['/dashboard', '/send']) {
+  // Auth-protected pages MUST redirect or return 401 (no anonymous access)
+  for (const url of ['/dashboard', '/send', '/solo', '/templates', '/settings', '/bulk']) {
     const r = await req('GET', url);
-    (r.status === 302 || r.status === 200) ? log('PASS', `GET ${url} (unauthed)`, `${r.status}`) : log('FAIL', `GET ${url} (unauthed)`, `Expected redirect, got ${r.status}`);
+    (r.status === 302 || r.status === 401) ? log('PASS', `GET ${url} (unauthed)`, `${r.status}`) : log('FAIL', `GET ${url} (unauthed)`, `Expected redirect/401, got ${r.status} — anonymous access leak!`);
   }
 
   // API auth check
@@ -157,23 +169,39 @@ async function run() {
   console.log('\n\x1b[1m[2] AUTH FLOW\x1b[0m');
   // ════════════════════════════════════════
 
-  // Send OTP
+  // Send OTP. devOtp echoing in the response is ONLY acceptable in local dev mode.
+  // In any other configuration (prod or dev with non-local BASE_URL) it must be absent.
   const otpResp = await req('POST', '/api/auth/send-otp', { email: 'test@docseal.local' });
   const otpData = otpResp.json();
-  otpData?.ok ? log('PASS', 'Send OTP', `Code returned in dev mode: ${otpData.devOtp ? 'yes' : 'no'}`) : log('FAIL', 'Send OTP', otpResp.body);
+  if (!otpData?.ok) { log('FAIL', 'Send OTP', otpResp.body); }
+  else {
+    const isProd = process.env.NODE_ENV === 'production';
+    const isLocalDev = !process.env.BASE_URL || /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(process.env.BASE_URL || `http://localhost:${(new URL(BASE)).port}`);
+    if (otpData.devOtp) {
+      // OTP returned — only OK if this is a true local-dev run, otherwise it's a leak.
+      if (isProd || !isLocalDev) {
+        log('FAIL', 'OTP leak in API response', `devOtp returned but NODE_ENV=${process.env.NODE_ENV || 'unset'} BASE_URL=${process.env.BASE_URL || 'unset'} — production OTP leakage`);
+      } else {
+        log('PASS', 'Send OTP (local dev mode)', 'devOtp returned for local development convenience');
+      }
+    } else {
+      log('PASS', 'Send OTP', 'devOtp NOT echoed in response (production-safe)');
+    }
+  }
 
   // Verify with wrong code
   const wrongOtp = await req('POST', '/api/auth/verify-otp', { email: 'test@docseal.local', code: '000000' });
   wrongOtp.status === 400 ? log('PASS', 'Wrong OTP rejected', '400') : log('FAIL', 'Wrong OTP rejected', `Got ${wrongOtp.status}`);
 
   // Verify with correct code
-  const rightOtp = await req('POST', '/api/auth/verify-otp', { email: 'test@docseal.local', code: otpData.devOtp, name: 'Test User' });
+  const realOtp = otpData.devOtp || latestOtpFor('test@docseal.local');
+  const rightOtp = await req('POST', '/api/auth/verify-otp', { email: 'test@docseal.local', code: realOtp, name: 'Test User' });
   const authCookie = getCookie(rightOtp);
   rightOtp.json()?.ok ? log('PASS', 'Correct OTP accepted', 'Session created') : log('FAIL', 'Correct OTP accepted', rightOtp.body);
   authCookie ? log('PASS', 'Session cookie set', '') : log('FAIL', 'Session cookie set', 'No cookie returned');
 
   // Replay same OTP
-  const replayOtp = await req('POST', '/api/auth/verify-otp', { email: 'test@docseal.local', code: otpData.devOtp });
+  const replayOtp = await req('POST', '/api/auth/verify-otp', { email: 'test@docseal.local', code: realOtp });
   replayOtp.status === 400 ? log('PASS', 'OTP replay blocked', '400') : log('FAIL', 'OTP replay blocked', `Got ${replayOtp.status} — OTP can be reused!`);
 
   // Send OTP without email
@@ -268,9 +296,11 @@ async function run() {
     const wrongSigOtp = await req('POST', `/api/sign/${signerToken}/verify-otp`, { code: '000000' });
     wrongSigOtp.status === 400 ? log('PASS', 'Wrong signer OTP rejected', '') : log('FAIL', 'Wrong signer OTP rejected', `Got ${wrongSigOtp.status}`);
 
-    // Verify signer OTP (correct) - need session cookie from this request
-    if (sigOtpData?.devOtp) {
-      const sigVerify = await req('POST', `/api/sign/${signerToken}/verify-otp`, { code: sigOtpData.devOtp });
+    // Resolve the signer OTP from API or DB so the suite works in production-safe mode too
+    const signerRow = signerOps.findByToken(signerToken);
+    const realSigOtp = sigOtpData?.devOtp || (signerRow ? latestSignerOtp(signerRow.id) : null);
+    if (realSigOtp) {
+      const sigVerify = await req('POST', `/api/sign/${signerToken}/verify-otp`, { code: realSigOtp });
       const sigCookie = getCookie(sigVerify);
       sigVerify.json()?.ok ? log('PASS', 'Signer OTP verified', '') : log('FAIL', 'Signer OTP verified', sigVerify.body);
 
@@ -399,7 +429,8 @@ async function run() {
   // Create a second user
   const otp2 = await req('POST', '/api/auth/send-otp', { email: 'attacker@evil.local' });
   const otp2Data = otp2.json();
-  const verify2 = await req('POST', '/api/auth/verify-otp', { email: 'attacker@evil.local', code: otp2Data?.devOtp, name: 'Attacker' });
+  const real2 = otp2Data?.devOtp || latestOtpFor('attacker@evil.local');
+  const verify2 = await req('POST', '/api/auth/verify-otp', { email: 'attacker@evil.local', code: real2, name: 'Attacker' });
   const attackerCookie = getCookie(verify2);
 
   if (docUUID && attackerCookie) {
@@ -444,7 +475,7 @@ async function run() {
 
   // -- Finding 4a: User name sanitization --
   const xssOtp = await req('POST', '/api/auth/send-otp', { email: 'xssname@test.local' });
-  const xssOtpCode = xssOtp.json()?.devOtp;
+  const xssOtpCode = xssOtp.json()?.devOtp || latestOtpFor('xssname@test.local');
   if (xssOtpCode) {
     const xssVerify = await req('POST', '/api/auth/verify-otp', {
       email: 'xssname@test.local', code: xssOtpCode, name: '<img src=x onerror=alert(1)>'
@@ -471,6 +502,42 @@ async function run() {
       !storedFn.includes('<') ? log('PASS', 'Filename sanitized', `Stored: "${storedFn}"`) : log('FAIL', 'Filename NOT sanitized', `Stored raw: "${storedFn}"`);
     }
   }
+
+  // -- Regression: webhook URL validation --
+  if (authCookie) {
+    const httpHook = await req('POST', '/api/settings/webhooks', { url: 'http://example.com/hook', events: ['*'] }, { Cookie: authCookie });
+    httpHook.status === 400 ? log('PASS', 'Webhook rejects http:// URLs', '400') : log('FAIL', 'Webhook accepts http:// URLs', `Got ${httpHook.status} — HMAC secrets would transit cleartext!`);
+
+    const ipHook = await req('POST', '/api/settings/webhooks', { url: 'https://169.254.169.254/imds', events: ['*'] }, { Cookie: authCookie });
+    ipHook.status === 400 ? log('PASS', 'Webhook rejects link-local IP', '400') : log('FAIL', 'Webhook accepts link-local IP', `Got ${ipHook.status} — SSRF risk on cloud hosts`);
+
+    const lhHook = await req('POST', '/api/settings/webhooks', { url: 'https://localhost/hook', events: ['*'] }, { Cookie: authCookie });
+    lhHook.status === 400 ? log('PASS', 'Webhook rejects localhost', '400') : log('FAIL', 'Webhook accepts localhost', `Got ${lhHook.status}`);
+  }
+
+  // -- Regression: ID verification files are encrypted at rest --
+  try {
+    const idDir = path.join(__dirname, 'data', 'idverif');
+    if (fs.existsSync(idDir)) {
+      const encFiles = fs.readdirSync(idDir).filter(f => f.endsWith('.enc'));
+      const plainFiles = fs.readdirSync(idDir).filter(f => /\.(jpe?g|png|webp)$/i.test(f) && !f.endsWith('.enc'));
+      if (plainFiles.length) {
+        log('FAIL', 'ID verify files: plaintext on disk', `${plainFiles.length} unencrypted file(s) in data/idverif/`);
+      } else {
+        log('PASS', 'ID verify files: encrypted on disk', `${encFiles.length} .enc file(s)`);
+      }
+    } else {
+      log('PASS', 'ID verify dir: not yet populated', 'no files to inspect');
+    }
+  } catch (e) {
+    log('WARN', 'ID verify file inspection', e.message);
+  }
+
+  // -- Regression: solo + qr endpoints are authenticated --
+  const soloApi = await req('POST', '/api/sign', { pdfBytes: [37, 80, 68, 70] });
+  (soloApi.status === 302 || soloApi.status === 401) ? log('PASS', '/api/sign requires auth', `${soloApi.status}`) : log('FAIL', '/api/sign anonymous access', `Got ${soloApi.status} — anyone can mint signed PDFs!`);
+  const qrApi = await req('POST', '/api/qr', { data: 'x' });
+  (qrApi.status === 302 || qrApi.status === 401) ? log('PASS', '/api/qr requires auth', `${qrApi.status}`) : log('FAIL', '/api/qr anonymous access', `Got ${qrApi.status}`);
 
   // ════════════════════════════════════════
   console.log('\n\x1b[1m[7] STATIC CODE PATTERNS\x1b[0m');

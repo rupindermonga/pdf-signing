@@ -20,8 +20,34 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
 
+// Trust the N closest proxies in front of us (default: 0 = no proxy; Render = 1).
+// Set TRUST_PROXY=1 (or higher) in deployments behind a reverse proxy so that
+// req.ip reflects the real client IP and Express sets `secure` on req correctly.
+// When 0/unset, Express treats X-Forwarded-For as untrusted and uses socket IP.
+const TRUST_PROXY = parseInt(process.env.TRUST_PROXY || '0', 10);
+if (TRUST_PROXY > 0) app.set('trust proxy', TRUST_PROXY);
+
+// Unified client-IP helper — honours trust-proxy setting, strips IPv4-mapped
+// IPv6 prefix, and normalizes loopback for audit-log readability.
+function clientIp(req) {
+  // When trust proxy is set, req.ip is the real client; otherwise it's the socket peer.
+  const raw = (req.ip || req.socket.remoteAddress || '').toString();
+  return raw.replace('::ffff:', '').replace(/^::1$/, '127.0.0.1');
+}
+
 // DEV mode must be explicitly enabled — defaults to production-safe behavior
 const IS_DEV = process.env.NODE_ENV === 'development';
+// OTPs are returned in API responses only in LOCAL dev mode (never on a
+// remote BASE_URL). Even if NODE_ENV is accidentally set to "development" on
+// a public host, this guard prevents the OTP from leaving the server.
+const IS_LOCAL = !process.env.BASE_URL || /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(process.env.BASE_URL);
+const ALLOW_DEV_OTP = IS_DEV && IS_LOCAL;
+if (IS_DEV && !IS_LOCAL) {
+  console.warn('\x1b[33m[docseal] NODE_ENV=development on a non-local BASE_URL — OTPs will NOT be returned in responses. Set NODE_ENV=production to remove this warning.\x1b[0m');
+}
+if (!IS_DEV && process.env.NODE_ENV !== 'production') {
+  console.warn('\x1b[33m[docseal] NODE_ENV is not set to "production" — session cookies will be issued without the Secure flag. Set NODE_ENV=production in your deployment.\x1b[0m');
+}
 
 // ─── Security headers ───
 app.use((req, res, next) => {
@@ -67,8 +93,9 @@ app.use(session({
 const rateLimits = new Map();
 function rateLimit(windowMs, maxReqs) {
   return (req, res, next) => {
-    // Use socket address only — X-Forwarded-For is spoofable unless behind a trusted proxy
-    const ip = req.socket.remoteAddress || '';
+    // clientIp() honours TRUST_PROXY: behind a trusted proxy it's the real client IP,
+    // otherwise it falls back to the socket peer (so X-Forwarded-For can't be spoofed).
+    const ip = clientIp(req);
     const key = ip + ':' + req.path;
     const now = Date.now();
     const entry = rateLimits.get(key) || { count: 0, resetAt: now + windowMs };
@@ -205,7 +232,8 @@ function isBlockedIP(ip) {
 
 async function resolveAndCheckUrl(urlStr) {
   const url = new URL(urlStr);
-  if (!/^https?:$/.test(url.protocol)) return { ok: false, reason: 'non_http_protocol' };
+  // Webhooks MUST use HTTPS — plain HTTP would leak payloads and HMAC secrets on path.
+  if (url.protocol !== 'https:') return { ok: false, reason: 'https_required' };
   const host = url.hostname.toLowerCase();
   if (host === 'localhost' || host === 'metadata.google.internal') return { ok: false, reason: 'blocked_host' };
   // If the host is already a literal IP, check it directly
@@ -240,7 +268,8 @@ async function fireWebhooks(userId, event, payload) {
         continue;
       }
       const url = check.url;
-      const protocol = url.protocol === 'https:' ? require('https') : require('http');
+      // resolveAndCheckUrl has already enforced https://
+      const protocol = require('https');
       const opts = {
         method: 'POST',
         hostname: url.hostname,
@@ -283,7 +312,7 @@ app.post('/api/auth/send-otp', rateLimit(60000, 5), async (req, res) => {
   const otp = otpOps.create(userEmail);
 
   const sent = await email.sendLoginOTP(userEmail, otp);
-  if (!sent && IS_DEV) {
+  if (!sent && ALLOW_DEV_OTP) {
     return res.json({ ok: true, devOtp: otp, message: 'Email not configured (dev mode). Use this code.' });
   }
   if (!sent) {
@@ -730,7 +759,7 @@ app.post('/api/sign/:token/send-otp', rateLimit(60000, 5), async (req, res) => {
     sent = await email.sendSignerOTP(signer.email, signer.name, otp);
   }
 
-  if (!sent && IS_DEV) return res.json({ ok: true, devOtp: otp, channel });
+  if (!sent && ALLOW_DEV_OTP) return res.json({ ok: true, devOtp: otp, channel });
   if (!sent) return res.status(500).json({ error: 'Code delivery failed' });
   res.json({ ok: true, channel });
 });
@@ -789,9 +818,9 @@ app.post('/api/sign/:token/submit', rateLimit(60000, 10), async (req, res) => {
   }
 
   const { signatureData, location, browserInfo, geoCoords, publicIp, fieldValues } = req.body;
-  // Prefer client-reported public IP (from ipify.org), fall back to socket IP
-  const socketIp = (req.socket.remoteAddress || '').replace('::ffff:', '').replace('::1', '127.0.0.1');
-  const ip = sanitize(publicIp || '') || socketIp;
+  // Prefer client-reported public IP (from ipify.org), fall back to clientIp()
+  // which respects TRUST_PROXY for accurate audit logging behind a reverse proxy.
+  const ip = sanitize(publicIp || '') || clientIp(req);
 
   // Validate field values: only this signer's fields, all required ones must be filled
   const allFields = docOps.getFields(signer.document_id);
@@ -1261,7 +1290,7 @@ app.get('/api/settings/webhooks', requireAuth, (req, res) => {
 });
 app.post('/api/settings/webhooks', requireAuth, async (req, res) => {
   const url = (req.body.url || '').trim();
-  if (!url || !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Valid http(s) URL required' });
+  if (!url || !/^https:\/\//i.test(url)) return res.status(400).json({ error: 'Valid https:// URL required (plain http is not allowed for webhooks)' });
   // Defense-in-depth: reject private / link-local / loopback URLs at creation, not only at fire time
   const check = await resolveAndCheckUrl(url);
   if (!check.ok) return res.status(400).json({ error: `Webhook URL rejected (${check.reason}) — public HTTPS endpoints only` });
@@ -1471,8 +1500,7 @@ app.post('/api/sign', requireAuth, rateLimit(60000, 20), async (req, res) => {
 
 // ─── IP ───
 app.get('/api/ip', (req, res) => {
-  const ip = (req.socket.remoteAddress || '').replace('::ffff:', '').replace('::1', '127.0.0.1');
-  res.json({ ip });
+  res.json({ ip: clientIp(req) });
 });
 
 // ─── Verify page ───

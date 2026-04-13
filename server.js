@@ -30,7 +30,21 @@ app.use((req, res, next) => {
   res.setHeader('X-XSS-Protection', '1; mode=block');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com blob:; worker-src blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://nominatim.openstreetmap.org https://api.ipify.org data:;");
+  // TODO(follow-up): migrate inline <script> blocks to external JS + nonces, then drop 'unsafe-inline'.
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com blob:",
+    "worker-src blob:",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src https://fonts.gstatic.com",
+    "img-src 'self' data: blob:",
+    "connect-src 'self' https://nominatim.openstreetmap.org https://api.ipify.org https://api.stripe.com data:",
+    "frame-src https://checkout.stripe.com",
+    "frame-ancestors 'none'",
+    "form-action 'self' https://checkout.stripe.com",
+    "base-uri 'self'",
+    "object-src 'none'",
+  ].join('; '));
   next();
 });
 
@@ -86,6 +100,32 @@ if (!fs.existsSync(templatesDir)) fs.mkdirSync(templatesDir, { recursive: true }
 const idVerifDir = path.join(__dirname, 'data', 'idverif');
 if (!fs.existsSync(idVerifDir)) fs.mkdirSync(idVerifDir, { recursive: true });
 
+// ─── ID-verification at-rest encryption (AES-256-GCM) ───
+// Key derived from ID_VERIF_KEY env; if unset, derive from SESSION_SECRET (dev fallback).
+// Rotating the key invalidates prior files by design — store them off-server if you need portability.
+const idVerifKey = crypto.createHash('sha256')
+  .update(process.env.ID_VERIF_KEY || process.env.SESSION_SECRET || 'docseal-dev-idverif')
+  .digest();
+
+function encryptIdBlob(plaintext) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', idVerifKey, iv);
+  const enc = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  // On-disk format: [12 byte IV][16 byte auth tag][ciphertext]
+  return Buffer.concat([iv, tag, enc]);
+}
+
+function decryptIdBlob(blob) {
+  if (!blob || blob.length < 28) throw new Error('encrypted blob too small');
+  const iv = blob.subarray(0, 12);
+  const tag = blob.subarray(12, 28);
+  const ct = blob.subarray(28);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', idVerifKey, iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(ct), decipher.final()]);
+}
+
 // P12 Certificate
 const certPath = path.join(__dirname, 'cert', 'docseal.p12');
 let p12Buffer = null;
@@ -113,6 +153,12 @@ function sanitize(str) {
   return str.replace(/[<>]/g, '');
 }
 
+// ─── Email format validation ───
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+function isValidEmail(s) {
+  return typeof s === 'string' && s.length <= 254 && EMAIL_RE.test(s);
+}
+
 // ─── Auth middleware ───
 function requireAuth(req, res, next) {
   if (req.session && req.session.userId) return next();
@@ -135,22 +181,65 @@ function requireApiKey(scope = 'rw') {
   };
 }
 
+// ─── SSRF protection: block private / link-local / loopback IPs (v4 + v6) ───
+function isBlockedIP(ip) {
+  if (!ip) return true;
+  const s = String(ip).toLowerCase();
+  // IPv4
+  if (/^127\./.test(s)) return true;                                          // loopback
+  if (/^10\./.test(s)) return true;                                           // RFC1918
+  if (/^192\.168\./.test(s)) return true;                                     // RFC1918
+  if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(s)) return true;                  // RFC1918
+  if (/^169\.254\./.test(s)) return true;                                     // link-local (AWS IMDS etc.)
+  if (/^0\./.test(s)) return true;                                            // 0.0.0.0/8
+  if (/^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./.test(s)) return true;  // CGNAT 100.64/10
+  // IPv6
+  if (s === '::1' || s === '::') return true;
+  if (s.startsWith('fe80:') || s.startsWith('fe90:') || s.startsWith('fea0:') || s.startsWith('feb0:')) return true; // link-local
+  if (/^f[cd][0-9a-f]{2}:/.test(s)) return true;                              // unique-local fc00::/7
+  if (s.startsWith('::ffff:')) {                                              // IPv4-mapped
+    return isBlockedIP(s.slice(7));
+  }
+  return false;
+}
+
+async function resolveAndCheckUrl(urlStr) {
+  const url = new URL(urlStr);
+  if (!/^https?:$/.test(url.protocol)) return { ok: false, reason: 'non_http_protocol' };
+  const host = url.hostname.toLowerCase();
+  if (host === 'localhost' || host === 'metadata.google.internal') return { ok: false, reason: 'blocked_host' };
+  // If the host is already a literal IP, check it directly
+  if (/^[\d.]+$/.test(host) || host.includes(':')) {
+    return { ok: !isBlockedIP(host), reason: isBlockedIP(host) ? 'blocked_private_ip' : null, url };
+  }
+  // Resolve via DNS (prevents hostname-smuggling and partial DNS rebinding)
+  return new Promise((resolve) => {
+    require('dns').lookup(host, { all: true }, (err, addrs) => {
+      if (err) return resolve({ ok: false, reason: 'dns_error', url });
+      for (const a of addrs) {
+        if (isBlockedIP(a.address)) return resolve({ ok: false, reason: 'blocked_private_ip', url });
+      }
+      resolve({ ok: true, url });
+    });
+  });
+}
+
 // ─── Webhook fire (async, fire-and-forget) ───
 async function fireWebhooks(userId, event, payload) {
   const hooks = webhookOps.listForEvent(userId, event);
   for (const w of hooks) {
+    const ts = Math.floor(Date.now() / 1000);
     const body = JSON.stringify({ event, created_at: new Date().toISOString(), data: payload });
-    const sig = crypto.createHmac('sha256', w.secret).update(body).digest('hex');
+    // Signed payload includes timestamp to mitigate replay (consumers verify ±300s)
+    const signedPayload = `${ts}.${body}`;
+    const sig = crypto.createHmac('sha256', w.secret).update(signedPayload).digest('hex');
     try {
-      const url = new URL(w.url);
-      // Block private IPs to prevent SSRF
-      const host = url.hostname.toLowerCase();
-      if (host === 'localhost' || host === '127.0.0.1' || host === '::1' ||
-          host.startsWith('10.') || host.startsWith('192.168.') ||
-          /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)) {
-        webhookOps.recordFire(w.id, 'blocked_private_ip');
+      const check = await resolveAndCheckUrl(w.url);
+      if (!check.ok) {
+        webhookOps.recordFire(w.id, check.reason || 'blocked');
         continue;
       }
+      const url = check.url;
       const protocol = url.protocol === 'https:' ? require('https') : require('http');
       const opts = {
         method: 'POST',
@@ -162,7 +251,9 @@ async function fireWebhooks(userId, event, payload) {
           'Content-Length': Buffer.byteLength(body),
           'User-Agent': 'DocSeal-Webhook/1.0',
           'X-DocSeal-Event': event,
-          'X-DocSeal-Signature': 'sha256=' + sig,
+          // Stripe-style signature: t=<unix timestamp>, v1=<hmac of `${t}.${body}`>
+          // Consumers: reject if |now - t| > 300s, then recompute HMAC and compare.
+          'X-DocSeal-Signature': `t=${ts}, v1=${sig}`,
         },
         timeout: 8000,
       };
@@ -282,6 +373,10 @@ app.post('/api/documents/create', requireAuth, (req, res, next) => {
       phone: sanitize(s.phone || '').replace(/[^\d+]/g, '').slice(0, 20),
       notifyMethod: allowedMethods.includes(s.notifyMethod) ? s.notifyMethod : 'email',
     }));
+
+    // Validate: every signer needs a name and a well-formed email
+    const bad = cleanSigners.find(s => !s.name || !isValidEmail(s.email));
+    if (bad) return res.status(400).json({ error: `Invalid signer entry (name and valid email required): ${bad.email || '(missing email)'}` });
 
     // Must have at least one non-CC signer
     if (!cleanSigners.some(s => s.role !== 'cc')) {
@@ -514,7 +609,7 @@ app.get('/api/sign/:token/info', (req, res) => {
 });
 
 // ─── ID verification upload (multipart: id, selfie) ───
-app.post('/api/sign/:token/id-verify', (req, res, next) => {
+app.post('/api/sign/:token/id-verify', rateLimit(60000, 5), (req, res, next) => {
   const idUpload = multer({
     storage: multer.memoryStorage(),
     fileFilter: (req, file, cb) => {
@@ -552,10 +647,17 @@ app.post('/api/sign/:token/id-verify', (req, res, next) => {
   }
 
   const ext = (file) => file.mimetype === 'image/png' ? 'png' : (file.mimetype === 'image/webp' ? 'webp' : 'jpg');
-  const idPath = path.join(idVerifDir, `${signer.doc_uuid}_${signer.id}_id.${ext(idFile)}`);
-  const selfiePath = path.join(idVerifDir, `${signer.doc_uuid}_${signer.id}_selfie.${ext(selfieFile)}`);
-  fs.writeFileSync(idPath, idFile.buffer);
-  fs.writeFileSync(selfiePath, selfieFile.buffer);
+  // Files stored AES-256-GCM encrypted with a `.enc` suffix. The original extension is
+  // retained before `.enc` so tooling can still identify the original type after decryption.
+  const idPath = path.join(idVerifDir, `${signer.doc_uuid}_${signer.id}_id.${ext(idFile)}.enc`);
+  const selfiePath = path.join(idVerifDir, `${signer.doc_uuid}_${signer.id}_selfie.${ext(selfieFile)}.enc`);
+  try {
+    fs.writeFileSync(idPath, encryptIdBlob(idFile.buffer));
+    fs.writeFileSync(selfiePath, encryptIdBlob(selfieFile.buffer));
+  } catch (e) {
+    console.error('ID file encryption failed:', e.message);
+    return res.status(500).json({ error: 'Could not store verification files' });
+  }
 
   signerOps.setIdFiles(signer.id, idPath, selfiePath);
   res.json({ ok: true, status: 'verified' });
@@ -668,7 +770,7 @@ app.get('/api/sign/:token/pdf', (req, res) => {
   res.sendFile(filePath);
 });
 
-app.post('/api/sign/:token/submit', async (req, res) => {
+app.post('/api/sign/:token/submit', rateLimit(60000, 10), async (req, res) => {
   const signer = signerOps.findByToken(req.params.token);
   if (!signer) return res.status(404).json({ error: 'Not found' });
   if (signer.status === 'signed') return res.status(400).json({ error: 'Already signed' });
@@ -1157,9 +1259,12 @@ app.get('/api/settings/webhooks', requireAuth, (req, res) => {
   }));
   res.json({ webhooks: list });
 });
-app.post('/api/settings/webhooks', requireAuth, (req, res) => {
+app.post('/api/settings/webhooks', requireAuth, async (req, res) => {
   const url = (req.body.url || '').trim();
   if (!url || !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Valid http(s) URL required' });
+  // Defense-in-depth: reject private / link-local / loopback URLs at creation, not only at fire time
+  const check = await resolveAndCheckUrl(url);
+  if (!check.ok) return res.status(400).json({ error: `Webhook URL rejected (${check.reason}) — public HTTPS endpoints only` });
   const events = Array.isArray(req.body.events) ? req.body.events : ['*'];
   const allowed = ['*', 'document.sent', 'document.signed_by', 'document.completed', 'document.cancelled'];
   const cleanEvents = events.filter(e => allowed.includes(e));
@@ -1239,6 +1344,8 @@ app.post('/api/v1/documents', requireApiKey('rw'), (req, res, next) => {
       email: sanitize(s.email || '').toLowerCase(),
       role: allowedRoles.includes(s.role) ? s.role : 'sign',
     }));
+    const bad = cleanSigners.find(s => !s.name || !isValidEmail(s.email));
+    if (bad) return res.status(400).json({ error: `Invalid signer entry (name and valid email required): ${bad.email || '(missing email)'}` });
     if (!cleanSigners.some(s => s.role !== 'cc')) {
       return res.status(400).json({ error: 'At least one signer must have role Sign or Approve' });
     }
@@ -1320,18 +1427,19 @@ app.get('/api/v1/templates', requireApiKey('ro'), (req, res) => {
   res.json({ templates: list });
 });
 
-// ─── QR Code ───
-app.post('/api/qr', async (req, res) => {
+// ─── QR Code (authenticated — guard against abuse & CPU DoS) ───
+app.post('/api/qr', requireAuth, rateLimit(60000, 30), async (req, res) => {
   try {
     const { data } = req.body;
-    if (!data) return res.status(400).json({ error: 'No data' });
+    if (typeof data !== 'string' || !data.length) return res.status(400).json({ error: 'No data' });
+    if (data.length > 2048) return res.status(413).json({ error: 'QR data too large (max 2048 chars)' });
     const qr = await QRCode.toDataURL(data, { errorCorrectionLevel: 'M', margin: 1, width: 200, color: { dark: '#1a3b7a', light: '#ffffff' } });
     res.json({ qr });
   } catch { res.status(500).json({ error: 'QR failed' }); }
 });
 
-// ─── Solo PKI Sign ───
-app.post('/api/sign', async (req, res) => {
+// ─── Solo PKI Sign (authenticated — uses server P12 cert) ───
+app.post('/api/sign', requireAuth, rateLimit(60000, 20), async (req, res) => {
   try {
     const { pdfBytes } = req.body;
     if (!pdfBytes || !Array.isArray(pdfBytes)) {
@@ -1377,8 +1485,8 @@ app.get('/compliance', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'compliance.html'));
 });
 
-// ─── Solo sign page (original feature) ───
-app.get('/solo', (req, res) => {
+// ─── Solo sign page (authenticated — uses server P12 cert) ───
+app.get('/solo', requireAuth, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'solo.html'));
 });
 

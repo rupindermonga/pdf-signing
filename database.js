@@ -485,8 +485,8 @@ const signerOps = {
     db.prepare("UPDATE signers SET last_reminded_at = datetime('now'), reminder_count = reminder_count + 1 WHERE id = ?").run(id);
   },
   allSigned(documentId) {
-    // Document is "complete" when all signing/approving signers are signed (CCs don't count)
-    const pending = db.prepare("SELECT COUNT(*) as cnt FROM signers WHERE document_id = ? AND status != 'signed' AND role != 'cc'").get(documentId);
+    // Document is "complete" when all signing/approving signers are signed or skipped (CCs don't count)
+    const pending = db.prepare("SELECT COUNT(*) as cnt FROM signers WHERE document_id = ? AND status NOT IN ('signed', 'skipped') AND role != 'cc'").get(documentId);
     return pending.cnt === 0;
   }
 };

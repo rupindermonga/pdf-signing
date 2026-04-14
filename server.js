@@ -57,6 +57,11 @@ if (process.env.NODE_ENV === 'production' && !process.env.SESSION_SECRET) {
   console.error('\x1b[31m  Set SESSION_SECRET to a random string (at least 32 chars): openssl rand -base64 32\x1b[0m');
   process.exit(1);
 }
+if (process.env.NODE_ENV === 'production' && !process.env.P12_PASSPHRASE) {
+  console.error('\x1b[31m[sealforge] FATAL: P12_PASSPHRASE is not set. Refusing to start with a predictable signing key password.\x1b[0m');
+  console.error('\x1b[31m  Re-run: P12_PASSPHRASE=<your-password> node generate-cert.js  then set P12_PASSPHRASE in .env\x1b[0m');
+  process.exit(1);
+}
 
 // ─── Security headers (nonce-based CSP) ───
 app.use((req, res, next) => {
@@ -316,7 +321,17 @@ function requireAuth(req, res, next) {
 
 function requireRole(...roles) {
   return (req, res, next) => {
-    const userRole = req.session.userRole || (req.apiUser && userOps.findById(req.apiUser.id)?.role) || 'viewer';
+    // Always re-read role from DB so demotions take effect immediately (not cached in session)
+    let userRole = 'viewer';
+    if (req.session && req.session.userId) {
+      const user = userOps.findById(req.session.userId);
+      userRole = user ? user.role : 'viewer';
+      // Keep session in sync for non-security uses (display, etc.)
+      req.session.userRole = userRole;
+    } else if (req.apiUser) {
+      const user = userOps.findById(req.apiUser.id);
+      userRole = user ? user.role : 'viewer';
+    }
     if (roles.includes(userRole)) return next();
     res.status(403).json({ error: 'Insufficient permissions' });
   };
@@ -537,7 +552,11 @@ app.post('/api/auth/logout', (req, res) => {
 
 // ─── Current user info ───
 app.get('/api/auth/me', requireAuth, (req, res) => {
-  res.json({ id: req.session.userId, email: req.session.userEmail, name: req.session.userName, role: req.session.userRole || 'member' });
+  // Re-read role from DB so demotions are reflected immediately
+  const user = userOps.findById(req.session.userId);
+  const role = user ? user.role : 'member';
+  req.session.userRole = role;
+  res.json({ id: req.session.userId, email: req.session.userEmail, name: req.session.userName, role });
 });
 
 // ─── TOTP setup routes ───
@@ -955,8 +974,8 @@ async function advanceWorkflow(documentId) {
       for (const s of steps) {
         if (s.step_order > currentStep.step_order && s.step_order < targetOrder && s.status === 'pending') {
           workflowOps.updateStepStatus(s.id, 'skipped');
-          // Also skip the associated signer
-          if (s.signer_id) signerOps.updateStatus(s.signer_id, 'signed'); // mark as skipped
+          // Mark signer as 'skipped' — distinct from 'signed' to preserve audit integrity
+          if (s.signer_id) signerOps.updateStatus(s.signer_id, 'skipped');
         }
       }
     }

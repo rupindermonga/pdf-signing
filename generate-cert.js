@@ -51,8 +51,11 @@ cert.setExtensions([
 
 cert.sign(keys.privateKey, forge.md.sha256.create());
 
+// Use env var for password; generate a random one if not set
+const p12Pass = process.env.P12_PASSPHRASE || require('crypto').randomBytes(18).toString('base64');
+
 console.log('Packaging as P12 (PKCS#12)...');
-const p12Asn1 = forge.pkcs12.toPkcs12Asn1(keys.privateKey, [cert], 'sealforge', {
+const p12Asn1 = forge.pkcs12.toPkcs12Asn1(keys.privateKey, [cert], p12Pass, {
   algorithm: '3des', // widely compatible
 });
 const p12Der = forge.asn1.toDer(p12Asn1).getBytes();
@@ -63,5 +66,8 @@ if (!fs.existsSync(certDir)) fs.mkdirSync(certDir);
 
 fs.writeFileSync(path.join(certDir, 'sealforge.p12'), p12Buffer);
 console.log(`Certificate saved to cert/sealforge.p12`);
-console.log(`Password: sealforge`);
+console.log(`Password: ${p12Pass}`);
+if (!process.env.P12_PASSPHRASE) {
+  console.log(`\x1b[33mIMPORTANT: Set P12_PASSPHRASE=${p12Pass} in your .env file.\x1b[0m`);
+}
 console.log('Done. This certificate is valid for 10 years.');

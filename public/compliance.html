@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DocSeal - Compliance &amp; Privacy</title>
+  <title>SealForge - Compliance &amp; Privacy</title>
   <link rel="stylesheet" href="/css/style.css">
   <script src="/js/i18n.js" defer></script>
   <style>
@@ -27,13 +27,13 @@
 </head>
 <body>
   <header>
-    <div class="logo"><span class="logo-doc">Doc</span><span class="logo-seal">Seal</span></div>
+    <div class="logo"><span class="logo-seal">Seal</span><span class="logo-forge">Forge</span></div>
     <h1>Compliance &amp; Privacy</h1>
     <a href="/dashboard" class="header-link" data-i18n="common.dashboard">Dashboard</a>
   </header>
 
   <div class="compliance">
-    <p class="lead">DocSeal is a Canadian-built electronic-signature platform designed for businesses that need legally-binding, auditable signatures with strong privacy protection.</p>
+    <p class="lead">SealForge is a Canadian-built electronic-signature platform designed for businesses that need legally-binding, auditable signatures with strong privacy protection.</p>
 
     <div class="toc">
       <b>On this page:</b>
@@ -66,7 +66,7 @@
     </div>
 
     <h2 id="pipeda">PIPEDA — Personal Information Protection and Electronic Documents Act</h2>
-    <p>DocSeal handles personal information (names, email addresses, signatures, IP addresses, geolocation) as a service provider on behalf of our customers. We follow the ten fair-information principles set out in PIPEDA Schedule 1:</p>
+    <p>SealForge handles personal information (names, email addresses, signatures, IP addresses, geolocation) as a service provider on behalf of our customers. We follow the ten fair-information principles set out in PIPEDA Schedule 1:</p>
     <ul>
       <li><b>Accountability</b> — we maintain a privacy contact (see below) and are responsible for personal information under our control.</li>
       <li><b>Identifying purposes</b> — personal information is collected only to deliver e-signature, audit-trail, and verification services.</li>
@@ -81,7 +81,7 @@
     </ul>
 
     <h2 id="esign-laws">Electronic-signature laws</h2>
-    <p>DocSeal-generated signatures are designed to satisfy the legal requirements of:</p>
+    <p>SealForge-generated signatures are designed to satisfy the legal requirements of:</p>
     <ul>
       <li><b>PIPEDA Part 2</b> (federal e-document framework) — secure electronic signatures with signer identity, intent, and association to the document.</li>
       <li><b>UECA / provincial e-signature acts</b> (BC, Alberta, Ontario, Saskatchewan, etc.) and Quebec's <i>Act to establish a legal framework for IT</i>.</li>
@@ -89,11 +89,11 @@
       <li><b>EU eIDAS</b> "advanced electronic signature" — when a qualified PKCS#12 certificate is configured.</li>
     </ul>
     <div class="callout">
-      <b>Note on QES.</b> The standard DocSeal certificate produces an <i>advanced</i> electronic signature. To produce a <i>qualified</i> electronic signature (QES) under eIDAS, a Qualified Trust Service Provider certificate must be configured.
+      <b>Note on QES.</b> The standard SealForge certificate produces an <i>advanced</i> electronic signature. To produce a <i>qualified</i> electronic signature (QES) under eIDAS, a Qualified Trust Service Provider certificate must be configured.
     </div>
 
     <h2 id="data-residency">Data residency</h2>
-    <p>By default, DocSeal stores all uploaded PDFs, signature images, and audit data on the server you have deployed it to. When self-hosted in a Canadian region, all customer data remains on Canadian soil at rest and in transit, satisfying provincial data-residency requirements such as BC FIPPA s. 30.1 and Quebec Law 25.</p>
+    <p>By default, SealForge stores all uploaded PDFs, signature images, and audit data on the server you have deployed it to. When self-hosted in a Canadian region, all customer data remains on Canadian soil at rest and in transit, satisfying provincial data-residency requirements such as BC FIPPA s. 30.1 and Quebec Law 25.</p>
     <p><b>SaaS users:</b> the production region is documented in your service agreement. Contact us to confirm your active region.</p>
 
     <h2 id="security">Security controls</h2>
@@ -105,7 +105,7 @@
       <li>SHA-256 hashing of every original PDF on upload.</li>
       <li>PKCS#7 / X.509 cryptographic digital signature on completed PDFs.</li>
       <li>API keys hashed (SHA-256) at rest; plaintext shown only at creation time.</li>
-      <li>Webhooks signed with HMAC-SHA256 (<code>X-DocSeal-Signature</code> header).</li>
+      <li>Webhooks signed with HMAC-SHA256 (<code>X-SealForge-Signature</code> header).</li>
       <li>SSRF protections on outbound webhook calls (private IP ranges blocked).</li>
     </ul>
 
@@ -127,8 +127,8 @@
     <h2 id="dpo">Privacy contact</h2>
     <p>Privacy questions, access requests, or PIPEDA complaints may be directed to:</p>
     <p style="background:#f8fafd;padding:12px 16px;border-radius:6px;">
-      <b>Privacy Officer, DocSeal</b><br>
-      Email: <a href="mailto:privacy@docseal.example">privacy@docseal.example</a><br>
+      <b>Privacy Officer, SealForge</b><br>
+      Email: <a href="mailto:privacy@sealforge.example">privacy@sealforge.example</a><br>
       <span style="font-size:12px;color:#888;">(Replace with your organization's contact before going to production.)</span>
     </p>
 

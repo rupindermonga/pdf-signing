@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DocSeal - Dashboard</title>
+  <title>SealForge - Dashboard</title>
   <link rel="stylesheet" href="/css/style.css">
   <script src="/js/i18n.js" defer></script>
   <style>
@@ -55,10 +55,11 @@
 </head>
 <body>
   <header>
-    <div class="logo"><span class="logo-doc">Doc</span><span class="logo-seal">Seal</span></div>
+    <div class="logo"><span class="logo-seal">Seal</span><span class="logo-forge">Forge</span></div>
     <h1 data-i18n="common.dashboard">Dashboard</h1>
     <a href="/templates" class="header-link" data-i18n="common.templates">Templates</a>
-    <a href="/settings" class="header-link">API</a>
+    <a href="/settings" class="header-link" id="nav-settings" style="display:none;">API</a>
+    <a href="/admin" class="header-link" id="nav-admin" style="display:none;">Admin</a>
     <a href="/verify" class="header-link" data-i18n="common.verify">Verify</a>
   </header>
 
@@ -97,6 +98,10 @@
       if (resp.status === 401) return window.location.href = '/login';
       const { documents, user } = await resp.json();
       document.getElementById('user-email').textContent = user.name ? `${user.name} (${user.email})` : user.email;
+      // Role-based UI
+      const role = user.role || 'member';
+      if (role === 'admin') { document.getElementById('nav-settings').style.display = ''; document.getElementById('nav-admin').style.display = ''; }
+      if (role === 'viewer') { document.querySelector('.actions').style.display = 'none'; }
 
       if (!documents.length) {
         docList.innerHTML = '<div class="empty-state"><div class="icon">&#128196;</div><h3>No documents yet</h3><p><strong>Send for Others to Sign</strong> &mdash; upload a PDF and add signers (they get email links)<br><strong>Sign Myself</strong> &mdash; sign a PDF yourself and download it instantly</p></div>';

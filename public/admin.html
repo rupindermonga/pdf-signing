@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SealForge - Admin</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <script src="/js/i18n.js" defer></script>
+  <style>
+    .admin-container { max-width: 900px; margin: 24px auto; padding: 0 20px; }
+    .card { background: white; border-radius: 12px; padding: 24px; box-shadow: 0 1px 4px rgba(0,0,0,0.07); margin-bottom: 18px; }
+    .card h2 { color: #1a3b7a; font-size: 18px; margin-bottom: 14px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; padding: 10px; background: #f4f6fa; color: #1a3b7a; font-weight: 600; }
+    td { padding: 10px; border-bottom: 1px solid #eee; vertical-align: middle; }
+    .role-select { padding: 5px 8px; border: 1px solid #d0d5dd; border-radius: 5px; font-size: 12px; background: white; }
+    .btn-small { font-size: 12px; padding: 5px 10px; border-radius: 5px; cursor: pointer; border: none; }
+    .btn-danger { background: white; color: #c62828; border: 1px solid #c62828; }
+    .btn-danger:hover { background: #ffebee; }
+    .btn-warn { background: white; color: #e65100; border: 1px solid #e65100; font-size: 11px; padding: 4px 8px; }
+    .btn-warn:hover { background: #fff3e0; }
+    .badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; text-transform: uppercase; }
+    .badge-admin { background: #e8f5e9; color: #2e7d32; }
+    .badge-member { background: #e3f2fd; color: #1565c0; }
+    .badge-viewer { background: #f5f5f5; color: #757575; }
+    .badge-mfa { background: #e8f5e9; color: #2e7d32; font-size: 10px; margin-left: 6px; }
+    .badge-no-mfa { background: #fff3e0; color: #e65100; font-size: 10px; margin-left: 6px; }
+    .stats { display: flex; gap: 14px; margin-bottom: 18px; }
+    .stat-card { flex: 1; background: white; border-radius: 10px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); text-align: center; }
+    .stat-card .num { font-size: 28px; font-weight: 700; color: #1a3b7a; }
+    .stat-card .label { font-size: 12px; color: #888; margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo"><span class="logo-seal">Seal</span><span class="logo-forge">Forge</span></div>
+    <h1>Admin</h1>
+    <a href="/dashboard" class="header-link">Dashboard</a>
+    <a href="/settings" class="header-link">API</a>
+  </header>
+
+  <div class="admin-container">
+    <div class="stats" id="stats">
+      <div class="stat-card"><div class="num" id="stat-total">-</div><div class="label">Total Users</div></div>
+      <div class="stat-card"><div class="num" id="stat-admins">-</div><div class="label">Admins</div></div>
+      <div class="stat-card"><div class="num" id="stat-mfa">-</div><div class="label">MFA Enabled</div></div>
+    </div>
+
+    <div class="card">
+      <h2>User Management</h2>
+      <table>
+        <thead><tr><th>Email</th><th>Name</th><th>Role</th><th>MFA</th><th>Joined</th><th></th></tr></thead>
+        <tbody id="users-tbody"><tr><td colspan="6" style="text-align:center;color:#888;padding:16px;">Loading...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    let currentUserId = null;
+
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+    async function load() {
+      const meResp = await fetch('/api/auth/me');
+      if (meResp.status === 401) return window.location.href = '/login';
+      const me = await meResp.json();
+      currentUserId = me.id;
+
+      const resp = await fetch('/api/admin/users');
+      if (resp.status === 403) return document.querySelector('.admin-container').innerHTML = '<div class="card"><h2>Access Denied</h2><p>Admin role required.</p></div>';
+      const { users } = await resp.json();
+
+      document.getElementById('stat-total').textContent = users.length;
+      document.getElementById('stat-admins').textContent = users.filter(u => u.role === 'admin').length;
+      document.getElementById('stat-mfa').textContent = users.filter(u => u.totp_enabled).length;
+
+      const tbody = document.getElementById('users-tbody');
+      if (!users.length) { tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#888;">No users.</td></tr>'; return; }
+      tbody.innerHTML = users.map(u => `
+        <tr>
+          <td>${esc(u.email)}${u.id === currentUserId ? ' <span style="color:#1a3b7a;font-size:11px;">(you)</span>' : ''}</td>
+          <td>${esc(u.name || '-')}</td>
+          <td>
+            <select class="role-select" data-id="${u.id}" ${u.id === currentUserId ? '' : ''}>
+              <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Admin</option>
+              <option value="member" ${u.role === 'member' ? 'selected' : ''}>Member</option>
+              <option value="viewer" ${u.role === 'viewer' ? 'selected' : ''}>Viewer</option>
+            </select>
+          </td>
+          <td>${u.totp_enabled ? '<span class="badge badge-mfa">MFA ON</span>' : '<span class="badge badge-no-mfa">OFF</span>'}
+            ${u.totp_enabled && u.id !== currentUserId ? '<button class="btn-warn" onclick="resetMfa(' + u.id + ',\'' + esc(u.email).replace(/'/g, "\\'") + '\')">Reset</button>' : ''}
+          </td>
+          <td style="font-size:12px;color:#888;">${u.created_at ? new Date(u.created_at).toLocaleDateString() : '-'}</td>
+          <td>${u.id !== currentUserId ? '<button class="btn-small btn-danger" onclick="deleteUser(' + u.id + ',\'' + esc(u.email).replace(/'/g, "\\'") + '\')">Delete</button>' : ''}</td>
+        </tr>`).join('');
+
+      tbody.querySelectorAll('.role-select').forEach(sel => {
+        sel.addEventListener('change', async () => {
+          const resp = await fetch('/api/admin/users/' + sel.dataset.id + '/role', {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ role: sel.value }),
+          });
+          const data = await resp.json();
+          if (!resp.ok) { alert(data.error || 'Failed'); load(); return; }
+          load();
+        });
+      });
+    }
+
+    async function deleteUser(id, email) {
+      if (!confirm('Delete user "' + email + '"? Their documents will remain but they will lose access.')) return;
+      const resp = await fetch('/api/admin/users/' + id, { method: 'DELETE' });
+      const data = await resp.json();
+      if (!resp.ok) return alert(data.error || 'Failed');
+      load();
+    }
+
+    async function resetMfa(id, email) {
+      if (!confirm('Reset MFA for "' + email + '"? They will need to re-setup their authenticator app.')) return;
+      const resp = await fetch('/api/admin/users/' + id + '/disable-totp', { method: 'POST' });
+      const data = await resp.json();
+      if (!resp.ok) return alert(data.error || 'Failed');
+      load();
+    }
+
+    load();
+  </script>
+</body>
+</html>

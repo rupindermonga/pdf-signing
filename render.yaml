@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: docseal
+    name: sealforge
     runtime: node
     plan: free
     buildCommand: npm install
@@ -22,5 +22,5 @@ services:
       - key: BASE_URL
         fromService:
           type: web
-          name: docseal
+          name: sealforge
           property: host

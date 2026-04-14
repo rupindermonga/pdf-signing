@@ -5,7 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const certPath = path.join(__dirname, 'cert', 'docseal.p12');
+const certPath = path.join(__dirname, 'cert', 'sealforge.p12');
 
 if (!fs.existsSync(certPath)) {
   console.log('No P12 certificate found. Generating...');

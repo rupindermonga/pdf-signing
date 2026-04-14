@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DocSeal - Settings</title>
+  <title>SealForge - Settings</title>
   <link rel="stylesheet" href="/css/style.css">
   <script src="/js/i18n.js" defer></script>
   <style>
@@ -36,16 +36,39 @@
 </head>
 <body>
   <header>
-    <div class="logo"><span class="logo-doc">Doc</span><span class="logo-seal">Seal</span></div>
+    <div class="logo"><span class="logo-seal">Seal</span><span class="logo-forge">Forge</span></div>
     <h1>Settings</h1>
     <a href="/dashboard" class="header-link" data-i18n="common.dashboard">Dashboard</a>
   </header>
 
   <div class="settings-container">
+    <!-- TWO-FACTOR AUTHENTICATION -->
+    <div class="card">
+      <h2>Two-Factor Authentication (MFA)</h2>
+      <p class="desc">Add an extra layer of security by requiring a code from your authenticator app (Google Authenticator, Authy, etc.) when logging in.</p>
+      <div id="totp-status">Loading...</div>
+      <div id="totp-setup" style="display:none;">
+        <p style="font-size:13px;margin-bottom:12px;">Scan this QR code with your authenticator app, then enter the 6-digit code to confirm:</p>
+        <div style="text-align:center;margin:16px 0;"><canvas id="totp-qr"></canvas></div>
+        <p style="font-size:11px;color:#888;margin-bottom:12px;">Can't scan? Enter this key manually: <code id="totp-manual-key" style="user-select:all;"></code></p>
+        <div class="row-form">
+          <input type="text" id="totp-confirm-code" placeholder="6-digit code" maxlength="6" style="text-align:center;font-size:18px;letter-spacing:4px;max-width:180px;">
+          <button class="btn-primary" id="totp-confirm-btn">Confirm &amp; Enable</button>
+        </div>
+      </div>
+      <div id="totp-disable" style="display:none;">
+        <p style="color:#2e7d32;font-size:13px;margin-bottom:12px;">MFA is <b>enabled</b>. Enter your current authenticator code to disable it.</p>
+        <div class="row-form">
+          <input type="text" id="totp-disable-code" placeholder="6-digit code" maxlength="6" style="text-align:center;font-size:18px;letter-spacing:4px;max-width:180px;">
+          <button class="btn-primary" id="totp-disable-btn" style="background:#c62828;">Disable MFA</button>
+        </div>
+      </div>
+    </div>
+
     <!-- API KEYS -->
     <div class="card">
       <h2>API Keys</h2>
-      <p class="desc">Use these to call the DocSeal REST API from your apps. <b>Treat them like passwords.</b></p>
+      <p class="desc">Use these to call the SealForge REST API from your apps. <b>Treat them like passwords.</b></p>
       <table>
         <thead><tr><th>Name</th><th>Key prefix</th><th>Scope</th><th>Last used</th><th></th></tr></thead>
         <tbody id="keys-tbody"><tr><td colspan="5" style="text-align:center;color:#888;padding:16px;">Loading...</td></tr></tbody>
@@ -64,13 +87,13 @@
     <!-- WEBHOOKS -->
     <div class="card">
       <h2>Webhooks</h2>
-      <p class="desc">Receive HTTPS POSTs when documents are sent, signed, completed, or cancelled. Each request is signed with HMAC-SHA256 in the <code>X-DocSeal-Signature</code> header (format: <code>t=&lt;unix&gt;, v1=&lt;sha256&gt;</code> where the signed payload is <code>&lt;t&gt;.&lt;body&gt;</code>). Only <code>https://</code> URLs are accepted — consumers should reject requests older than 5 minutes to prevent replay.</p>
+      <p class="desc">Receive HTTPS POSTs when documents are sent, signed, completed, or cancelled. Each request is signed with HMAC-SHA256 in the <code>X-SealForge-Signature</code> header (format: <code>t=&lt;unix&gt;, v1=&lt;sha256&gt;</code> where the signed payload is <code>&lt;t&gt;.&lt;body&gt;</code>). Only <code>https://</code> URLs are accepted — consumers should reject requests older than 5 minutes to prevent replay.</p>
       <table>
         <thead><tr><th>URL</th><th>Events</th><th>Last status</th><th>Active</th><th></th></tr></thead>
         <tbody id="hooks-tbody"><tr><td colspan="5" style="text-align:center;color:#888;padding:16px;">Loading...</td></tr></tbody>
       </table>
       <div class="row-form">
-        <input type="url" id="new-hook-url" placeholder="https://your-app.example.com/webhooks/docseal" pattern="https://.*">
+        <input type="url" id="new-hook-url" placeholder="https://your-app.example.com/webhooks/sealforge" pattern="https://.*">
       </div>
       <div class="events-checks" id="event-checks">
         <label><input type="checkbox" value="*" checked> All events</label>
@@ -100,10 +123,65 @@
     </div>
   </div>
 
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" crossorigin="anonymous"></script>
   <script>
     document.getElementById('base-url').textContent = window.location.origin;
 
     function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+    // ── TOTP / MFA ──
+    async function loadTotpStatus() {
+      const resp = await fetch('/api/settings/totp/status');
+      const { enabled } = await resp.json();
+      const statusDiv = document.getElementById('totp-status');
+      if (enabled) {
+        statusDiv.innerHTML = '<span style="color:#2e7d32;font-weight:600;">Enabled</span>';
+        document.getElementById('totp-disable').style.display = 'block';
+        document.getElementById('totp-setup').style.display = 'none';
+      } else {
+        statusDiv.innerHTML = '<button class="btn-primary" id="totp-enable-btn">Set Up MFA</button>';
+        document.getElementById('totp-disable').style.display = 'none';
+        document.getElementById('totp-enable-btn').addEventListener('click', setupTotp);
+      }
+    }
+
+    async function setupTotp() {
+      const resp = await fetch('/api/settings/totp/setup', { method: 'POST' });
+      const data = await resp.json();
+      if (!resp.ok) return alert(data.error || 'Setup failed');
+      document.getElementById('totp-setup').style.display = 'block';
+      document.getElementById('totp-status').style.display = 'none';
+      document.getElementById('totp-manual-key').textContent = data.secret;
+      // Render QR code
+      const qrEl = document.getElementById('totp-qr');
+      qrEl.innerHTML = '';
+      new QRCode(qrEl, { text: data.uri, width: 200, height: 200, correctLevel: QRCode.CorrectLevel.M });
+    }
+
+    document.getElementById('totp-confirm-btn').addEventListener('click', async () => {
+      const code = document.getElementById('totp-confirm-code').value.trim();
+      if (code.length !== 6) return alert('Enter the 6-digit code from your authenticator.');
+      const resp = await fetch('/api/settings/totp/confirm', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) return alert(data.error || 'Verification failed');
+      alert('MFA enabled successfully! You will need your authenticator app to log in.');
+      loadTotpStatus();
+    });
+
+    document.getElementById('totp-disable-btn').addEventListener('click', async () => {
+      const code = document.getElementById('totp-disable-code').value.trim();
+      if (code.length !== 6) return alert('Enter your current authenticator code.');
+      if (!confirm('Disable MFA? This removes the extra security layer from your account.')) return;
+      const resp = await fetch('/api/settings/totp/disable', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) return alert(data.error || 'Failed');
+      alert('MFA disabled.');
+      loadTotpStatus();
+    });
 
     // ── API keys ──
     async function loadKeys() {
@@ -188,7 +266,7 @@
       loadHooks();
     });
 
-    loadKeys(); loadHooks();
+    loadKeys(); loadHooks(); loadTotpStatus();
   </script>
 </body>
 </html>

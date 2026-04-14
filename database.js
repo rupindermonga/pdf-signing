@@ -6,7 +6,7 @@ const fs = require('fs');
 const dataDir = path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-const db = new Database(path.join(dataDir, 'docseal.db'));
+const db = new Database(path.join(dataDir, 'sealforge.db'));
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
@@ -151,6 +151,34 @@ ensureColumn('signers', 'id_verified_at', "TEXT");
 ensureColumn('signers', 'phone', "TEXT");
 ensureColumn('signers', 'notify_method', "TEXT NOT NULL DEFAULT 'email'");
 
+// ─── Reminders & expiration (feature: auto-reminder & auto-expire) ───
+ensureColumn('documents', 'expires_at', "TEXT");                    // ISO timestamp; null = never expires
+ensureColumn('documents', 'reminder_every_days', "INTEGER NOT NULL DEFAULT 0"); // 0 = disabled
+ensureColumn('documents', 'last_reminded_at', "TEXT");              // last time ANY reminder was sent for this doc
+ensureColumn('signers', 'last_reminded_at', "TEXT");                // per-signer last reminder
+ensureColumn('signers', 'reminder_count', "INTEGER NOT NULL DEFAULT 0");
+
+// ─── RBAC: user roles ───
+ensureColumn('users', 'role', "TEXT NOT NULL DEFAULT 'member'");
+
+// ─── MFA: TOTP ───
+ensureColumn('users', 'totp_secret', "TEXT");                       // AES-encrypted base32 secret; null = not set up
+ensureColumn('users', 'totp_enabled', "INTEGER NOT NULL DEFAULT 0"); // 1 = enforced after email OTP
+
+// ─── Kiosk / In-person signing ───
+ensureColumn('documents', 'kiosk_mode', "INTEGER NOT NULL DEFAULT 0");
+ensureColumn('documents', 'kiosk_pin', "TEXT");
+
+// ─── Advanced workflows ───
+ensureColumn('documents', 'workflow_json', "TEXT");
+
+// ─── RFC 3161 timestamp (feature: TSA / LTV) ───
+ensureColumn('documents', 'tsa_url', "TEXT");                       // TSA endpoint used
+ensureColumn('documents', 'tsa_token_path', "TEXT");                // filesystem path of .tst file
+ensureColumn('documents', 'tsa_hash_sha256', "TEXT");               // hash that was timestamped
+ensureColumn('documents', 'tsa_gentime', "TEXT");                   // TSA-asserted time (ISO)
+ensureColumn('documents', 'tsa_serial', "TEXT");                    // TSA response serial (info only)
+
 // ─── Helper functions ───
 function generateToken() {
   return crypto.randomBytes(32).toString('hex');
@@ -169,13 +197,20 @@ function generateTemplateUUID() {
 }
 
 // ─── User operations ───
+const VALID_ROLES = ['admin', 'member', 'viewer'];
 const userOps = {
   findByEmail(email) {
     return db.prepare('SELECT * FROM users WHERE email = ?').get(email.toLowerCase());
   },
+  findById(id) {
+    return db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  },
   create(email, name) {
-    const result = db.prepare('INSERT INTO users (email, name) VALUES (?, ?)').run(email.toLowerCase(), name);
-    return { id: result.lastInsertRowid, email: email.toLowerCase(), name };
+    // First user ever → admin; everyone else → member
+    const count = db.prepare('SELECT COUNT(*) as cnt FROM users').get().cnt;
+    const role = count === 0 ? 'admin' : 'member';
+    const result = db.prepare('INSERT INTO users (email, name, role) VALUES (?, ?, ?)').run(email.toLowerCase(), name, role);
+    return { id: result.lastInsertRowid, email: email.toLowerCase(), name, role };
   },
   findOrCreate(email, name = '') {
     let user = this.findByEmail(email);
@@ -184,7 +219,32 @@ const userOps = {
   },
   updateName(id, name) {
     db.prepare('UPDATE users SET name = ? WHERE id = ?').run(name, id);
-  }
+  },
+  // ─── RBAC ───
+  listAll() {
+    return db.prepare('SELECT id, email, name, role, created_at FROM users ORDER BY created_at').all();
+  },
+  setRole(id, role) {
+    if (!VALID_ROLES.includes(role)) return false;
+    db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, id);
+    return true;
+  },
+  countAdmins() {
+    return db.prepare("SELECT COUNT(*) as cnt FROM users WHERE role = 'admin'").get().cnt;
+  },
+  deleteUser(id) {
+    db.prepare('DELETE FROM users WHERE id = ?').run(id);
+  },
+  // ─── TOTP / MFA ───
+  setTotpSecret(id, encryptedSecret) {
+    db.prepare('UPDATE users SET totp_secret = ? WHERE id = ?').run(encryptedSecret, id);
+  },
+  enableTotp(id) {
+    db.prepare('UPDATE users SET totp_enabled = 1 WHERE id = ?').run(id);
+  },
+  disableTotp(id) {
+    db.prepare('UPDATE users SET totp_secret = NULL, totp_enabled = 0 WHERE id = ?').run(id);
+  },
 };
 
 // ─── OTP operations ───
@@ -272,6 +332,42 @@ const docOps = {
     const row = db.prepare('SELECT fields_json FROM documents WHERE id = ?').get(id);
     if (!row) return [];
     try { return JSON.parse(row.fields_json || '[]'); } catch { return []; }
+  },
+
+  // ─── Expiration & reminders ───
+  setSchedule(id, expiresAtISO, reminderEveryDays) {
+    db.prepare('UPDATE documents SET expires_at = ?, reminder_every_days = ? WHERE id = ?')
+      .run(expiresAtISO || null, Math.max(0, parseInt(reminderEveryDays, 10) || 0), id);
+  },
+  // Documents that should be auto-cancelled because they've passed their expiration.
+  // julianday() parses both SQLite datetime ("YYYY-MM-DD HH:MM:SS") and ISO
+  // ("YYYY-MM-DDTHH:MM:SS.sssZ") formats correctly — direct text comparison
+  // would give wrong answers across the two formats.
+  listExpired() {
+    return db.prepare(`
+      SELECT * FROM documents
+      WHERE status IN ('pending', 'draft')
+        AND expires_at IS NOT NULL
+        AND julianday(expires_at) <= julianday('now')
+    `).all();
+  },
+  // Candidates for reminder sweep: pending docs with reminder cadence enabled.
+  listReminderCandidates() {
+    return db.prepare(`
+      SELECT * FROM documents
+      WHERE status = 'pending'
+        AND reminder_every_days > 0
+        AND (expires_at IS NULL OR julianday(expires_at) > julianday('now'))
+    `).all();
+  },
+  markReminded(id) {
+    db.prepare("UPDATE documents SET last_reminded_at = datetime('now') WHERE id = ?").run(id);
+  },
+
+  // ─── RFC 3161 timestamp ───
+  setTimestamp(id, { tsaUrl, tokenPath, hashHex, genTimeISO }) {
+    db.prepare(`UPDATE documents SET tsa_url = ?, tsa_token_path = ?, tsa_hash_sha256 = ?, tsa_gentime = ? WHERE id = ?`)
+      .run(tsaUrl || null, tokenPath || null, hashHex || null, genTimeISO || null, id);
   }
 };
 
@@ -356,8 +452,22 @@ const signerOps = {
     // CC recipients are notified at completion only — skip them in the signing queue
     return db.prepare("SELECT * FROM signers WHERE document_id = ? AND status = 'pending' AND role != 'cc' ORDER BY sign_order LIMIT 1").get(documentId);
   },
+  // Currently-awaiting signer(s): the ones that have been notified but haven't
+  // signed yet. Used by the reminder scheduler — different from getNextPending
+  // which returns the next queue entry that hasn't yet been dispatched.
+  getAwaiting(documentId, mode) {
+    if (mode === 'parallel') {
+      return db.prepare("SELECT * FROM signers WHERE document_id = ? AND status = 'sent' AND role != 'cc' ORDER BY sign_order").all(documentId);
+    }
+    // Sequential: only the single signer currently holding the ball.
+    const row = db.prepare("SELECT * FROM signers WHERE document_id = ? AND status = 'sent' AND role != 'cc' ORDER BY sign_order LIMIT 1").get(documentId);
+    return row ? [row] : [];
+  },
   getAllPending(documentId) {
     return db.prepare("SELECT * FROM signers WHERE document_id = ? AND status = 'pending' AND role != 'cc' ORDER BY sign_order").all(documentId);
+  },
+  markReminded(id) {
+    db.prepare("UPDATE signers SET last_reminded_at = datetime('now'), reminder_count = reminder_count + 1 WHERE id = ?").run(id);
   },
   allSigned(documentId) {
     // Document is "complete" when all signing/approving signers are signed (CCs don't count)
@@ -459,4 +569,73 @@ const webhookOps = {
   }
 };
 
-module.exports = { db, userOps, otpOps, sessionOps, docOps, signerOps, templateOps, apiKeyOps, webhookOps, generateToken };
+// ─── Event log (Zapier/Make polling) ───
+db.exec(`
+  CREATE TABLE IF NOT EXISTS event_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    event TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_eventlog_user_created ON event_log(user_id, created_at);
+`);
+
+const eventLogOps = {
+  record(userId, event, payload) {
+    db.prepare('INSERT INTO event_log (user_id, event, payload_json) VALUES (?, ?, ?)').run(userId, event, JSON.stringify(payload || {}));
+  },
+  listSince(userId, sinceISO, limit = 50) {
+    if (sinceISO) {
+      return db.prepare("SELECT * FROM event_log WHERE user_id = ? AND created_at > ? ORDER BY created_at DESC LIMIT ?").all(userId, sinceISO, limit);
+    }
+    return db.prepare("SELECT * FROM event_log WHERE user_id = ? ORDER BY created_at DESC LIMIT ?").all(userId, limit);
+  },
+  purgeOld(days = 30) {
+    db.prepare("DELETE FROM event_log WHERE created_at < datetime('now', '-' || ? || ' days')").run(days);
+  },
+};
+
+// ─── Workflow steps (advanced workflows) ───
+db.exec(`
+  CREATE TABLE IF NOT EXISTS workflow_steps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id INTEGER NOT NULL,
+    step_order INTEGER NOT NULL,
+    signer_id INTEGER,
+    action TEXT NOT NULL DEFAULT 'sign',
+    condition_field TEXT,
+    condition_operator TEXT,
+    condition_value TEXT,
+    on_true_step INTEGER,
+    on_false_step INTEGER,
+    status TEXT NOT NULL DEFAULT 'pending',
+    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+    FOREIGN KEY (signer_id) REFERENCES signers(id) ON DELETE SET NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_workflow_doc ON workflow_steps(document_id);
+`);
+
+const workflowOps = {
+  create(documentId, steps) {
+    const insert = db.prepare('INSERT INTO workflow_steps (document_id, step_order, signer_id, action, condition_field, condition_operator, condition_value, on_true_step, on_false_step) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    const tx = db.transaction((rows) => {
+      for (const s of rows) {
+        insert.run(documentId, s.step_order, s.signer_id || null, s.action || 'sign', s.condition_field || null, s.condition_operator || null, s.condition_value || null, s.on_true_step || null, s.on_false_step || null);
+      }
+    });
+    tx(steps);
+  },
+  listByDocument(documentId) {
+    return db.prepare('SELECT * FROM workflow_steps WHERE document_id = ? ORDER BY step_order').all(documentId);
+  },
+  getCurrentStep(documentId) {
+    return db.prepare("SELECT * FROM workflow_steps WHERE document_id = ? AND status = 'pending' ORDER BY step_order LIMIT 1").get(documentId);
+  },
+  updateStepStatus(id, status) {
+    db.prepare('UPDATE workflow_steps SET status = ? WHERE id = ?').run(status, id);
+  },
+};
+
+module.exports = { db, userOps, otpOps, sessionOps, docOps, signerOps, templateOps, apiKeyOps, webhookOps, eventLogOps, workflowOps, generateToken, VALID_ROLES };

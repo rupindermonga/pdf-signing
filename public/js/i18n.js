@@ -1,11 +1,11 @@
-// DocSeal i18n — lightweight client-side translations (EN + FR)
+// SealForge i18n — lightweight client-side translations (EN + FR)
 (function () {
-  const STORAGE_KEY = 'docseal_lang';
+  const STORAGE_KEY = 'sealforge_lang';
 
   const dict = {
     en: {
       // Common
-      'app.title': 'DocSeal',
+      'app.title': 'SealForge',
       'common.dashboard': 'Dashboard',
       'common.templates': 'Templates',
       'common.verify': 'Verify',
@@ -25,7 +25,7 @@
       'common.language': 'Language',
 
       // Login
-      'login.title': 'Sign in to DocSeal',
+      'login.title': 'Sign in to SealForge',
       'login.subtitle': 'Email-based passwordless login.',
       'login.email_placeholder': 'you@example.com',
       'login.send_code': 'Send Verification Code',
@@ -121,7 +121,7 @@
     },
     fr: {
       // Common
-      'app.title': 'DocSeal',
+      'app.title': 'SealForge',
       'common.dashboard': 'Tableau de bord',
       'common.templates': 'Modèles',
       'common.verify': 'Vérifier',
@@ -141,7 +141,7 @@
       'common.language': 'Langue',
 
       // Login
-      'login.title': 'Connexion à DocSeal',
+      'login.title': 'Connexion à SealForge',
       'login.subtitle': 'Connexion sans mot de passe par courriel.',
       'login.email_placeholder': 'vous@exemple.com',
       'login.send_code': 'Envoyer le code',
@@ -272,13 +272,13 @@
     currentLang = lang;
     try { localStorage.setItem(STORAGE_KEY, lang); } catch {}
     applyTranslations();
-    window.dispatchEvent(new CustomEvent('docseal:langchange', { detail: { lang } }));
+    window.dispatchEvent(new CustomEvent('sealforge:langchange', { detail: { lang } }));
   }
 
   function injectLanguageSwitcher() {
-    if (document.getElementById('docseal-lang-switcher')) return;
+    if (document.getElementById('sealforge-lang-switcher')) return;
     const div = document.createElement('div');
-    div.id = 'docseal-lang-switcher';
+    div.id = 'sealforge-lang-switcher';
     div.style.cssText = 'position:fixed;bottom:14px;right:14px;z-index:9999;background:white;border:1px solid #d0d5dd;border-radius:20px;padding:4px;box-shadow:0 1px 4px rgba(0,0,0,0.1);font-size:12px;display:flex;gap:2px;';
     ['en', 'fr'].forEach(l => {
       const b = document.createElement('button');
@@ -288,7 +288,7 @@
       if (l === currentLang) { b.style.background = '#1a3b7a'; b.style.color = 'white'; }
       b.addEventListener('click', () => {
         setLang(l);
-        document.querySelectorAll('#docseal-lang-switcher button').forEach(x => {
+        document.querySelectorAll('#sealforge-lang-switcher button').forEach(x => {
           x.style.background = 'transparent'; x.style.color = '#666';
         });
         b.style.background = '#1a3b7a'; b.style.color = 'white';
@@ -298,7 +298,7 @@
     document.body.appendChild(div);
   }
 
-  window.DocSealI18n = { t, setLang, applyTranslations, getLang: () => currentLang };
+  window.SealForgeI18n = { t, setLang, applyTranslations, getLang: () => currentLang };
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => { applyTranslations(); injectLanguageSwitcher(); });

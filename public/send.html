@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DocSeal - New Signing Request</title>
+  <title>SealForge - New Signing Request</title>
   <link rel="stylesheet" href="/css/style.css">
   <script src="/js/i18n.js" defer></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" integrity="sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e" crossorigin="anonymous"></script>
@@ -69,7 +69,7 @@
 </head>
 <body>
   <header>
-    <div class="logo"><span class="logo-doc">Doc</span><span class="logo-seal">Seal</span></div>
+    <div class="logo"><span class="logo-seal">Seal</span><span class="logo-forge">Forge</span></div>
     <h1 data-i18n="send.title">New Signing Request</h1>
     <a href="/templates" class="header-link" data-i18n="common.templates">Templates</a>
     <a href="/dashboard" class="header-link" data-i18n="common.dashboard">Dashboard</a>
@@ -158,6 +158,8 @@
         <button type="button" class="field-tool" data-type="date">&#128197; Date</button>
         <button type="button" class="field-tool" data-type="text">&#128221; Text</button>
         <button type="button" class="field-tool" data-type="checkbox">&#9745; Checkbox</button>
+        <button type="button" class="field-tool" data-type="dropdown">&#9662; Dropdown</button>
+        <button type="button" class="field-tool" data-type="radio">&#9673; Radio</button>
         <button type="button" id="autodetect-btn" style="margin-left:auto;background:#7c3aed;color:white;border:none;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">&#10024; Auto-detect</button>
       </div>
       <div id="autodetect-result" style="display:none;font-size:12px;color:#555;margin-bottom:10px;"></div>
@@ -170,6 +172,13 @@
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;">
           <input type="checkbox" id="insp-required"> Required
         </label>
+        <div id="insp-options-wrap" style="display:none;">
+          <label>Options (one per line)</label>
+          <textarea id="insp-options" rows="3" style="width:100%;font-size:12px;padding:6px;border:1px solid #d0d5dd;border-radius:6px;" placeholder="Option 1&#10;Option 2"></textarea>
+        </div>
+        <label style="margin-top:6px;">Show only if (conditional)</label>
+        <select id="insp-cond-field" style="width:100%;"><option value="">Always show</option></select>
+        <input type="text" id="insp-cond-equals" placeholder="equals value..." style="width:100%;margin-top:4px;display:none;">
       </div>
     </div>
 
@@ -179,7 +188,7 @@
         <input type="checkbox" id="require-id" style="width:18px;height:18px;cursor:pointer;">
         <span>Require each signer to upload a government ID and a selfie before signing.</span>
       </label>
-      <p style="font-size:11px;color:#888;margin-top:6px;">Files are stored encrypted-at-rest on the DocSeal server and never shared with third parties.</p>
+      <p style="font-size:11px;color:#888;margin-top:6px;">Files are stored encrypted-at-rest on the SealForge server and never shared with third parties.</p>
     </div>
 
     <div class="card">
@@ -191,6 +200,26 @@
           <option value="CAD">CAD</option><option value="USD">USD</option><option value="EUR">EUR</option><option value="GBP">GBP</option>
         </select>
         <input type="text" id="pay-desc" placeholder="Description (e.g. Deposit, Booking fee)" style="flex:1;min-width:200px;padding:10px;border:1px solid #d0d5dd;border-radius:8px;font-size:14px;">
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Expiration &amp; Reminders (optional)</h2>
+      <p style="font-size:12px;color:#888;margin-bottom:10px;">Auto-cancel the request if unsigned by the expiration date, and send periodic reminders until then.</p>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <label style="font-size:13px;color:#333;">Expires on
+          <input type="date" id="expires-at" style="margin-left:6px;padding:8px;border:1px solid #d0d5dd;border-radius:8px;font-size:14px;">
+        </label>
+        <label style="font-size:13px;color:#333;">Remind every
+          <select id="reminder-every" style="margin-left:6px;padding:8px;border:1px solid #d0d5dd;border-radius:8px;font-size:14px;">
+            <option value="0">Never</option>
+            <option value="1">1 day</option>
+            <option value="2">2 days</option>
+            <option value="3" selected>3 days</option>
+            <option value="7">7 days</option>
+            <option value="14">14 days</option>
+          </select>
+        </label>
       </div>
     </div>
 
@@ -260,7 +289,9 @@
     const defaultSizes = {
       signature: [0.22, 0.06], initials: [0.08, 0.05], name: [0.22, 0.04],
       email: [0.22, 0.04], date: [0.12, 0.04], text: [0.18, 0.04], checkbox: [0.025, 0.025],
+      dropdown: [0.22, 0.04], radio: [0.22, 0.05],
     };
+    const defaultOptions = { dropdown: ['Option 1', 'Option 2'], radio: ['Yes', 'No'] };
 
     document.querySelectorAll('.field-tool').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -322,6 +353,7 @@
           id: 'pf' + fieldSeq, type: activeTool, page: pageNum,
           xPct, yPct, wPct: w, hPct: h,
           signerOrder: 1, label: '', required: true,
+          ...(defaultOptions[activeTool] ? { options: [...defaultOptions[activeTool]] } : {}),
         };
         placedFields.push(f);
         renderField(f);
@@ -413,6 +445,39 @@
       document.getElementById('insp-signer').value = String(f.signerOrder);
       document.getElementById('insp-label').value = f.label;
       document.getElementById('insp-required').checked = f.required !== false;
+
+      // Options editor: only for dropdown/radio
+      const optsWrap = document.getElementById('insp-options-wrap');
+      const optsTa = document.getElementById('insp-options');
+      if (f.type === 'dropdown' || f.type === 'radio') {
+        optsWrap.style.display = '';
+        optsTa.value = (f.options || []).join('\n');
+      } else {
+        optsWrap.style.display = 'none';
+      }
+
+      // Conditional-required: list of other fields the rule can reference
+      rebuildCondFieldSelect(f);
+      document.getElementById('insp-cond-field').value = f.conditional?.fieldId || '';
+      const eqInput = document.getElementById('insp-cond-equals');
+      eqInput.value = f.conditional?.equals || '';
+      eqInput.style.display = f.conditional?.fieldId ? '' : 'none';
+    }
+
+    function rebuildCondFieldSelect(currentField) {
+      const sel = document.getElementById('insp-cond-field');
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">Always show</option>';
+      for (const other of placedFields) {
+        if (!currentField || other.id === currentField.id) continue;
+        // Only reference fields that actually carry a user-facing value
+        if (!['text','date','checkbox','dropdown','radio','name','email','initials'].includes(other.type)) continue;
+        const opt = document.createElement('option');
+        opt.value = other.id;
+        opt.textContent = `${other.label || other.type} (${other.type})`;
+        sel.appendChild(opt);
+      }
+      if (cur) sel.value = cur;
     }
 
     document.getElementById('insp-signer').addEventListener('change', (e) => {
@@ -426,6 +491,28 @@
     document.getElementById('insp-required').addEventListener('change', (e) => {
       const f = placedFields.find(x => x.id === selectedFieldId);
       if (f) f.required = e.target.checked;
+    });
+    document.getElementById('insp-options').addEventListener('input', (e) => {
+      const f = placedFields.find(x => x.id === selectedFieldId);
+      if (!f) return;
+      f.options = e.target.value.split('\n').map(s => s.trim()).filter(Boolean).slice(0, 20);
+      renderField(f);
+    });
+    document.getElementById('insp-cond-field').addEventListener('change', (e) => {
+      const f = placedFields.find(x => x.id === selectedFieldId);
+      if (!f) return;
+      const eqInput = document.getElementById('insp-cond-equals');
+      if (!e.target.value) {
+        delete f.conditional;
+        eqInput.style.display = 'none';
+      } else {
+        f.conditional = { fieldId: e.target.value, equals: eqInput.value || '' };
+        eqInput.style.display = '';
+      }
+    });
+    document.getElementById('insp-cond-equals').addEventListener('input', (e) => {
+      const f = placedFields.find(x => x.id === selectedFieldId);
+      if (f && f.conditional) f.conditional.equals = e.target.value;
     });
 
     function rebuildSignerSelect() {
@@ -695,6 +782,8 @@
           type: f.type, page: f.page, xPct: f.xPct, yPct: f.yPct,
           wPct: f.wPct, hPct: f.hPct, signerOrder: f.signerOrder || 1,
           label: f.label || '', required: f.required !== false,
+          ...(Array.isArray(f.options) ? { options: f.options.slice() } : {}),
+          ...(f.conditional ? { conditional: { ...f.conditional } } : {}),
         }));
         rerenderFields();
       }
@@ -744,11 +833,15 @@
           type: f.type, page: f.page, xPct: f.xPct, yPct: f.yPct,
           wPct: f.wPct, hPct: f.hPct, signerOrder: f.signerOrder,
           label: f.label, required: f.required,
+          ...(f.options ? { options: f.options } : {}),
+          ...(f.conditional ? { conditional: f.conditional } : {}),
         }))));
         formData.append('paymentAmount', document.getElementById('pay-amount').value || '0');
         formData.append('paymentCurrency', document.getElementById('pay-currency').value);
         formData.append('paymentDescription', document.getElementById('pay-desc').value);
         formData.append('requireIdVerification', document.getElementById('require-id').checked ? 'true' : 'false');
+        formData.append('expiresAt', document.getElementById('expires-at').value || '');
+        formData.append('reminderEveryDays', document.getElementById('reminder-every').value || '0');
 
         const resp = await fetch('/api/documents/create', { method: 'POST', body: formData });
         const data = await resp.json();
@@ -770,6 +863,8 @@
               type: f.type, page: f.page, xPct: f.xPct, yPct: f.yPct,
               wPct: f.wPct, hPct: f.hPct, signerOrder: f.signerOrder,
               label: f.label, required: f.required,
+              ...(f.options ? { options: f.options } : {}),
+              ...(f.conditional ? { conditional: f.conditional } : {}),
             }))));
             try {
               const tr = await fetch('/api/templates', { method: 'POST', body: tplFd });

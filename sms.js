@@ -43,16 +43,16 @@ function sendSMS(to, body) {
 }
 
 async function sendSigningLinkSMS(phone, signerName, senderName, docTitle, signUrl) {
-  const body = `${senderName} sent you a document to sign on DocSeal: "${docTitle}". Sign here: ${signUrl}`;
+  const body = `${senderName} sent you a document to sign on SealForge: "${docTitle}". Sign here: ${signUrl}`;
   return sendSMS(phone, body);
 }
 
 async function sendOTPSMS(phone, otp) {
-  return sendSMS(phone, `Your DocSeal verification code: ${otp} (expires in 10 min). Do not share this code.`);
+  return sendSMS(phone, `Your SealForge verification code: ${otp} (expires in 10 min). Do not share this code.`);
 }
 
 async function sendCompletionSMS(phone, docTitle) {
-  return sendSMS(phone, `Your DocSeal document "${docTitle}" has been fully signed by all parties.`);
+  return sendSMS(phone, `Your SealForge document "${docTitle}" has been fully signed by all parties.`);
 }
 
 module.exports = { isConfigured, sendSigningLinkSMS, sendOTPSMS, sendCompletionSMS };

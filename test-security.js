@@ -1,5 +1,5 @@
 /**
- * DocSeal QA + Security Dynamic Test Suite
+ * SealForge QA + Security Dynamic Test Suite
  * Run: node test-security.js
  * Server must be running on localhost:3000
  */
@@ -77,7 +77,7 @@ async function req(method, urlPath, body, headers = {}, followRedirect = false) 
 // Multipart form helper
 async function multipartReq(urlPath, fields, fileField, fileBuffer, fileName, cookie) {
   return new Promise((resolve) => {
-    const boundary = '----DocSealTest' + crypto.randomBytes(8).toString('hex');
+    const boundary = '----SealForgeTest' + crypto.randomBytes(8).toString('hex');
     let body = '';
     for (const [key, val] of Object.entries(fields)) {
       body += `--${boundary}\r\nContent-Disposition: form-data; name="${key}"\r\n\r\n${val}\r\n`;
@@ -138,7 +138,7 @@ startxref
 
 async function run() {
   console.log('\n\x1b[1m══════════════════════════════════════════\x1b[0m');
-  console.log('\x1b[1m  DocSeal QA + Security Audit\x1b[0m');
+  console.log('\x1b[1m  SealForge QA + Security Audit\x1b[0m');
   console.log('\x1b[1m══════════════════════════════════════════\x1b[0m\n');
 
   // ════════════════════════════════════════
@@ -171,7 +171,7 @@ async function run() {
 
   // Send OTP. devOtp echoing in the response is ONLY acceptable in local dev mode.
   // In any other configuration (prod or dev with non-local BASE_URL) it must be absent.
-  const otpResp = await req('POST', '/api/auth/send-otp', { email: 'test@docseal.local' });
+  const otpResp = await req('POST', '/api/auth/send-otp', { email: 'test@sealforge.local' });
   const otpData = otpResp.json();
   if (!otpData?.ok) { log('FAIL', 'Send OTP', otpResp.body); }
   else {
@@ -190,18 +190,18 @@ async function run() {
   }
 
   // Verify with wrong code
-  const wrongOtp = await req('POST', '/api/auth/verify-otp', { email: 'test@docseal.local', code: '000000' });
+  const wrongOtp = await req('POST', '/api/auth/verify-otp', { email: 'test@sealforge.local', code: '000000' });
   wrongOtp.status === 400 ? log('PASS', 'Wrong OTP rejected', '400') : log('FAIL', 'Wrong OTP rejected', `Got ${wrongOtp.status}`);
 
   // Verify with correct code
-  const realOtp = otpData.devOtp || latestOtpFor('test@docseal.local');
-  const rightOtp = await req('POST', '/api/auth/verify-otp', { email: 'test@docseal.local', code: realOtp, name: 'Test User' });
+  const realOtp = otpData.devOtp || latestOtpFor('test@sealforge.local');
+  const rightOtp = await req('POST', '/api/auth/verify-otp', { email: 'test@sealforge.local', code: realOtp, name: 'Test User' });
   const authCookie = getCookie(rightOtp);
   rightOtp.json()?.ok ? log('PASS', 'Correct OTP accepted', 'Session created') : log('FAIL', 'Correct OTP accepted', rightOtp.body);
   authCookie ? log('PASS', 'Session cookie set', '') : log('FAIL', 'Session cookie set', 'No cookie returned');
 
   // Replay same OTP
-  const replayOtp = await req('POST', '/api/auth/verify-otp', { email: 'test@docseal.local', code: realOtp });
+  const replayOtp = await req('POST', '/api/auth/verify-otp', { email: 'test@sealforge.local', code: realOtp });
   replayOtp.status === 400 ? log('PASS', 'OTP replay blocked', '400') : log('FAIL', 'OTP replay blocked', `Got ${replayOtp.status} — OTP can be reused!`);
 
   // Send OTP without email
@@ -416,7 +416,7 @@ async function run() {
     log('FAIL', '.env publicly accessible!', 'Secrets leaked!');
 
   // Check database not served
-  const dbResp = await req('GET', '/data/docseal.db');
+  const dbResp = await req('GET', '/data/sealforge.db');
   (dbResp.status === 404) ?
     log('PASS', 'Database not publicly accessible', '') :
     log('FAIL', 'Database publicly accessible!', 'Full data leak!');
@@ -562,8 +562,8 @@ async function run() {
     log('PASS', 'No child_process/exec usage', '');
 
   // Check that P12 password isn't hardcoded as a top-level variable
-  // (it is hardcoded as 'docseal' in server.js — flag it)
-  serverCode.includes("passphrase: 'docseal'") ?
+  // (it is hardcoded as 'sealforge' in server.js — flag it)
+  serverCode.includes("passphrase: 'sealforge'") ?
     log('WARN', 'P12 password hardcoded in server.js', "Move to .env as P12_PASSPHRASE") :
     log('PASS', 'P12 password not hardcoded', '');
 

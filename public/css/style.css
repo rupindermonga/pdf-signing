@@ -31,12 +31,12 @@ header {
   letter-spacing: -0.5px;
 }
 
-.logo-doc {
+.logo-seal {
   color: #ffffff;
   font-size: 30px;
 }
 
-.logo-seal {
+.logo-forge {
   color: #7eb8ff;
   font-size: 30px;
   font-weight: 600;
@@ -419,12 +419,12 @@ main {
   letter-spacing: -0.5px;
 }
 
-.preview-logo-doc {
+.preview-logo-seal {
   color: #1a3b7a;
   font-size: 24px;
 }
 
-.preview-logo-seal {
+.preview-logo-forge {
   color: #2d5db8;
   font-size: 24px;
   font-weight: 600;
@@ -582,12 +582,12 @@ main {
   letter-spacing: -0.5px;
 }
 
-.sig-overlay .stamp-logo .sd {
+.sig-overlay .stamp-logo .ss {
   color: #1a3b7a;
   font-size: 14px;
 }
 
-.sig-overlay .stamp-logo .ss {
+.sig-overlay .stamp-logo .sf {
   color: #2d5db8;
   font-size: 14px;
   font-weight: 600;

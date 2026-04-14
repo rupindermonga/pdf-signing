@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DocSeal - Verify Signed Document</title>
+  <title>SealForge - Verify Signed Document</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f0f2f5; color: #333; min-height: 100vh; }
     header { background: linear-gradient(135deg, #1a3b7a 0%, #2d5db8 100%); color: white; padding: 16px 32px; display: flex; align-items: center; gap: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
     .logo { font-size: 30px; font-weight: 800; letter-spacing: -0.5px; }
-    .logo-doc { color: #fff; } .logo-seal { color: #7eb8ff; font-weight: 600; }
+    .logo-seal { color: #fff; } .logo-forge { color: #7eb8ff; font-weight: 600; }
     header h1 { font-size: 20px; font-weight: 400; opacity: 0.9; }
     .container { max-width: 760px; margin: 40px auto; padding: 0 20px; }
     .card { background: white; border-radius: 12px; padding: 32px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); margin-bottom: 24px; }
@@ -46,7 +46,7 @@
 </head>
 <body>
   <header>
-    <div class="logo"><span class="logo-doc">Doc</span><span class="logo-seal">Seal</span></div>
+    <div class="logo"><span class="logo-seal">Seal</span><span class="logo-forge">Forge</span></div>
     <h1>Document Verification</h1>
   </header>
 
@@ -54,7 +54,7 @@
     <div class="card">
       <h2>Verify Document Integrity <span class="shield">SHA-256</span></h2>
       <p class="sub">
-        Upload a DocSeal-signed PDF to verify it hasn't been tampered with.
+        Upload a SealForge-signed PDF to verify it hasn't been tampered with.
         This tool computes the SHA-256 hash of the file entirely in your browser &mdash; nothing is uploaded to any server.
       </p>
 
@@ -78,7 +78,7 @@
     <div class="card how-it-works">
       <h3>How Verification Works</h3>
       <ol class="steps-list">
-        <li>When a document is signed with DocSeal, a <strong>SHA-256 hash</strong> (digital fingerprint) is computed and recorded in the audit trail page and the signing certificate.</li>
+        <li>When a document is signed with SealForge, a <strong>SHA-256 hash</strong> (digital fingerprint) is computed and recorded in the audit trail page and the signing certificate.</li>
         <li>Upload the signed PDF here. This tool computes the hash of the file <strong>in your browser</strong> (nothing leaves your device).</li>
         <li>Compare the computed hash with the one on the audit trail. If they <strong>match</strong>, the document is authentic and unmodified.</li>
         <li>If they <strong>don't match</strong>, the document has been altered after signing &mdash; it should not be trusted.</li>
@@ -87,7 +87,7 @@
   </div>
 
   <footer>
-    <p>DocSeal Verification &mdash; ManDarshan AI Solutions</p>
+    <p>SealForge Verification &mdash; Finel AI</p>
     <p style="margin-top:4px;font-size:11px;color:#aaa;">All processing happens in your browser. No data is sent to any server.</p>
   </footer>
 

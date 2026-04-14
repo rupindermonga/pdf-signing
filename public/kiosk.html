@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SealForge - In-Person Signing</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" integrity="sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e" crossorigin="anonymous"></script>
+  <style>
+    .kiosk-container { max-width: 800px; margin: 24px auto; padding: 0 20px; }
+    .card { background: white; border-radius: 12px; padding: 28px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); margin-bottom: 20px; }
+    .card h2 { color: #1a3b7a; font-size: 20px; margin-bottom: 16px; }
+    .progress-bar { display: flex; gap: 6px; margin-bottom: 20px; }
+    .progress-step { flex: 1; height: 6px; border-radius: 3px; background: #e0e4ec; }
+    .progress-step.done { background: #2e7d32; }
+    .progress-step.current { background: #1a3b7a; }
+    .signer-badge { display: inline-block; background: #eef3fb; color: #1a3b7a; padding: 8px 18px; border-radius: 8px; font-size: 18px; font-weight: 600; margin-bottom: 16px; }
+    .pin-input { text-align: center; font-size: 32px; letter-spacing: 8px; font-weight: 700; color: #1a3b7a; max-width: 240px; margin: 16px auto; display: block; padding: 14px; border: 2px solid #d0d5dd; border-radius: 10px; }
+    .pdf-viewer { border: 1px solid #d0d5dd; border-radius: 8px; overflow: auto; background: #e8e8e8; max-height: 400px; padding: 16px; }
+    .pdf-page-wrap { position: relative; margin: 0 auto 12px auto; box-shadow: 0 2px 8px rgba(0,0,0,0.12); background: white; }
+    .pdf-page-wrap canvas { display: block; }
+    #sign-canvas { border: 2px solid #1a3b7a; border-radius: 10px; cursor: crosshair; background: white; width: 100%; max-width: 500px; height: 160px; touch-action: none; }
+    .handoff { text-align: center; padding: 40px 20px; }
+    .handoff .icon { font-size: 72px; margin-bottom: 16px; }
+    .handoff h2 { color: #1a3b7a; margin-bottom: 8px; }
+    .handoff .next-name { font-size: 24px; color: #2d5db8; font-weight: 700; }
+    .success-card { text-align: center; padding: 40px 20px; }
+    .success-card .icon { font-size: 72px; margin-bottom: 16px; }
+    .success-card h2 { color: #2e7d32; }
+    .hidden { display: none !important; }
+    .error-msg { background: #ffebee; border: 1px solid #ef5350; border-radius: 8px; padding: 10px; margin: 12px 0; font-size: 13px; color: #c62828; display: none; }
+    .error-msg.show { display: block; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo"><span class="logo-seal">Seal</span><span class="logo-forge">Forge</span></div>
+    <h1>In-Person Signing</h1>
+  </header>
+
+  <div class="kiosk-container">
+    <div id="progress-bar" class="progress-bar"></div>
+
+    <!-- PIN Screen -->
+    <div class="card" id="pin-card" style="display:none;text-align:center;">
+      <h2>Enter PIN to Continue</h2>
+      <input type="password" class="pin-input" id="pin-input" maxlength="10" placeholder="PIN">
+      <br><button class="btn-primary" id="pin-btn" style="margin-top:12px;">Unlock</button>
+      <div id="pin-error" class="error-msg"></div>
+    </div>
+
+    <!-- Current signer view -->
+    <div class="card" id="sign-card" style="display:none;">
+      <div class="signer-badge" id="signer-label"></div>
+      <h2 id="doc-title"></h2>
+
+      <div class="pdf-viewer" id="pdf-viewer"></div>
+
+      <div style="margin-top:20px;">
+        <h3 style="color:#1a3b7a;margin-bottom:10px;">Draw Your Signature</h3>
+        <canvas id="sign-canvas" width="500" height="160"></canvas>
+        <div style="margin-top:8px;display:flex;gap:10px;align-items:center;">
+          <button class="btn-secondary" id="clear-sig">Clear</button>
+          <span style="font-size:12px;color:#888;">Draw your signature above</span>
+        </div>
+      </div>
+
+      <div id="sign-error" class="error-msg"></div>
+
+      <div style="margin-top:20px;display:flex;gap:12px;align-items:center;">
+        <button class="btn-primary" id="submit-btn" style="font-size:18px;padding:14px 40px;">Sign</button>
+        <span style="font-size:12px;color:#888;">By signing, you agree this is your legal signature.</span>
+      </div>
+    </div>
+
+    <!-- Handoff screen -->
+    <div class="card hidden" id="handoff-card">
+      <div class="handoff">
+        <div class="icon">&#9989;</div>
+        <h2>Signed Successfully!</h2>
+        <p style="margin:12px 0;">Please hand the device to the next signer:</p>
+        <div class="next-name" id="next-signer-name"></div>
+        <button class="btn-primary" id="handoff-btn" style="margin-top:24px;font-size:18px;padding:14px 40px;">Ready for Next Signer</button>
+      </div>
+    </div>
+
+    <!-- All done -->
+    <div class="card hidden" id="done-card">
+      <div class="success-card">
+        <div class="icon">&#127881;</div>
+        <h2>All Signatures Collected!</h2>
+        <p style="color:#666;margin-top:8px;">The signed document is now available for download from the dashboard.</p>
+      </div>
+    </div>
+
+    <!-- Error / not found -->
+    <div class="card hidden" id="error-card">
+      <div style="text-align:center;padding:40px;">
+        <h2 style="color:#c62828;" id="error-title">Not Found</h2>
+        <p id="error-detail" style="color:#666;margin-top:8px;"></p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const uuid = window.location.pathname.split('/kiosk/')[1];
+    let kioskInfo = null;
+
+    async function init() {
+      const resp = await fetch('/api/kiosk/' + uuid + '/info');
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        document.getElementById('error-card').classList.remove('hidden');
+        document.getElementById('error-title').textContent = err.error || 'Not found';
+        return;
+      }
+      kioskInfo = await resp.json();
+      renderProgress();
+
+      if (kioskInfo.allSigned) {
+        document.getElementById('done-card').classList.remove('hidden');
+        return;
+      }
+
+      if (kioskInfo.hasPin) {
+        document.getElementById('pin-card').style.display = 'block';
+      } else {
+        showSigningView();
+      }
+    }
+
+    function renderProgress() {
+      const bar = document.getElementById('progress-bar');
+      bar.innerHTML = kioskInfo.signers.map((s, i) => {
+        const cls = s.status === 'signed' ? 'done' : (kioskInfo.currentSigner && s.order === kioskInfo.currentSigner.order ? 'current' : '');
+        return '<div class="progress-step ' + cls + '" title="' + esc(s.name) + '"></div>';
+      }).join('');
+    }
+
+    // PIN
+    document.getElementById('pin-btn').addEventListener('click', async () => {
+      const pin = document.getElementById('pin-input').value;
+      const resp = await fetch('/api/kiosk/' + uuid + '/verify-pin', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin })
+      });
+      if (!resp.ok) {
+        const err = document.getElementById('pin-error');
+        err.textContent = 'Invalid PIN'; err.classList.add('show');
+        return;
+      }
+      document.getElementById('pin-card').style.display = 'none';
+      showSigningView();
+    });
+
+    async function showSigningView() {
+      if (!kioskInfo.currentSigner) {
+        document.getElementById('done-card').classList.remove('hidden');
+        return;
+      }
+      document.getElementById('sign-card').style.display = 'block';
+      document.getElementById('signer-label').textContent = 'Signer ' + kioskInfo.currentSigner.order + ': ' + kioskInfo.currentSigner.name;
+      document.getElementById('doc-title').textContent = kioskInfo.docTitle;
+      loadPdf();
+    }
+
+    // PDF viewer
+    async function loadPdf() {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      const resp = await fetch('/api/kiosk/' + uuid + '/pdf');
+      const buf = await resp.arrayBuffer();
+      const pdfDoc = await pdfjsLib.getDocument({ data: buf }).promise;
+      const viewer = document.getElementById('pdf-viewer');
+      viewer.innerHTML = '';
+      for (let i = 1; i <= pdfDoc.numPages; i++) {
+        const page = await pdfDoc.getPage(i);
+        const vp = page.getViewport({ scale: 1.2 });
+        const wrap = document.createElement('div');
+        wrap.className = 'pdf-page-wrap';
+        wrap.style.width = vp.width + 'px'; wrap.style.height = vp.height + 'px';
+        const canvas = document.createElement('canvas');
+        canvas.width = vp.width; canvas.height = vp.height;
+        wrap.appendChild(canvas);
+        viewer.appendChild(wrap);
+        await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+      }
+    }
+
+    // Signature canvas
+    const sigCanvas = document.getElementById('sign-canvas');
+    const sigCtx = sigCanvas.getContext('2d');
+    let drawing = false, lx = 0, ly = 0;
+    function gp(e) {
+      const r = sigCanvas.getBoundingClientRect();
+      const cx = e.touches ? e.touches[0].clientX : e.clientX;
+      const cy = e.touches ? e.touches[0].clientY : e.clientY;
+      return { x: (cx - r.left) * (sigCanvas.width / r.width), y: (cy - r.top) * (sigCanvas.height / r.height) };
+    }
+    function sd(e) { e.preventDefault(); drawing = true; const p = gp(e); lx = p.x; ly = p.y; }
+    function dm(e) {
+      if (!drawing) return; e.preventDefault();
+      const p = gp(e); sigCtx.beginPath(); sigCtx.moveTo(lx, ly); sigCtx.lineTo(p.x, p.y);
+      sigCtx.strokeStyle = '#1a3b7a'; sigCtx.lineWidth = 2.5; sigCtx.lineCap = 'round'; sigCtx.stroke();
+      lx = p.x; ly = p.y;
+    }
+    function ed() { drawing = false; }
+    sigCanvas.addEventListener('mousedown', sd); sigCanvas.addEventListener('mousemove', dm);
+    sigCanvas.addEventListener('mouseup', ed); sigCanvas.addEventListener('mouseleave', ed);
+    sigCanvas.addEventListener('touchstart', sd); sigCanvas.addEventListener('touchmove', dm);
+    sigCanvas.addEventListener('touchend', ed);
+    document.getElementById('clear-sig').addEventListener('click', () => sigCtx.clearRect(0, 0, sigCanvas.width, sigCanvas.height));
+
+    // Submit
+    document.getElementById('submit-btn').addEventListener('click', async () => {
+      const errDiv = document.getElementById('sign-error');
+      errDiv.classList.remove('show');
+      const imgData = sigCtx.getImageData(0, 0, sigCanvas.width, sigCanvas.height);
+      const hasContent = imgData.data.some((v, i) => i % 4 === 3 && v > 0);
+      if (!hasContent) { errDiv.textContent = 'Please draw your signature.'; errDiv.classList.add('show'); return; }
+
+      const btn = document.getElementById('submit-btn');
+      btn.disabled = true; btn.textContent = 'Submitting...';
+      try {
+        const resp = await fetch('/api/kiosk/' + uuid + '/submit', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ signatureData: sigCanvas.toDataURL('image/png'), fieldValues: {} })
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error);
+
+        document.getElementById('sign-card').style.display = 'none';
+
+        if (data.allSigned) {
+          document.getElementById('done-card').classList.remove('hidden');
+        } else {
+          document.getElementById('next-signer-name').textContent = data.nextSigner?.name || 'Next signer';
+          document.getElementById('handoff-card').classList.remove('hidden');
+        }
+      } catch (err) {
+        errDiv.textContent = err.message; errDiv.classList.add('show');
+        btn.disabled = false; btn.textContent = 'Sign';
+      }
+    });
+
+    // Handoff → reload for next signer
+    document.getElementById('handoff-btn').addEventListener('click', () => {
+      window.location.reload();
+    });
+
+    document.getElementById('pin-input').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('pin-btn').click(); });
+
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+    init();
+  </script>
+</body>
+</html>

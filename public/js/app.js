@@ -394,7 +394,7 @@ function createSigOverlay() {
     ${sigPreview}
     <div style="display:flex;gap:0.5em;padding:0.3em 0.5em;line-height:1.35;">
       <div style="flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:0.2em;">
-        <div style="font-size:1.3em;font-weight:800;letter-spacing:-0.5px;white-space:nowrap;"><span style="color:#1a3b7a;">Doc</span><span style="color:#2d5db8;">Seal</span></div>
+        <div style="font-size:1.3em;font-weight:800;letter-spacing:-0.5px;white-space:nowrap;"><span style="color:#1a3b7a;">Seal</span><span style="color:#2d5db8;">Forge</span></div>
         <div style="width:3.2em;height:3.2em;background:#f0f0f0;border:1px solid #ccc;border-radius:2px;display:flex;align-items:center;justify-content:center;font-size:0.7em;color:#aaa;">QR</div>
       </div>
       <div style="border-left:1px solid #1a3b7a;padding-left:0.5em;">
@@ -613,9 +613,9 @@ async function addAuditTrailPage(pdfDoc, audit, qrDataUrl) {
 
   // Header
   pg.drawRectangle({ x: 0, y: h - 80, width: w, height: 80, color: rgb(0.1, 0.23, 0.48) });
-  pg.drawText('Doc', { x: 40, y: h - 52, size: 24, font: fontBold, color: rgb(1, 1, 1) });
-  pg.drawText('Seal', { x: 40 + fontBold.widthOfTextAtSize('Doc', 24), y: h - 52, size: 24, font: fontBold, color: rgb(0.5, 0.72, 1) });
-  pg.drawText('Certificate of Signing', { x: 40 + fontBold.widthOfTextAtSize('DocSeal', 24) + 20, y: h - 50, size: 16, font, color: rgb(0.85, 0.9, 1) });
+  pg.drawText('Seal', { x: 40, y: h - 52, size: 24, font: fontBold, color: rgb(1, 1, 1) });
+  pg.drawText('Forge', { x: 40 + fontBold.widthOfTextAtSize('Seal', 24), y: h - 52, size: 24, font: fontBold, color: rgb(0.5, 0.72, 1) });
+  pg.drawText('Certificate of Signing', { x: 40 + fontBold.widthOfTextAtSize('SealForge', 24) + 20, y: h - 50, size: 16, font, color: rgb(0.85, 0.9, 1) });
 
   y = h - 110;
 
@@ -676,7 +676,7 @@ async function addAuditTrailPage(pdfDoc, audit, qrDataUrl) {
 
   // Disclaimer
   pg.drawLine({ start: { x: 40, y: 75 }, end: { x: w - 40, y: 75 }, thickness: 0.5, color: rgb(0.7, 0.7, 0.7) });
-  pg.drawText('This document was digitally signed using DocSeal with a PKCS#7 digital certificate.', { x: 40, y: 60, size: 8, font, color: rgb(0.5, 0.5, 0.5) });
+  pg.drawText('This document was digitally signed using SealForge with a PKCS#7 digital certificate.', { x: 40, y: 60, size: 8, font, color: rgb(0.5, 0.5, 0.5) });
   pg.drawText(`Verify integrity at: ${VERIFY_URL}`, { x: 40, y: 48, size: 8, font: fontMono, color: rgb(0.4, 0.4, 0.4) });
   pg.drawText('Any modification after signing will invalidate both the hash and the digital signature.', { x: 40, y: 36, size: 8, font, color: rgb(0.5, 0.5, 0.5) });
 }
@@ -688,14 +688,14 @@ function generateHtmlCertificate(audit, signedHash) {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DocSeal Signing Certificate - ${audit.documentId}</title>
+<title>SealForge Signing Certificate - ${audit.documentId}</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'Segoe UI',Tahoma,sans-serif;background:#f0f2f5;color:#333;padding:24px}
 .cert{max-width:700px;margin:0 auto;background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,0.1);overflow:hidden}
 .cert-header{background:linear-gradient(135deg,#1a3b7a,#2d5db8);color:#fff;padding:24px 32px;display:flex;align-items:center;gap:16px}
 .cert-header .logo{font-size:28px;font-weight:800;letter-spacing:-0.5px}
-.logo-d{color:#fff}.logo-s{color:#7eb8ff;font-weight:600}
+.logo-s{color:#fff}.logo-f{color:#7eb8ff;font-weight:600}
 .cert-header h1{font-size:18px;font-weight:400;opacity:0.9}
 .cert-body{padding:28px 32px}
 .badge{display:inline-block;background:#1a3b7a;color:#fff;font-size:10px;font-weight:700;letter-spacing:1px;padding:4px 10px;border-radius:4px;margin-bottom:16px}
@@ -724,7 +724,7 @@ footer{text-align:center;padding:16px;color:#aaa;font-size:11px}
 <body>
 <div class="cert">
   <div class="cert-header">
-    <div class="logo"><span class="logo-d">Doc</span><span class="logo-s">Seal</span></div>
+    <div class="logo"><span class="logo-s">Seal</span><span class="logo-f">Forge</span></div>
     <h1>Certificate of Signing</h1>
   </div>
   <div class="cert-body">
@@ -773,7 +773,7 @@ footer{text-align:center;padding:16px;color:#aaa;font-size:11px}
     </div>
   </div>
 </div>
-<footer>DocSeal &mdash; ManDarshan AI Solutions &mdash; This certificate was generated at the time of signing.</footer>
+<footer>SealForge &mdash; Finel AI &mdash; This certificate was generated at the time of signing.</footer>
 
 <script>
 const expectedHash = "${signedHash}";
@@ -867,13 +867,13 @@ downloadBtn.addEventListener('click', async () => {
     // Draw box
     page.drawRectangle({ x: pdfX, y: pdfY, width: stampW, height: finalH, color: rgb(1,1,1), borderColor: rgb(0.1,0.23,0.48), borderWidth: 0.8 });
 
-    // Left column: DocSeal logo
+    // Left column: SealForge logo
     const logoX = pdfX + pad;
-    page.drawText('Doc', { x: logoX, y: pdfY + finalH - pad - logoFs, size: logoFs, font: fontBold, color: rgb(0.1,0.23,0.48) });
-    page.drawText('Seal', { x: logoX + fontBold.widthOfTextAtSize('Doc', logoFs), y: pdfY + finalH - pad - logoFs, size: logoFs, font: fontBold, color: rgb(0.18,0.37,0.72) });
+    page.drawText('Seal', { x: logoX, y: pdfY + finalH - pad - logoFs, size: logoFs, font: fontBold, color: rgb(0.1,0.23,0.48) });
+    page.drawText('Forge', { x: logoX + fontBold.widthOfTextAtSize('Seal', logoFs), y: pdfY + finalH - pad - logoFs, size: logoFs, font: fontBold, color: rgb(0.18,0.37,0.72) });
 
     // Divider
-    const logoTotalW = fontBold.widthOfTextAtSize('DocSeal', logoFs);
+    const logoTotalW = fontBold.widthOfTextAtSize('SealForge', logoFs);
     const divX = pdfX + logoTotalW + pad * 2 + 2;
     page.drawLine({ start: { x: divX, y: pdfY + 2 }, end: { x: divX, y: pdfY + finalH - 2 }, thickness: 0.5, color: rgb(0.1,0.23,0.48) });
 
@@ -912,7 +912,7 @@ downloadBtn.addEventListener('click', async () => {
         const qrBytes = await fetch(qrDataUrl).then(r => r.arrayBuffer());
         const qrImg = await pdfDoc.embedPng(qrBytes);
         const qrSz = Math.round(22 * userScale);
-        // QR right below DocSeal logo, tight gap
+        // QR right below SealForge logo, tight gap
         page.drawImage(qrImg, { x: pdfX + pad, y: pdfY + finalH - pad - logoFs - qrSz - 2 * s, width: qrSz, height: qrSz });
       } catch (e) { console.error('QR embed failed', e); }
     }

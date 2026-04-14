@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DocSeal - Sign Document</title>
+  <title>SealForge - Sign Document</title>
   <link rel="stylesheet" href="/css/style.css">
   <script src="/js/i18n.js" defer></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" integrity="sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e" crossorigin="anonymous"></script>
@@ -51,7 +51,7 @@
 </head>
 <body>
   <header>
-    <div class="logo"><span class="logo-doc">Doc</span><span class="logo-seal">Seal</span></div>
+    <div class="logo"><span class="logo-seal">Seal</span><span class="logo-forge">Forge</span></div>
     <h1 data-i18n="sign.title">Sign Document</h1>
   </header>
 
@@ -105,7 +105,7 @@
       <p>This document requires a payment of <b id="pay-display"></b> before you can sign.</p>
       <div id="pay-status" style="margin:12px 0;font-size:13px;"></div>
       <button class="btn-primary" id="pay-btn">Pay with Card</button>
-      <p style="font-size:12px;color:#888;margin-top:10px;">Powered by Stripe. Your card details never touch DocSeal.</p>
+      <p style="font-size:12px;color:#888;margin-top:10px;">Powered by Stripe. Your card details never touch SealForge.</p>
       <div id="pay-error" class="error-msg"></div>
     </div>
 
@@ -338,6 +338,7 @@
       myFields.forEach(f => renderSignerField(pageWraps[f.page], f, false));
       otherFields.forEach(f => renderSignerField(pageWraps[f.page], f, true));
 
+      refreshConditionalVisibility();
       updateFieldSummary();
     }
 
@@ -363,12 +364,13 @@
         return;
       }
 
-      // Auto-fill defaults
-      let initial = '';
-      if (f.type === 'name') initial = signerInfo.signerName;
-      else if (f.type === 'email') initial = signerInfo.signerEmail;
-      else if (f.type === 'date') initial = new Date().toISOString().slice(0, 10);
-      else if (f.type === 'initials') initial = (signerInfo.signerName || '').split(' ').map(p => p[0] || '').join('').toUpperCase().slice(0, 4);
+      // Auto-fill defaults (including pre-filled values from bulk mapping)
+      const prefilled = (signerInfo.prefilledValues || {})[f.id];
+      let initial = prefilled || '';
+      if (!initial && f.type === 'name') initial = signerInfo.signerName;
+      else if (!initial && f.type === 'email') initial = signerInfo.signerEmail;
+      else if (!initial && f.type === 'date') initial = new Date().toISOString().slice(0, 10);
+      else if (!initial && f.type === 'initials') initial = (signerInfo.signerName || '').split(' ').map(p => p[0] || '').join('').toUpperCase().slice(0, 4);
 
       if (f.type === 'checkbox') {
         const cb = document.createElement('input');
@@ -377,9 +379,53 @@
         cb.addEventListener('change', () => {
           fieldValues[f.id] = cb.checked;
           div.classList.toggle('filled', cb.checked);
+          refreshConditionalVisibility();
           updateFieldSummary();
         });
         div.appendChild(cb);
+      } else if (f.type === 'dropdown') {
+        const sel = document.createElement('select');
+        sel.style.width = '100%'; sel.style.height = '100%'; sel.style.fontSize = '12px';
+        const placeholder = document.createElement('option');
+        placeholder.value = ''; placeholder.textContent = '-- select --';
+        sel.appendChild(placeholder);
+        (f.options || []).forEach(o => {
+          const opt = document.createElement('option'); opt.value = o; opt.textContent = o;
+          sel.appendChild(opt);
+        });
+        fieldValues[f.id] = '';
+        sel.addEventListener('change', () => {
+          fieldValues[f.id] = sel.value;
+          div.classList.toggle('filled', !!sel.value);
+          refreshConditionalVisibility();
+          updateFieldSummary();
+        });
+        div.appendChild(sel);
+      } else if (f.type === 'radio') {
+        const wrap = document.createElement('div');
+        wrap.style.display = 'flex'; wrap.style.flexWrap = 'wrap'; wrap.style.gap = '8px';
+        wrap.style.width = '100%'; wrap.style.height = '100%'; wrap.style.alignItems = 'center';
+        wrap.style.fontSize = '11px'; wrap.style.background = '#fff'; wrap.style.padding = '2px 4px';
+        const groupName = 'rg_' + f.id;
+        (f.options || []).forEach(o => {
+          const lbl = document.createElement('label');
+          lbl.style.display = 'inline-flex'; lbl.style.alignItems = 'center'; lbl.style.gap = '3px';
+          const rb = document.createElement('input');
+          rb.type = 'radio'; rb.name = groupName; rb.value = o;
+          rb.addEventListener('change', () => {
+            if (rb.checked) {
+              fieldValues[f.id] = o;
+              div.classList.add('filled');
+              refreshConditionalVisibility();
+              updateFieldSummary();
+            }
+          });
+          const span = document.createElement('span'); span.textContent = o;
+          lbl.appendChild(rb); lbl.appendChild(span);
+          wrap.appendChild(lbl);
+        });
+        fieldValues[f.id] = '';
+        div.appendChild(wrap);
       } else if (f.type === 'signature') {
         // Click opens signature pad (the existing canvas at the bottom)
         div.style.display = 'flex'; div.style.alignItems = 'center'; div.style.justifyContent = 'center';
@@ -395,6 +441,7 @@
         input.addEventListener('input', () => {
           fieldValues[f.id] = input.value;
           div.classList.toggle('filled', !!input.value);
+          refreshConditionalVisibility();
           updateFieldSummary();
         });
         div.appendChild(input);
@@ -403,11 +450,32 @@
       pageEl.appendChild(div);
     }
 
+    // A conditional field is only "active" when its dependency matches.
+    // Inactive fields are hidden AND excluded from the required-count.
+    function isFieldActive(f) {
+      if (!f.conditional || !f.conditional.fieldId) return true;
+      const refVal = fieldValues[f.conditional.fieldId];
+      const refStr = refVal == null ? '' : String(refVal);
+      return refStr === String(f.conditional.equals);
+    }
+    function refreshConditionalVisibility() {
+      const myFields = (signerInfo && signerInfo.fields) || [];
+      for (const f of myFields) {
+        if (!f.conditional) continue;
+        const el = document.querySelector(`.pdf-field[data-fid="${f.id}"]`);
+        if (!el) continue;
+        const active = isFieldActive(f);
+        el.style.display = active ? '' : 'none';
+        // Clear hidden field values so they don't stick through a condition flip
+        if (!active) fieldValues[f.id] = (f.type === 'checkbox') ? false : '';
+      }
+    }
+
     function updateFieldSummary() {
       const s = document.getElementById('field-summary');
       const myFields = (signerInfo && signerInfo.fields) || [];
       if (!myFields.length) { s.classList.add('hidden'); return; }
-      const required = myFields.filter(f => f.required && f.type !== 'signature');
+      const required = myFields.filter(f => f.required && f.type !== 'signature' && isFieldActive(f));
       const filled = required.filter(f => {
         const v = fieldValues[f.id];
         return f.type === 'checkbox' ? v === true : (v != null && String(v).trim() !== '');

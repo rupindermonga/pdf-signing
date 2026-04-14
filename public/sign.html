@@ -530,7 +530,7 @@
       btn.disabled = true; btn.textContent = 'Submitting...';
 
       // Collect metadata
-      let location = '', geoCoords = '', publicIp = '';
+      let location = '', geoCoords = '';
       try {
         const pos = await new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej, { timeout: 5000 }));
         geoCoords = `${pos.coords.latitude.toFixed(6)}, ${pos.coords.longitude.toFixed(6)}`;
@@ -539,10 +539,7 @@
         const a = geoData.address || {};
         location = [a.city || a.town || a.village || '', a.state || '', a.country || ''].filter(Boolean).join(', ');
       } catch { /* location optional */ }
-      try {
-        const ipResp = await fetch('https://api.ipify.org?format=json');
-        publicIp = (await ipResp.json()).ip || '';
-      } catch { /* ip optional */ }
+      // IP is determined server-side (clientIp) — no client-side ipify call needed
 
       const ua = navigator.userAgent;
       let browser = 'Unknown';
@@ -565,7 +562,6 @@
             location,
             browserInfo: `${browser} on ${os}`,
             geoCoords,
-            publicIp,
             fieldValues,
           })
         });

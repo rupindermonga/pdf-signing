@@ -80,7 +80,7 @@ app.use((req, res, next) => {
     `style-src 'self' 'nonce-${nonce}' https://fonts.googleapis.com`,
     "font-src https://fonts.gstatic.com",
     "img-src 'self' data: blob:",
-    "connect-src 'self' https://nominatim.openstreetmap.org https://api.ipify.org https://api.stripe.com data:",
+    "connect-src 'self' https://nominatim.openstreetmap.org https://api.stripe.com data:",
     "frame-src https://checkout.stripe.com",
     "frame-ancestors 'none'",
     "form-action 'self' https://checkout.stripe.com",
@@ -288,7 +288,7 @@ if (process.env.SCHEDULER_DISABLED !== '1') {
   }
 }
 // Manual trigger for tests/ops (authenticated owner only — no-op if nothing to do).
-app.post('/api/admin/run-scheduler', requireAuth, rateLimit(60000, 3), async (req, res) => {
+app.post('/api/admin/run-scheduler', requireAuth, requireRole('admin'), rateLimit(60000, 3), async (req, res) => {
   await runScheduler();
   res.json({ ok: true });
 });
@@ -2102,21 +2102,30 @@ app.post('/api/kiosk/:uuid/submit', rateLimit(60000, 10), async (req, res) => {
   const { signatureData, fieldValues } = req.body;
   if (!signatureData) return res.status(400).json({ error: 'Signature required' });
 
-  // Validate fields
+  // Sanitize field values (match normal signing path — per-field sanitize + length cap)
   const docFields = JSON.parse(doc.fields_json || '[]');
+  const myFields = docFields.filter(f => f.signerOrder === current.sign_order);
+  const cleanValues = {};
+  for (const f of myFields) {
+    const raw = fieldValues && Object.prototype.hasOwnProperty.call(fieldValues, f.id) ? fieldValues[f.id] : '';
+    if (f.type === 'checkbox') {
+      cleanValues[f.id] = raw === true || raw === 'true' || raw === '1';
+    } else {
+      cleanValues[f.id] = sanitize(String(raw == null ? '' : raw)).slice(0, 500);
+    }
+  }
   if (docFields.length) {
-    const { validateFieldSubmission } = require('./fields');
-    const fieldErr = validateFieldSubmission(docFields, current.sign_order, fieldValues || {});
+    const fieldErr = validateFieldSubmission(docFields, current.sign_order, cleanValues);
     if (fieldErr) return res.status(400).json({ error: fieldErr });
   }
 
   const signed = signerOps.markSigned(current.id, {
-    signatureData,
+    signatureData: sanitize(signatureData || ''),
     ip: clientIp(req),
     location: 'In-person (kiosk)',
-    browserInfo: req.headers['user-agent'] || 'Kiosk',
+    browserInfo: sanitize(String(req.headers['user-agent'] || 'Kiosk')).slice(0, 300),
     geoCoords: '',
-    fieldValues: fieldValues || {},
+    fieldValues: cleanValues,
   });
   if (!signed) return res.status(409).json({ error: 'Already signed' });
 
@@ -2147,10 +2156,15 @@ app.post('/api/documents/create-kiosk', requireAuth, requireRole('admin', 'membe
   try {
     const pdfBuffer = req.file?.buffer;
     if (!pdfBuffer || !pdfBuffer.length) return res.status(400).json({ error: 'No PDF uploaded' });
+    // Validate PDF magic bytes (match normal create path)
+    if (pdfBuffer.length < 5 || pdfBuffer.toString('utf-8', 0, 5) !== '%PDF-') {
+      return res.status(400).json({ error: 'Invalid PDF file' });
+    }
 
-    const title = sanitize(req.body.title || req.file.originalname || 'Untitled');
+    const cleanFilename = sanitize(req.file.originalname).replace(/[^\w.\-() ]/g, '_');
+    const title = sanitize(req.body.title || cleanFilename || 'Untitled');
     const hash = crypto.createHash('sha256').update(pdfBuffer).digest('hex');
-    const doc = docOps.create(req.session.userId, title, req.file.originalname, hash, '', 'sequential');
+    const doc = docOps.create(req.session.userId, title, cleanFilename, hash, '', 'sequential');
 
     // Save PDF
     fs.writeFileSync(path.join(storageDir, `${doc.uuid}.pdf`), pdfBuffer);

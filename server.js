@@ -51,6 +51,13 @@ if (!IS_DEV && process.env.NODE_ENV !== 'production') {
   console.warn('\x1b[33m[sealforge] NODE_ENV is not set to "production" — session cookies will be issued without the Secure flag. Set NODE_ENV=production in your deployment.\x1b[0m');
 }
 
+// Fail-closed: refuse to start in production without a real SESSION_SECRET
+if (process.env.NODE_ENV === 'production' && !process.env.SESSION_SECRET) {
+  console.error('\x1b[31m[sealforge] FATAL: SESSION_SECRET is not set. Refusing to start in production with a predictable secret.\x1b[0m');
+  console.error('\x1b[31m  Set SESSION_SECRET to a random string (at least 32 chars): openssl rand -base64 32\x1b[0m');
+  process.exit(1);
+}
+
 // ─── Security headers (nonce-based CSP) ───
 app.use((req, res, next) => {
   // Generate per-request nonce for inline scripts/styles
@@ -1705,7 +1712,9 @@ app.delete('/api/settings/keys/:id', requireAuth, (req, res) => {
 // Webhook management
 app.get('/api/settings/webhooks', requireAuth, (req, res) => {
   const list = webhookOps.listByUser(req.session.userId).map(w => ({
-    id: w.id, url: w.url, secret: w.secret,
+    id: w.id, url: w.url,
+    // Secret redacted — only shown once at creation time
+    secret_prefix: w.secret ? w.secret.slice(0, 10) + '...' : '',
     events: JSON.parse(w.events_json || '[]'),
     active: !!w.active, last_status: w.last_status, last_fired_at: w.last_fired_at,
     created_at: w.created_at,
@@ -1892,12 +1901,14 @@ app.get('/api/v1/webhooks', requireApiKey('ro'), (req, res) => {
 app.post('/api/v1/webhooks', requireApiKey('rw'), async (req, res) => {
   const { url, events } = req.body;
   if (!url) return res.status(400).json({ error: 'url required' });
-  // SSRF check
+  if (!/^https:\/\//i.test(url)) return res.status(400).json({ error: 'Only https:// URLs are accepted' });
+  // SSRF check — resolveAndCheckUrl returns { ok, reason }, not a boolean
   try {
-    const ok = await resolveAndCheckUrl(url);
-    if (!ok) return res.status(400).json({ error: 'Webhook URL must be HTTPS and not target private networks' });
+    const check = await resolveAndCheckUrl(url);
+    if (!check.ok) return res.status(400).json({ error: `Webhook URL rejected (${check.reason}) — public HTTPS endpoints only` });
   } catch (e) { return res.status(400).json({ error: e.message }); }
-  const result = webhookOps.create(req.apiUser.id, url, events);
+  const cleanEvents = Array.isArray(events) ? events.filter(e => ['*', 'document.sent', 'document.signed_by', 'document.completed', 'document.cancelled', 'document.expired'].includes(e)) : ['*'];
+  const result = webhookOps.create(req.apiUser.id, url, cleanEvents);
   res.json({ ok: true, id: result.id, secret: result.secret });
 });
 
@@ -1991,6 +2002,14 @@ app.get('/api/kiosk/:uuid/info', (req, res) => {
   if (!doc || !doc.kiosk_mode) return res.status(404).json({ error: 'Not found' });
   if (doc.status === 'cancelled') return res.status(410).json({ error: 'This request was cancelled' });
 
+  const hasPin = !!doc.kiosk_pin;
+  const pinVerified = !hasPin || req.session.kioskVerified === req.params.uuid;
+
+  // If PIN-protected and not yet verified, only return minimal metadata
+  if (!pinVerified) {
+    return res.json({ docTitle: doc.title, status: doc.status, hasPin: true, pinRequired: true });
+  }
+
   const signers = signerOps.listByDocument(doc.id).filter(s => s.role !== 'cc');
   const current = signers.find(s => s.status !== 'signed');
   const allSigned = signers.every(s => s.status === 'signed');
@@ -2003,7 +2022,7 @@ app.get('/api/kiosk/:uuid/info', (req, res) => {
     allSigned,
     currentSigner: current ? { id: current.id, name: current.name, email: current.email, order: current.sign_order } : null,
     signers: signers.map(s => ({ name: s.name, status: s.status, order: s.sign_order })),
-    hasPin: !!doc.kiosk_pin,
+    hasPin,
     fields: current ? (JSON.parse(doc.fields_json || '[]')).filter(f => f.signerOrder === current.sign_order) : [],
   });
 });
@@ -2021,6 +2040,10 @@ app.post('/api/kiosk/:uuid/verify-pin', rateLimit(60000, 10), (req, res) => {
 app.get('/api/kiosk/:uuid/pdf', (req, res) => {
   const doc = docOps.findByUUID(req.params.uuid);
   if (!doc || !doc.kiosk_mode) return res.status(404).json({ error: 'Not found' });
+  // PIN gate: block PDF download until PIN is verified
+  if (doc.kiosk_pin && req.session.kioskVerified !== req.params.uuid) {
+    return res.status(403).json({ error: 'PIN verification required' });
+  }
   const pdfPath = path.join(storageDir, `${doc.uuid}.pdf`);
   if (!fs.existsSync(pdfPath)) return res.status(404).json({ error: 'PDF not found' });
   res.setHeader('Content-Type', 'application/pdf');

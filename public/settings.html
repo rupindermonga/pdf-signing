@@ -231,7 +231,7 @@
       if (!webhooks.length) { tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#888;padding:16px;">No webhooks configured.</td></tr>'; return; }
       tbody.innerHTML = webhooks.map(w => `
         <tr>
-          <td class="mono" style="word-break:break-all;">${esc(w.url)}<br><span style="color:#888;">secret: ${esc(w.secret.slice(0, 16))}…</span></td>
+          <td class="mono" style="word-break:break-all;">${esc(w.url)}<br><span style="color:#888;">secret: ${esc(w.secret_prefix)}…</span></td>
           <td style="font-size:11px;">${esc(w.events.join(', '))}</td>
           <td>${w.last_status ? `<span class="status-pill ${w.last_status.startsWith('2') ? 'status-ok' : 'status-err'}">${esc(w.last_status)}</span>` : '<span style="color:#aaa;">—</span>'}</td>
           <td><label style="cursor:pointer;"><input type="checkbox" ${w.active ? 'checked' : ''} onchange="toggleHook(${w.id}, this.checked)"> ${w.active ? 'On' : 'Off'}</label></td>

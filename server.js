@@ -85,12 +85,13 @@ app.use((req, res, next) => {
   next();
 });
 
-// ─── Nonce-injecting HTML sender ───
-// Replaces res.sendFile for HTML pages — injects nonce into <script> and <style> tags.
+// ─── Nonce-injecting HTML sender (cached file reads) ───
+const htmlCache = {};
 function sendHtml(res, filePath) {
-  let html = fs.readFileSync(filePath, 'utf-8');
+  // Cache raw HTML in memory to avoid blocking fs reads per request (L5)
+  if (!htmlCache[filePath] || IS_DEV) htmlCache[filePath] = fs.readFileSync(filePath, 'utf-8');
   const nonce = res.locals.cspNonce;
-  // Inject nonce into all inline <script> and <style> tags
+  let html = htmlCache[filePath];
   html = html.replace(/<script(?=[\s>])/gi, `<script nonce="${nonce}"`);
   html = html.replace(/<style(?=[\s>])/gi, `<style nonce="${nonce}"`);
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -98,7 +99,7 @@ function sendHtml(res, filePath) {
 }
 
 // ─── Middleware ───
-app.use(express.json({ limit: '60mb' }));
+app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(session({
   secret: process.env.SESSION_SECRET || 'sealforge-dev',
@@ -119,7 +120,9 @@ function rateLimit(windowMs, maxReqs) {
     // clientIp() honours TRUST_PROXY: behind a trusted proxy it's the real client IP,
     // otherwise it falls back to the socket peer (so X-Forwarded-For can't be spoofed).
     const ip = clientIp(req);
-    const key = ip + ':' + req.path;
+    // Normalize path to prevent bypass with trailing slashes, encodings, or case variations
+    const normPath = req.path.replace(/\/+$/, '').toLowerCase();
+    const key = ip + ':' + normPath;
     const now = Date.now();
     const entry = rateLimits.get(key) || { count: 0, resetAt: now + windowMs };
     if (now > entry.resetAt) { entry.count = 0; entry.resetAt = now + windowMs; }
@@ -259,6 +262,9 @@ async function runScheduler() {
 
   // 3) Purge old event log entries (Zapier polling, >30 days old)
   try { eventLogOps.purgeOld(30); } catch {}
+
+  // 4) Clean up expired/used OTP codes to prevent table bloat
+  try { otpOps.cleanExpired(); } catch {}
 }
 
 if (process.env.SCHEDULER_DISABLED !== '1') {
@@ -288,7 +294,7 @@ module.exports = { app, runScheduler };
 // ─── Sanitize input (strip HTML tags) ───
 function sanitize(str) {
   if (typeof str !== 'string') return '';
-  return str.replace(/[<>]/g, '');
+  return str.replace(/[<>"'\\]/g, '');
 }
 
 // ─── Email format validation ───
@@ -1157,11 +1163,13 @@ app.post('/api/sign/:token/verify-otp', rateLimit(60000, 10), (req, res) => {
     return res.status(400).json({ error: 'Invalid or expired code' });
   }
 
-  // Mark as verified in session
-  if (!req.session.verifiedSigners) req.session.verifiedSigners = {};
-  req.session.verifiedSigners[req.params.token] = true;
-
-  res.json({ ok: true });
+  // Regenerate session to prevent fixation, then mark as verified
+  const token = req.params.token;
+  req.session.regenerate((err) => {
+    if (err) return res.status(500).json({ error: 'Session error' });
+    req.session.verifiedSigners = { [token]: true };
+    res.json({ ok: true });
+  });
 });
 
 app.get('/api/sign/:token/pdf', (req, res) => {
@@ -1200,10 +1208,11 @@ app.post('/api/sign/:token/submit', rateLimit(60000, 10), async (req, res) => {
     return res.status(403).json({ error: 'ID verification required before signing' });
   }
 
-  const { signatureData, location, browserInfo, geoCoords, publicIp, fieldValues } = req.body;
+  const { signatureData, location, browserInfo, geoCoords, fieldValues } = req.body;
   // Prefer client-reported public IP (from ipify.org), fall back to clientIp()
   // which respects TRUST_PROXY for accurate audit logging behind a reverse proxy.
-  const ip = sanitize(publicIp || '') || clientIp(req);
+  // Always use server-determined IP — never trust client-supplied publicIp (L1: audit trail integrity)
+  const ip = clientIp(req);
 
   // Validate field values: only this signer's fields. Supports all field types
   // (including dropdown/radio with allowed-option enforcement) and conditional
@@ -1272,7 +1281,7 @@ app.post('/api/sign/:token/submit', rateLimit(60000, 10), async (req, res) => {
 });
 
 // ─── Cancel a document (creator only, while pending) ───
-app.post('/api/documents/:uuid/cancel', requireAuth, (req, res) => {
+app.post('/api/documents/:uuid/cancel', requireAuth, requireRole('admin', 'member'), (req, res) => {
   const doc = docOps.findByUUID(req.params.uuid);
   if (!doc) return res.status(404).json({ error: 'Not found' });
   if (doc.created_by !== req.session.userId) return res.status(403).json({ error: 'Access denied' });
@@ -1286,7 +1295,7 @@ app.post('/api/documents/:uuid/cancel', requireAuth, (req, res) => {
 });
 
 // ─── Resend signing request to a specific signer (creator only) ───
-app.post('/api/documents/:uuid/signers/:signerId/resend', requireAuth, async (req, res) => {
+app.post('/api/documents/:uuid/signers/:signerId/resend', requireAuth, requireRole('admin', 'member'), async (req, res) => {
   const doc = docOps.findByUUID(req.params.uuid);
   if (!doc) return res.status(404).json({ error: 'Not found' });
   if (doc.created_by !== req.session.userId) return res.status(403).json({ error: 'Access denied' });
@@ -1694,23 +1703,23 @@ app.get('/settings', requireAuth, requireRole('admin'), (req, res) => {
 });
 
 // API key management (session auth)
-app.get('/api/settings/keys', requireAuth, (req, res) => {
+app.get('/api/settings/keys', requireAuth, requireRole('admin'), (req, res) => {
   res.json({ keys: apiKeyOps.listByUser(req.session.userId) });
 });
-app.post('/api/settings/keys', requireAuth, (req, res) => {
+app.post('/api/settings/keys', requireAuth, requireRole('admin'), (req, res) => {
   const name = sanitize(req.body.name || '');
   if (!name) return res.status(400).json({ error: 'Name required' });
   const scope = req.body.scope === 'ro' ? 'ro' : 'rw';
   const created = apiKeyOps.create(req.session.userId, name, scope);
   res.json({ ok: true, name, plaintext: created.plaintext, prefix: created.prefix, scope: created.scope });
 });
-app.delete('/api/settings/keys/:id', requireAuth, (req, res) => {
+app.delete('/api/settings/keys/:id', requireAuth, requireRole('admin'), (req, res) => {
   const ok = apiKeyOps.revoke(parseInt(req.params.id, 10), req.session.userId);
   res.json({ ok });
 });
 
 // Webhook management
-app.get('/api/settings/webhooks', requireAuth, (req, res) => {
+app.get('/api/settings/webhooks', requireAuth, requireRole('admin'), (req, res) => {
   const list = webhookOps.listByUser(req.session.userId).map(w => ({
     id: w.id, url: w.url,
     // Secret redacted — only shown once at creation time
@@ -1721,7 +1730,7 @@ app.get('/api/settings/webhooks', requireAuth, (req, res) => {
   }));
   res.json({ webhooks: list });
 });
-app.post('/api/settings/webhooks', requireAuth, async (req, res) => {
+app.post('/api/settings/webhooks', requireAuth, requireRole('admin'), async (req, res) => {
   const url = (req.body.url || '').trim();
   if (!url || !/^https:\/\//i.test(url)) return res.status(400).json({ error: 'Valid https:// URL required (plain http is not allowed for webhooks)' });
   // Defense-in-depth: reject private / link-local / loopback URLs at creation, not only at fire time
@@ -1734,11 +1743,11 @@ app.post('/api/settings/webhooks', requireAuth, async (req, res) => {
   const created = webhookOps.create(req.session.userId, url, cleanEvents);
   res.json({ ok: true, id: created.id, secret: created.secret });
 });
-app.post('/api/settings/webhooks/:id/toggle', requireAuth, (req, res) => {
+app.post('/api/settings/webhooks/:id/toggle', requireAuth, requireRole('admin'), (req, res) => {
   const ok = webhookOps.toggle(parseInt(req.params.id, 10), req.session.userId, !!req.body.active);
   res.json({ ok });
 });
-app.delete('/api/settings/webhooks/:id', requireAuth, (req, res) => {
+app.delete('/api/settings/webhooks/:id', requireAuth, requireRole('admin'), (req, res) => {
   const ok = webhookOps.delete(parseInt(req.params.id, 10), req.session.userId);
   res.json({ ok });
 });
@@ -1774,7 +1783,7 @@ app.get('/api/v1/documents/:uuid', requireApiKey('ro'), (req, res) => {
     signers: signers.map(s => ({
       name: s.name, email: s.email, sign_order: s.sign_order, role: s.role,
       status: s.status, signed_at: s.signed_at, ip_address: s.ip_address,
-      sign_url: (s.status === 'sent' || s.status === 'pending') ? `${BASE_URL}/sign/${s.token}` : undefined,
+      // sign_url intentionally omitted — tokens are secrets; use session-auth dashboard for sign links
     })),
   });
 });
@@ -2032,7 +2041,13 @@ app.post('/api/kiosk/:uuid/verify-pin', rateLimit(60000, 10), (req, res) => {
   if (!doc || !doc.kiosk_mode) return res.status(404).json({ error: 'Not found' });
   if (!doc.kiosk_pin) return res.json({ ok: true });
   const { pin } = req.body;
-  if (!pin || pin !== doc.kiosk_pin) return res.status(400).json({ error: 'Invalid PIN' });
+  if (!pin) return res.status(400).json({ error: 'Invalid PIN' });
+  // Timing-safe comparison to prevent side-channel extraction
+  const pinBuf = Buffer.from(String(pin).padEnd(10, '\0'));
+  const storedBuf = Buffer.from(String(doc.kiosk_pin).padEnd(10, '\0'));
+  if (pinBuf.length !== storedBuf.length || !crypto.timingSafeEqual(pinBuf, storedBuf)) {
+    return res.status(400).json({ error: 'Invalid PIN' });
+  }
   req.session.kioskVerified = req.params.uuid;
   res.json({ ok: true });
 });

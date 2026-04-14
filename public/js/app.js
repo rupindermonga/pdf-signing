@@ -1,5 +1,5 @@
 // ─── Constants ───
-const VERIFY_URL = 'https://rupindermonga.github.io/pdf-signing/';
+const VERIFY_URL = (window.SEALFORGE_VERIFY_URL || window.location.origin + '/verify');
 
 // ─── State ───
 const state = {

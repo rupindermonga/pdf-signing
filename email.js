@@ -97,7 +97,7 @@ async function sendSigningRequest(toEmail, signerName, senderName, docTitle, sig
             <div style="font-weight:600;color:#1a3b7a;">${esc(docTitle)}</div>
             ${message ? `<div style="color:#666;font-size:13px;margin-top:6px;">"${esc(message)}"</div>` : ''}
           </div>
-          <a href="${signUrl}" style="display:inline-block;background:#1a3b7a;color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:600;">Review & Sign</a>
+          <a href="${esc(signUrl)}" style="display:inline-block;background:#1a3b7a;color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:600;">Review & Sign</a>
           <p style="color:#666;font-size:13px;margin-top:16px;">You will be asked to verify your email before signing.</p>
         </div>
       </div>`,
@@ -149,7 +149,7 @@ async function sendReminder(toEmail, signerName, senderName, docTitle, signUrl, 
           <div style="background:#f5f7fa;padding:14px;border-radius:8px;margin:16px 0;">
             <div style="font-weight:600;color:#1a3b7a;">${esc(docTitle)}</div>
           </div>
-          <a href="${signUrl}" style="display:inline-block;background:#1a3b7a;color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:600;">Review & Sign</a>
+          <a href="${esc(signUrl)}" style="display:inline-block;background:#1a3b7a;color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:600;">Review & Sign</a>
           ${expiryLine}
         </div>
       </div>`,

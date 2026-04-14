@@ -189,11 +189,11 @@ function generateOTP() {
 }
 
 function generateDocUUID() {
-  return 'DS-' + crypto.randomBytes(6).toString('hex').toUpperCase().match(/.{4}/g).join('-');
+  return 'SF-' + crypto.randomBytes(16).toString('hex').toUpperCase().match(/.{4}/g).join('-');
 }
 
 function generateTemplateUUID() {
-  return 'TPL-' + crypto.randomBytes(6).toString('hex').toUpperCase().match(/.{4}/g).join('-');
+  return 'TPL-' + crypto.randomBytes(16).toString('hex').toUpperCase().match(/.{4}/g).join('-');
 }
 
 // ─── User operations ───
@@ -233,6 +233,11 @@ const userOps = {
     return db.prepare("SELECT COUNT(*) as cnt FROM users WHERE role = 'admin'").get().cnt;
   },
   deleteUser(id) {
+    // Cascade: revoke all sessions and API keys for this user
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+    db.prepare('DELETE FROM api_keys WHERE user_id = ?').run(id);
+    db.prepare('DELETE FROM webhooks WHERE user_id = ?').run(id);
+    db.prepare('DELETE FROM otp_codes WHERE email = (SELECT email FROM users WHERE id = ?)').run(id);
     db.prepare('DELETE FROM users WHERE id = ?').run(id);
   },
   // ─── TOTP / MFA ───
@@ -257,14 +262,23 @@ const otpOps = {
     return code;
   },
   verify(email, code) {
-    const row = db.prepare("SELECT * FROM otp_codes WHERE email = ? AND used = 0 AND expires_at > datetime('now')").get(email.toLowerCase());
-    if (!row) return false;
-    // Timing-safe comparison to prevent side-channel attacks
-    const codeBuffer = Buffer.from(String(code).padEnd(6, '0'));
-    const storedBuffer = Buffer.from(String(row.code).padEnd(6, '0'));
-    if (codeBuffer.length !== storedBuffer.length || !crypto.timingSafeEqual(codeBuffer, storedBuffer)) return false;
-    db.prepare('UPDATE otp_codes SET used = 1 WHERE email = ? AND code = ?').run(email.toLowerCase(), row.code);
-    return true;
+    // Atomic: mark used in a single UPDATE and check changes, preventing race-condition reuse
+    const cleanCode = String(code).padEnd(6, '0').slice(0, 6);
+    const rows = db.prepare("SELECT code FROM otp_codes WHERE email = ? AND used = 0 AND expires_at > datetime('now')").all(email.toLowerCase());
+    if (!rows.length) return false;
+    // Timing-safe comparison against all active codes for this email
+    const match = rows.find(r => {
+      const storedBuffer = Buffer.from(String(r.code).padEnd(6, '0'));
+      const codeBuffer = Buffer.from(cleanCode);
+      return storedBuffer.length === codeBuffer.length && crypto.timingSafeEqual(storedBuffer, codeBuffer);
+    });
+    if (!match) return false;
+    // Atomic consume: only succeeds once even under concurrent requests
+    const result = db.prepare('UPDATE otp_codes SET used = 1 WHERE email = ? AND code = ? AND used = 0').run(email.toLowerCase(), match.code);
+    return result.changes === 1;
+  },
+  cleanExpired() {
+    db.prepare("DELETE FROM otp_codes WHERE expires_at <= datetime('now') OR used = 1").run();
   }
 };
 
@@ -431,13 +445,14 @@ const signerOps = {
     return otp;
   },
   verifyOTP(id, code) {
-    const signer = db.prepare("SELECT * FROM signers WHERE id = ? AND otp IS NOT NULL AND otp_expires > datetime('now')").get(id);
+    const signer = db.prepare("SELECT otp FROM signers WHERE id = ? AND otp IS NOT NULL AND otp_expires > datetime('now')").get(id);
     if (!signer) return false;
     const codeBuffer = Buffer.from(String(code).padEnd(6, '0'));
     const storedBuffer = Buffer.from(String(signer.otp).padEnd(6, '0'));
     if (codeBuffer.length !== storedBuffer.length || !crypto.timingSafeEqual(codeBuffer, storedBuffer)) return false;
-    db.prepare('UPDATE signers SET otp = NULL, otp_expires = NULL WHERE id = ?').run(id);
-    return true;
+    // Atomic consume: NULL the OTP and check changes to prevent race-condition reuse
+    const result = db.prepare("UPDATE signers SET otp = NULL, otp_expires = NULL WHERE id = ? AND otp IS NOT NULL").run(id);
+    return result.changes === 1;
   },
   markSigned(id, data) {
     // Atomic: only update if status is still 'sent' — prevents race condition double-sign

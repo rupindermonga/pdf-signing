@@ -42,7 +42,7 @@
   </div>
 
   <script>
-    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML.replace(/'/g, '&#39;'); }
 
     async function load() {
       const resp = await fetch('/api/templates');
@@ -61,9 +61,12 @@
           <div class="tpl-meta">Created ${esc(new Date(t.created_at).toLocaleDateString())}</div>
           <div class="tpl-actions">
             <a class="tpl-use" href="/send?template=${esc(t.uuid)}">Use</a>
-            <button class="tpl-del" onclick="del('${esc(t.uuid)}', '${esc(t.name).replace(/'/g, "\\'")}')">Delete</button>
+            <button class="tpl-del" data-del-uuid="${esc(t.uuid)}" data-del-name="${esc(t.name)}">Delete</button>
           </div>
         </div>`).join('');
+      list.querySelectorAll('[data-del-uuid]').forEach(btn => {
+        btn.addEventListener('click', () => del(btn.dataset.delUuid, btn.dataset.delName));
+      });
     }
 
     async function del(uuid, name) {

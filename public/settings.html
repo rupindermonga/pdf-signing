@@ -127,7 +127,7 @@
   <script>
     document.getElementById('base-url').textContent = window.location.origin;
 
-    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML.replace(/'/g, '&#39;'); }
 
     // ── TOTP / MFA ──
     async function loadTotpStatus() {
@@ -196,8 +196,11 @@
           <td class="mono">${esc(k.prefix)}…</td>
           <td><span class="badge-${esc(k.scope)}">${esc(k.scope.toUpperCase())}</span></td>
           <td>${k.last_used_at ? esc(new Date(k.last_used_at).toLocaleString()) : '<span style="color:#aaa;">never</span>'}</td>
-          <td><button class="btn-small btn-revoke" onclick="revokeKey(${k.id}, '${esc(k.name).replace(/'/g, "\\'")}')">Revoke</button></td>
+          <td><button class="btn-small btn-revoke" data-revoke-id="${k.id}" data-revoke-name="${esc(k.name)}">Revoke</button></td>
         </tr>`).join('');
+      tbody.querySelectorAll('[data-revoke-id]').forEach(btn => {
+        btn.addEventListener('click', () => revokeKey(Number(btn.dataset.revokeId), btn.dataset.revokeName));
+      });
     }
     async function revokeKey(id, name) {
       if (!confirm(`Revoke API key "${name}"? Apps using it will stop working immediately.`)) return;

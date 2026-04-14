@@ -42,8 +42,14 @@ function sendSMS(to, body) {
   });
 }
 
+// Truncate user-controlled text for SMS to prevent phishing via crafted titles
+function smsSafe(str, maxLen = 40) {
+  const clean = String(str || '').replace(/[\r\n\t]/g, ' ').trim();
+  return clean.length > maxLen ? clean.slice(0, maxLen) + '...' : clean;
+}
+
 async function sendSigningLinkSMS(phone, signerName, senderName, docTitle, signUrl) {
-  const body = `${senderName} sent you a document to sign on SealForge: "${docTitle}". Sign here: ${signUrl}`;
+  const body = `${smsSafe(senderName, 30)} sent you a document to sign on SealForge: "${smsSafe(docTitle)}". Sign here: ${signUrl}`;
   return sendSMS(phone, body);
 }
 
@@ -52,7 +58,7 @@ async function sendOTPSMS(phone, otp) {
 }
 
 async function sendCompletionSMS(phone, docTitle) {
-  return sendSMS(phone, `Your SealForge document "${docTitle}" has been fully signed by all parties.`);
+  return sendSMS(phone, `Your SealForge document "${smsSafe(docTitle)}" has been fully signed by all parties.`);
 }
 
 module.exports = { isConfigured, sendSigningLinkSMS, sendOTPSMS, sendCompletionSMS };

@@ -58,7 +58,7 @@
   <script>
     let currentUserId = null;
 
-    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML.replace(/'/g, '&#39;'); }
 
     async function load() {
       const meResp = await fetch('/api/auth/me');
@@ -88,10 +88,10 @@
             </select>
           </td>
           <td>${u.totp_enabled ? '<span class="badge badge-mfa">MFA ON</span>' : '<span class="badge badge-no-mfa">OFF</span>'}
-            ${u.totp_enabled && u.id !== currentUserId ? '<button class="btn-warn" onclick="resetMfa(' + u.id + ',\'' + esc(u.email).replace(/'/g, "\\'") + '\')">Reset</button>' : ''}
+            ${u.totp_enabled && u.id !== currentUserId ? '<button class="btn-warn" data-reset-mfa-id="' + u.id + '" data-reset-mfa-email="' + esc(u.email) + '">Reset</button>' : ''}
           </td>
           <td style="font-size:12px;color:#888;">${u.created_at ? new Date(u.created_at).toLocaleDateString() : '-'}</td>
-          <td>${u.id !== currentUserId ? '<button class="btn-small btn-danger" onclick="deleteUser(' + u.id + ',\'' + esc(u.email).replace(/'/g, "\\'") + '\')">Delete</button>' : ''}</td>
+          <td>${u.id !== currentUserId ? '<button class="btn-small btn-danger" data-delete-id="' + u.id + '" data-delete-email="' + esc(u.email) + '">Delete</button>' : ''}</td>
         </tr>`).join('');
 
       tbody.querySelectorAll('.role-select').forEach(sel => {
@@ -104,6 +104,13 @@
           if (!resp.ok) { alert(data.error || 'Failed'); load(); return; }
           load();
         });
+      });
+
+      tbody.querySelectorAll('[data-reset-mfa-id]').forEach(btn => {
+        btn.addEventListener('click', () => resetMfa(Number(btn.dataset.resetMfaId), btn.dataset.resetMfaEmail));
+      });
+      tbody.querySelectorAll('[data-delete-id]').forEach(btn => {
+        btn.addEventListener('click', () => deleteUser(Number(btn.dataset.deleteId), btn.dataset.deleteEmail));
       });
     }
 

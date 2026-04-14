@@ -109,7 +109,7 @@
       }
 
       docList.innerHTML = documents.map(doc => `
-        <div class="doc-card" onclick="showDetail('${doc.uuid}')">
+        <div class="doc-card" data-uuid="${esc(doc.uuid)}">
           <div class="doc-icon">${doc.status === 'completed' ? '&#9989;' : '&#128196;'}</div>
           <div class="doc-info">
             <div class="doc-title">${esc(doc.title)}</div>
@@ -123,6 +123,10 @@
           ${doc.status === 'completed' ? '<a href="/api/documents/' + esc(doc.uuid) + '/download" class="btn-secondary" onclick="event.stopPropagation()">Download</a>' : ''}
         </div>
       `).join('');
+      docList.addEventListener('click', (e) => {
+        const card = e.target.closest('.doc-card[data-uuid]');
+        if (card && !e.target.closest('a')) showDetail(card.dataset.uuid);
+      });
     }
 
     async function showDetail(uuid) {
@@ -155,17 +159,28 @@
             </div>
             <span class="signer-status">
               <span class="status-badge status-${s.status === 'signed' ? 'completed' : 'pending'}">${esc(s.status)}</span>
-              ${canResend ? '<button class="resend-btn" onclick="resendSigner(\'' + esc(doc.uuid) + '\',' + s.id + ',this)">Resend</button>' : ''}
+              ${canResend ? '<button class="resend-btn" data-resend-uuid="' + esc(doc.uuid) + '" data-signer-id="' + s.id + '">Resend</button>' : ''}
             </span>
           </div>`;
         }).join('')}
         ${!emailConfigured ? '<p style="font-size:12px;color:#e65100;margin-top:12px;">Email not configured. Share the signing links above manually.</p>' : ''}
         <div style="margin-top:18px;display:flex;gap:10px;align-items:center;">
           ${doc.status === 'completed' ? '<a href="/api/documents/' + esc(doc.uuid) + '/download" class="btn-primary" style="text-decoration:none;">Download Signed PDF</a>' : ''}
-          ${canCancel ? '<button class="cancel-doc-btn" onclick="cancelDoc(\'' + esc(doc.uuid) + '\')">Cancel Request</button>' : ''}
+          ${canCancel ? '<button class="cancel-doc-btn" data-cancel-uuid="' + esc(doc.uuid) + '">Cancel Request</button>' : ''}
         </div>
       `;
       modalBg.classList.add('show');
+
+      // Event delegation for modal buttons
+      modalContent.querySelectorAll('.resend-btn[data-resend-uuid]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          resendSigner(btn.dataset.resendUuid, Number(btn.dataset.signerId), btn);
+        });
+      });
+      const cancelBtn = modalContent.querySelector('.cancel-doc-btn[data-cancel-uuid]');
+      if (cancelBtn) {
+        cancelBtn.addEventListener('click', () => cancelDoc(cancelBtn.dataset.cancelUuid));
+      }
     }
 
     async function resendSigner(uuid, signerId, btn) {
@@ -207,7 +222,7 @@
       window.location.href = '/login';
     });
 
-    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML.replace(/'/g, '&#39;'); }
 
     loadDocuments();
   </script>

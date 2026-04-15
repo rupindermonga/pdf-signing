@@ -128,7 +128,40 @@
 
       <div class="submit-area">
         <button class="btn-primary" id="submit-btn" data-i18n="sign.sign_btn">Sign Document</button>
-        <span style="font-size:12px;color:#888;" data-i18n="sign.legal_disclaimer">By signing, you agree this is your legal signature.</span>
+        <button class="btn-secondary" id="decline-btn" type="button">Decline</button>
+        <button class="btn-secondary" id="reassign-btn" type="button">Reassign</button>
+      </div>
+      <div style="font-size:11px;color:#888;margin-top:6px;">By signing, you agree this is your legal signature. You may instead decline or forward to another person.</div>
+    </div>
+
+    <!-- Decline dialog -->
+    <div class="card hidden" id="decline-card">
+      <h2 style="color:#c62828;">Decline to sign</h2>
+      <p style="color:#555;font-size:13px;margin-bottom:12px;">Please briefly explain why you're declining. The document owner will be notified and this signing request will be closed.</p>
+      <textarea id="decline-reason" placeholder="Reason (required, max 500 chars)" maxlength="500" rows="4" style="width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:8px;font-family:inherit;"></textarea>
+      <div id="decline-error" class="error-msg"></div>
+      <div style="display:flex;gap:10px;margin-top:12px;">
+        <button class="btn-secondary" id="decline-cancel">Cancel</button>
+        <button class="btn-primary" id="decline-confirm" style="background:#c62828;">Decline &amp; Notify Owner</button>
+      </div>
+    </div>
+
+    <!-- Reassign dialog -->
+    <div class="card hidden" id="reassign-card">
+      <h2 style="color:#e65100;">Reassign to someone else</h2>
+      <p style="color:#555;font-size:13px;margin-bottom:12px;">Forward this signing request to another person. Your current link will stop working; a new link will be sent to them.</p>
+      <div style="margin-bottom:10px;">
+        <label style="display:block;font-size:13px;font-weight:600;color:#555;margin-bottom:4px;">Their name</label>
+        <input type="text" id="reassign-name" maxlength="120" style="width:100%;padding:8px;border:1px solid #d0d5dd;border-radius:6px;">
+      </div>
+      <div style="margin-bottom:10px;">
+        <label style="display:block;font-size:13px;font-weight:600;color:#555;margin-bottom:4px;">Their email</label>
+        <input type="email" id="reassign-email" maxlength="254" style="width:100%;padding:8px;border:1px solid #d0d5dd;border-radius:6px;">
+      </div>
+      <div id="reassign-error" class="error-msg"></div>
+      <div style="display:flex;gap:10px;margin-top:12px;">
+        <button class="btn-secondary" id="reassign-cancel">Cancel</button>
+        <button class="btn-primary" id="reassign-confirm" style="background:#e65100;">Reassign &amp; Send Link</button>
       </div>
     </div>
 
@@ -344,6 +377,12 @@
 
     function renderSignerField(pageEl, f, readonly) {
       if (!pageEl) return;
+      // Hidden fields are NOT rendered visually, but we still record a default/prefilled value so the server receives it.
+      if (f.type === 'hidden') {
+        const pre = (signerInfo.prefilledValues || {})[f.id];
+        fieldValues[f.id] = pre || f.defaultValue || '';
+        return;
+      }
       const r = pageEl.getBoundingClientRect();
       const w = pageEl.offsetWidth, h = pageEl.offsetHeight;
       const div = document.createElement('div');
@@ -360,6 +399,17 @@
       div.appendChild(tag);
 
       if (readonly) {
+        pageEl.appendChild(div);
+        return;
+      }
+
+      // Linked/formula fields display a computed value — read-only on the signer side
+      if (f.type === 'linked' || f.type === 'formula') {
+        const display = document.createElement('span');
+        display.style.cssText = 'font-size:11px;color:#1a3b7a;padding:2px 4px;';
+        display.textContent = '—';
+        div.dataset.computed = 'true';
+        div.appendChild(display);
         pageEl.appendChild(div);
         return;
       }
@@ -520,11 +570,41 @@
       }
     }
 
+    // Recompute linked/formula field displays whenever any input changes (client-side preview only — server is authoritative).
+    function recomputeDerivedFields() {
+      const myFields = (signerInfo && signerInfo.fields) || [];
+      const toNum = (v) => { const n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.-]/g, '')); return isNaN(n) ? null : n; };
+      for (const f of myFields) {
+        if (f.type === 'linked' && f.linkedTo) {
+          fieldValues[f.id] = fieldValues[f.linkedTo] || '';
+        } else if (f.type === 'formula' && f.calc) {
+          const vals = f.calc.fields.map(id => fieldValues[id]);
+          const nums = vals.map(toNum).filter(n => n !== null);
+          let r = '';
+          switch (f.calc.op) {
+            case 'sum': r = nums.reduce((a, b) => a + b, 0); break;
+            case 'product': r = nums.length ? nums.reduce((a, b) => a * b, 1) : 0; break;
+            case 'diff': r = nums.length ? nums.slice(1).reduce((a, b) => a - b, nums[0]) : 0; break;
+            case 'avg': r = nums.length ? (nums.reduce((a, b) => a + b, 0) / nums.length) : 0; break;
+            case 'min': r = nums.length ? Math.min(...nums) : 0; break;
+            case 'max': r = nums.length ? Math.max(...nums) : 0; break;
+            case 'concat': r = vals.map(v => String(v == null ? '' : v)).join(f.calc.separator || ' '); break;
+          }
+          if (typeof r === 'number') r = Number.isFinite(r) ? r.toFixed(2) : '0';
+          fieldValues[f.id] = r;
+        }
+        // Update DOM display for computed fields
+        const el = document.querySelector(`.pdf-field[data-fid="${f.id}"][data-computed="true"] span`);
+        if (el) el.textContent = fieldValues[f.id] || '—';
+      }
+    }
+
     function updateFieldSummary() {
+      recomputeDerivedFields();
       const s = document.getElementById('field-summary');
       const myFields = (signerInfo && signerInfo.fields) || [];
       if (!myFields.length) { s.classList.add('hidden'); return; }
-      const required = myFields.filter(f => f.required && f.type !== 'signature' && isFieldActive(f));
+      const required = myFields.filter(f => f.required && f.type !== 'signature' && f.type !== 'hidden' && f.type !== 'formula' && f.type !== 'linked' && isFieldActive(f));
       const filled = required.filter(f => {
         const v = fieldValues[f.id];
         return f.type === 'checkbox' ? v === true : (v != null && String(v).trim() !== '');
@@ -566,6 +646,69 @@
     document.getElementById('clear-sig').addEventListener('click', () => { sigCtx.clearRect(0, 0, sigCanvas.width, sigCanvas.height); });
 
     // Submit signature
+    // ── Decline flow ──
+    document.getElementById('decline-btn').addEventListener('click', () => {
+      document.getElementById('sign-card').classList.add('hidden');
+      document.getElementById('decline-card').classList.remove('hidden');
+    });
+    document.getElementById('decline-cancel').addEventListener('click', () => {
+      document.getElementById('decline-card').classList.add('hidden');
+      document.getElementById('sign-card').classList.remove('hidden');
+    });
+    document.getElementById('decline-confirm').addEventListener('click', async () => {
+      const reason = document.getElementById('decline-reason').value.trim();
+      const err = document.getElementById('decline-error');
+      err.classList.remove('show');
+      if (reason.length < 3) { err.textContent = 'Please provide a reason (3+ characters).'; err.classList.add('show'); return; }
+      const btn = document.getElementById('decline-confirm');
+      btn.disabled = true; btn.textContent = 'Submitting...';
+      try {
+        const resp = await fetch(`/api/sign/${token}/decline`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error);
+        document.getElementById('decline-card').classList.add('hidden');
+        document.getElementById('success-card').classList.remove('hidden');
+        document.getElementById('success-msg').textContent = 'You have declined this document. The owner has been notified.';
+      } catch (e) {
+        err.textContent = e.message; err.classList.add('show');
+        btn.disabled = false; btn.textContent = 'Decline & Notify Owner';
+      }
+    });
+
+    // ── Reassign flow ──
+    document.getElementById('reassign-btn').addEventListener('click', () => {
+      document.getElementById('sign-card').classList.add('hidden');
+      document.getElementById('reassign-card').classList.remove('hidden');
+    });
+    document.getElementById('reassign-cancel').addEventListener('click', () => {
+      document.getElementById('reassign-card').classList.add('hidden');
+      document.getElementById('sign-card').classList.remove('hidden');
+    });
+    document.getElementById('reassign-confirm').addEventListener('click', async () => {
+      const name = document.getElementById('reassign-name').value.trim();
+      const email2 = document.getElementById('reassign-email').value.trim();
+      const err = document.getElementById('reassign-error');
+      err.classList.remove('show');
+      if (!name || !email2) { err.textContent = 'Name and email required.'; err.classList.add('show'); return; }
+      const btn = document.getElementById('reassign-confirm');
+      btn.disabled = true; btn.textContent = 'Submitting...';
+      try {
+        const resp = await fetch(`/api/sign/${token}/reassign`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, email: email2 }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error);
+        document.getElementById('reassign-card').classList.add('hidden');
+        document.getElementById('success-card').classList.remove('hidden');
+        document.getElementById('success-msg').textContent = 'Reassigned to ' + name + '. They have been sent a signing link.';
+      } catch (e) {
+        err.textContent = e.message; err.classList.add('show');
+        btn.disabled = false; btn.textContent = 'Reassign & Send Link';
+      }
+    });
+
     document.getElementById('submit-btn').addEventListener('click', async () => {
       const errDiv = document.getElementById('sign-error');
       errDiv.classList.remove('show');

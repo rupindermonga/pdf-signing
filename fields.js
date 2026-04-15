@@ -14,7 +14,11 @@ function sanitize(str) {
 const ALLOWED_FIELD_TYPES = [
   'text', 'date', 'checkbox', 'initials', 'signature',
   'name', 'email', 'dropdown', 'radio', 'attachment',
+  'hidden', 'linked', 'formula',
 ];
+
+// Safe formula operators — explicit whitelist, no eval() ever.
+const FORMULA_OPS = ['sum', 'product', 'diff', 'avg', 'min', 'max', 'concat'];
 
 // Validate a regex pattern is safe-ish: cap length, reject catastrophic backtracking indicators.
 function cleanRegex(pattern) {
@@ -70,9 +74,18 @@ function cleanFieldList(parsedFields, { forceSignerOrder = null } = {}) {
     // Locked: sender-filled, signer cannot change (default value comes from sender at create time)
     const locked = f.locked === true;
     const defaultValue = f.defaultValue != null ? sanitize(String(f.defaultValue)).slice(0, 500) : null;
-    // Calculated: formula like "sum:f1,f2" (only + supported for safety)
-    const calc = f.calc && typeof f.calc === 'object' && f.calc.op === 'sum' && Array.isArray(f.calc.fields)
-      ? { op: 'sum', fields: f.calc.fields.slice(0, 10).map(id => sanitize(String(id)).slice(0, 32)) }
+    // Calculated: formula-based field. Whitelist of safe ops, no eval. Up to 10 referenced fields.
+    let calc = null;
+    if (f.calc && typeof f.calc === 'object' && FORMULA_OPS.includes(f.calc.op) && Array.isArray(f.calc.fields)) {
+      calc = {
+        op: f.calc.op,
+        fields: f.calc.fields.slice(0, 10).map(id => sanitize(String(id)).slice(0, 32)),
+        ...(f.calc.separator && f.calc.op === 'concat' ? { separator: sanitize(String(f.calc.separator)).slice(0, 10) } : {}),
+      };
+    }
+    // Linked: mirror another field's value (e.g., signer name appearing in multiple places)
+    const linkedTo = f.linkedTo && typeof f.linkedTo === 'string'
+      ? sanitize(f.linkedTo).slice(0, 32)
       : null;
 
     return {
@@ -92,6 +105,7 @@ function cleanFieldList(parsedFields, { forceSignerOrder = null } = {}) {
       ...(locked ? { locked: true } : {}),
       ...(defaultValue != null ? { defaultValue } : {}),
       ...(calc ? { calc } : {}),
+      ...(linkedTo ? { linkedTo } : {}),
       ...(f.mask ? { mask: String(f.mask).slice(0, 20) } : {}),
     };
   });
@@ -105,6 +119,9 @@ function validateFieldSubmission(allFields, signerOrder, submittedValues) {
   for (const f of myFields) {
     if (f.type === 'signature') continue;
     if (f.type === 'attachment') continue; // separate upload endpoint
+    if (f.type === 'hidden') continue;     // metadata — no user-visible input
+    if (f.type === 'formula') continue;    // computed server-side
+    if (f.type === 'linked') continue;     // mirrored from linkedTo
     // If locked, value must equal defaultValue (signer cannot modify)
     if (f.locked) {
       const v = submittedValues[f.id];
@@ -156,20 +173,48 @@ function validateFieldSubmission(allFields, signerOrder, submittedValues) {
   return null;
 }
 
-// Compute calculated fields from submitted values. Supports simple sum of numeric fields.
-// Returns the enriched value map.
+// Compute calculated fields and linked fields from submitted values.
+// Supported ops: sum, product, diff, avg, min, max, concat. No eval — whitelisted math only.
+// Linked fields: mirror another field's value exactly.
+// Returns an enriched value map with computed fields filled in.
 function applyCalculatedFields(allFields, signerOrder, submittedValues) {
   const out = { ...submittedValues };
+  // Index fields across ALL signers (formulas/linked can reference earlier signer values)
+  const byId = {};
+  for (const f of allFields) byId[f.id] = f;
+
+  // Resolve linked fields: mirror source value
+  for (const f of allFields) {
+    if (f.linkedTo && f.signerOrder === signerOrder) {
+      if (out[f.linkedTo] != null && out[f.linkedTo] !== '') {
+        out[f.id] = out[f.linkedTo];
+      }
+    }
+  }
+
+  // Compute formula fields (may reference values set by other signers earlier — those live in submittedValues too if passed in)
+  const toNumber = (v) => {
+    const n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.-]/g, ''));
+    return isNaN(n) ? null : n;
+  };
   const myFields = allFields.filter(f => f.signerOrder === signerOrder && f.calc);
   for (const f of myFields) {
-    if (f.calc.op === 'sum') {
-      let sum = 0;
-      for (const ref of f.calc.fields) {
-        const raw = out[ref];
-        const num = parseFloat(String(raw == null ? '' : raw).replace(/[^0-9.-]/g, ''));
-        if (!isNaN(num)) sum += num;
-      }
-      out[f.id] = Number(sum.toFixed(2));
+    const vals = f.calc.fields.map(ref => out[ref]);
+    const nums = vals.map(toNumber).filter(n => n !== null);
+    let result = '';
+    switch (f.calc.op) {
+      case 'sum': result = nums.reduce((a, b) => a + b, 0); break;
+      case 'product': result = nums.length ? nums.reduce((a, b) => a * b, 1) : 0; break;
+      case 'diff': result = nums.length ? nums.slice(1).reduce((a, b) => a - b, nums[0]) : 0; break;
+      case 'avg': result = nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : 0; break;
+      case 'min': result = nums.length ? Math.min(...nums) : 0; break;
+      case 'max': result = nums.length ? Math.max(...nums) : 0; break;
+      case 'concat': result = vals.map(v => String(v == null ? '' : v)).join(f.calc.separator || ' '); break;
+    }
+    if (f.calc.op !== 'concat' && typeof result === 'number') {
+      out[f.id] = Number.isFinite(result) ? Number(result.toFixed(2)) : 0;
+    } else {
+      out[f.id] = String(result).slice(0, 500);
     }
   }
   return out;

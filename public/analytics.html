@@ -67,6 +67,26 @@
           <div id="webhook-health"></div>
         </div>
       </div>
+
+      <div class="two-col">
+        <div class="card">
+          <h2>Signer funnel</h2>
+          <div id="funnel-chart"></div>
+        </div>
+        <div class="card">
+          <h2>Bottleneck: avg hours per step</h2>
+          <table>
+            <thead><tr><th>Step</th><th style="text-align:right;">Signers</th><th style="text-align:right;">Avg hours</th><th style="text-align:right;">Reminders</th><th style="text-align:right;">Declined</th></tr></thead>
+            <tbody id="bottleneck-tbody"><tr><td colspan="5" style="text-align:center;color:#888;">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Export</h2>
+        <p style="color:#555;font-size:13px;margin-bottom:10px;">Download all documents in the selected period as a CSV file.</p>
+        <a id="export-link" class="btn-primary" style="text-decoration:none;display:inline-block;" href="#">Download CSV</a>
+      </div>
     </div>
   </div>
 
@@ -88,8 +108,54 @@
       renderTemplates(data.templates);
       renderWebhooks(data.webhooks);
 
+      // Funnel + bottleneck (separate endpoint)
+      const fResp = await fetch('/api/analytics/funnel?days=' + currentDays);
+      if (fResp.ok) {
+        const f = await fResp.json();
+        renderFunnel(f.funnel);
+        renderBottleneck(f.bottlenecks);
+      }
+
+      document.getElementById('export-link').href = '/api/analytics/export.csv?days=' + currentDays;
+
       document.getElementById('loading').style.display = 'none';
       document.getElementById('content').style.display = 'block';
+    }
+
+    function renderFunnel(f) {
+      if (!f || !f.total) { document.getElementById('funnel-chart').innerHTML = '<div style="color:#888;font-size:13px;">No signer data.</div>'; return; }
+      const stages = [
+        { name: 'Total signers', count: f.total, color: '#e0e4ec' },
+        { name: 'Signed', count: f.signed || 0, color: '#2e7d32' },
+        { name: 'Awaiting', count: f.awaiting || 0, color: '#f57c00' },
+        { name: 'Declined', count: f.declined || 0, color: '#c62828' },
+        { name: 'Reassigned', count: f.reassigned || 0, color: '#6a1b9a' },
+      ];
+      const max = Math.max(...stages.map(s => s.count), 1);
+      document.getElementById('funnel-chart').innerHTML = stages.map(s => `
+        <div style="margin-bottom:8px;">
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:#555;margin-bottom:2px;">
+            <span>${esc(s.name)}</span><span>${esc(String(s.count))} (${Math.round(s.count / max * 100)}%)</span>
+          </div>
+          <div style="height:10px;background:#f0f2f5;border-radius:5px;overflow:hidden;">
+            <div style="height:100%;background:${s.color};width:${s.count / max * 100}%;"></div>
+          </div>
+        </div>`).join('');
+    }
+
+    function renderBottleneck(rows) {
+      const tbody = document.getElementById('bottleneck-tbody');
+      if (!rows || !rows.length) { tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#888;">No data.</td></tr>'; return; }
+      tbody.innerHTML = rows.map(r => {
+        const hrs = r.avg_hours_to_sign != null ? r.avg_hours_to_sign + 'h' : '—';
+        return `<tr>
+          <td><b>Signer ${esc(String(r.step))}</b></td>
+          <td style="text-align:right;">${esc(String(r.total))}</td>
+          <td style="text-align:right;">${esc(hrs)}</td>
+          <td style="text-align:right;">${esc(String(r.avg_reminders))}</td>
+          <td style="text-align:right;color:${r.declined_count ? '#c62828' : '#888'};">${esc(String(r.declined_count))}</td>
+        </tr>`;
+      }).join('');
     }
 
     function renderKpis(d) {

@@ -66,6 +66,10 @@
 
       <div id="error" class="error-msg"></div>
 
+      <div style="margin-top:16px;padding-top:16px;border-top:1px solid #eee;">
+        <button type="button" id="sso-login-btn" style="width:100%;padding:10px;background:#fff;border:1px solid #d0d5dd;border-radius:8px;font-size:14px;cursor:pointer;color:#555;">Sign in with SSO</button>
+      </div>
+
       <div class="links">
         <a href="/verify" data-i18n="common.verify">Verify a document</a> &middot; <a href="/compliance">Privacy &amp; PIPEDA</a>
       </div>
@@ -175,6 +179,13 @@
       emailSection.style.display = 'block';
       devOtpDiv.style.display = 'none';
       hideError();
+    });
+
+    // SSO: route to /sso/start with email hint so the server can find the right org by domain
+    document.getElementById('sso-login-btn').addEventListener('click', () => {
+      const email = emailInput.value.trim();
+      if (!email) { showError('Enter your work email to continue with SSO.'); return; }
+      window.location.href = '/sso/start?email=' + encodeURIComponent(email);
     });
 
     // Enter key support

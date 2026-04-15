@@ -42,6 +42,37 @@
   </header>
 
   <div class="settings-container">
+    <!-- SSO (OIDC) -->
+    <div class="card">
+      <h2>Single Sign-On (OIDC)</h2>
+      <p class="desc">Configure OpenID Connect SSO for your org. Users from your org's email domain can log in via the IdP. Works with Okta, Auth0, Azure AD, Google Workspace, Keycloak, etc.</p>
+      <div id="sso-info" style="font-size:12px;color:#555;margin-bottom:10px;"></div>
+      <div class="form-group" style="margin-bottom:10px;">
+        <label style="display:block;font-size:13px;font-weight:600;color:#555;margin-bottom:6px;">Issuer URL (discovery endpoint's base)</label>
+        <input type="url" id="sso-issuer" placeholder="https://your-tenant.okta.com" style="width:100%;padding:8px;border:1px solid #d0d5dd;border-radius:6px;">
+      </div>
+      <div class="form-group" style="margin-bottom:10px;">
+        <label style="display:block;font-size:13px;font-weight:600;color:#555;margin-bottom:6px;">Client ID</label>
+        <input type="text" id="sso-client-id" style="width:100%;padding:8px;border:1px solid #d0d5dd;border-radius:6px;">
+      </div>
+      <div class="form-group" style="margin-bottom:10px;">
+        <label style="display:block;font-size:13px;font-weight:600;color:#555;margin-bottom:6px;">Client Secret</label>
+        <input type="password" id="sso-client-secret" placeholder="Leave blank to keep existing" style="width:100%;padding:8px;border:1px solid #d0d5dd;border-radius:6px;">
+        <div style="font-size:11px;color:#888;margin-top:4px;">Stored encrypted at rest (AES-256-GCM).</div>
+      </div>
+      <div class="form-group" style="margin-bottom:10px;">
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;"><input type="checkbox" id="sso-auto-provision" checked> Auto-provision new users on first login</label>
+      </div>
+      <div class="form-group" style="margin-bottom:10px;">
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;"><input type="checkbox" id="sso-enabled"> SSO enabled</label>
+      </div>
+      <div style="background:#eef3fb;padding:10px;border-radius:6px;font-size:12px;color:#1a3b7a;margin-bottom:12px;">
+        Configure this redirect URI in your IdP: <code id="sso-callback" style="user-select:all;"></code>
+      </div>
+      <button class="btn-primary" id="sso-save-btn">Save SSO</button>
+      <span id="sso-save-status" style="margin-left:12px;color:#2e7d32;font-size:13px;display:none;">Saved!</span>
+    </div>
+
     <!-- BRANDING / WHITE-LABEL -->
     <div class="card">
       <h2>Branding</h2>
@@ -334,7 +365,39 @@
       status.style.display = 'inline'; setTimeout(() => { status.style.display = 'none'; }, 2000);
     });
 
-    loadKeys(); loadHooks(); loadTotpStatus(); loadBranding();
+    // ── SSO ──
+    async function loadSso() {
+      const resp = await fetch('/api/settings/sso');
+      if (!resp.ok) return;
+      const data = await resp.json();
+      document.getElementById('sso-info').innerHTML = `Org: <b>${esc(data.org.name)}</b> &middot; Domain: ${esc(data.org.domain || '(none)')}`;
+      document.getElementById('sso-callback').textContent = data.callbackUrl;
+      document.getElementById('sso-issuer').value = data.sso.issuer || '';
+      document.getElementById('sso-client-id').value = data.sso.clientId || '';
+      document.getElementById('sso-client-secret').placeholder = data.sso.hasClientSecret ? 'Leave blank to keep existing' : '';
+      document.getElementById('sso-enabled').checked = data.sso.enabled;
+      document.getElementById('sso-auto-provision').checked = data.sso.autoProvision;
+    }
+    document.getElementById('sso-save-btn').addEventListener('click', async () => {
+      const payload = {
+        enabled: document.getElementById('sso-enabled').checked,
+        issuer: document.getElementById('sso-issuer').value.trim(),
+        clientId: document.getElementById('sso-client-id').value.trim(),
+        clientSecret: document.getElementById('sso-client-secret').value,
+        autoProvision: document.getElementById('sso-auto-provision').checked,
+      };
+      const resp = await fetch('/api/settings/sso', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      });
+      const data = await resp.json();
+      if (!resp.ok) return alert(data.error || 'Save failed');
+      document.getElementById('sso-client-secret').value = '';
+      const status = document.getElementById('sso-save-status');
+      status.style.display = 'inline'; setTimeout(() => { status.style.display = 'none'; }, 2000);
+      loadSso();
+    });
+
+    loadKeys(); loadHooks(); loadTotpStatus(); loadBranding(); loadSso();
   </script>
 </body>
 </html>

@@ -11,7 +11,7 @@ const { P12Signer } = require('@signpdf/signer-p12');
 const { pdflibAddPlaceholder } = require('@signpdf/placeholder-pdf-lib');
 const { PDFDocument } = require('pdf-lib');
 
-const { userOps, otpOps, sessionOps, docOps, signerOps, templateOps, apiKeyOps, webhookOps, eventLogOps, workflowOps, VALID_ROLES } = require('./database');
+const { userOps, otpOps, sessionOps, docOps, signerOps, templateOps, apiKeyOps, webhookOps, eventLogOps, workflowOps, embedOps, orgOps, VALID_ROLES } = require('./database');
 const email = require('./email');
 const { TOTP, Secret } = require('otpauth');
 const stripe = require('./stripe');
@@ -64,29 +64,15 @@ if (process.env.NODE_ENV === 'production' && !process.env.P12_PASSPHRASE) {
 }
 
 // ─── Security headers (nonce-based CSP) ───
+// Runs before session — static headers and nonce only. frame-ancestors gets
+// finalized in a post-session middleware below so it can honor active embed sessions.
 app.use((req, res, next) => {
-  // Generate per-request nonce for inline scripts/styles
   const nonce = crypto.randomBytes(16).toString('base64');
   res.locals.cspNonce = nonce;
-  res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-XSS-Protection', '1; mode=block');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
-  res.setHeader('Content-Security-Policy', [
-    "default-src 'self'",
-    `script-src 'self' 'nonce-${nonce}' https://cdnjs.cloudflare.com https://fonts.googleapis.com blob:`,
-    "worker-src blob:",
-    `style-src 'self' 'nonce-${nonce}' https://fonts.googleapis.com`,
-    "font-src https://fonts.gstatic.com",
-    "img-src 'self' data: blob:",
-    "connect-src 'self' https://nominatim.openstreetmap.org https://api.stripe.com data:",
-    "frame-src https://checkout.stripe.com",
-    "frame-ancestors 'none'",
-    "form-action 'self' https://checkout.stripe.com",
-    "base-uri 'self'",
-    "object-src 'none'",
-  ].join('; '));
   next();
 });
 
@@ -117,6 +103,41 @@ app.use(session({
     secure: process.env.NODE_ENV === 'production',
   }
 }));
+
+// ─── CSP finalization (after session so we can honor active embed sessions) ───
+app.use((req, res, next) => {
+  const nonce = res.locals.cspNonce;
+  // If this request has an active embed session that hasn't expired, allow framing from that origin.
+  let frameAncestors = "'none'";
+  let xFrameOpts = 'DENY';
+  if (req.session && req.session.embedOrigin && req.session.embedExpiresAt) {
+    const expired = new Date(req.session.embedExpiresAt).getTime() < Date.now();
+    if (!expired) {
+      frameAncestors = `'self' ${req.session.embedOrigin}`;
+      xFrameOpts = `ALLOW-FROM ${req.session.embedOrigin}`;
+    } else {
+      delete req.session.embedOrigin;
+      delete req.session.embedSignerToken;
+      delete req.session.embedExpiresAt;
+    }
+  }
+  res.setHeader('X-Frame-Options', xFrameOpts);
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'",
+    `script-src 'self' 'nonce-${nonce}' https://cdnjs.cloudflare.com https://fonts.googleapis.com blob:`,
+    "worker-src blob:",
+    `style-src 'self' 'nonce-${nonce}' https://fonts.googleapis.com`,
+    "font-src https://fonts.gstatic.com",
+    "img-src 'self' data: blob:",
+    "connect-src 'self' https://nominatim.openstreetmap.org https://api.stripe.com data:",
+    "frame-src https://checkout.stripe.com",
+    `frame-ancestors ${frameAncestors}`,
+    "form-action 'self' https://checkout.stripe.com",
+    "base-uri 'self'",
+    "object-src 'none'",
+  ].join('; '));
+  next();
+});
 
 // ─── Rate limiting (in-memory, keyed by socket IP — not spoofable) ───
 const rateLimits = new Map();
@@ -606,6 +627,158 @@ app.get('/api/settings/totp/status', requireAuth, (req, res) => {
   res.json({ enabled: !!(user && user.totp_enabled) });
 });
 
+// ─── SSO (OIDC) — per-org configuration + login flow ───
+// Helper: get the user's org (throws 400 if somehow not set)
+function getUserOrg(userId) {
+  const user = userOps.findById(userId);
+  if (!user || !user.org_id) return null;
+  return orgOps.findById(user.org_id);
+}
+
+// Secret encryption reuses the ID-verification key (same AES-256-GCM pattern)
+function encryptSecret(plaintext) { return encryptTotpSecret(plaintext); }
+function decryptSecret(cipher) { try { return decryptTotpSecret(cipher); } catch { return null; } }
+
+app.get('/api/settings/sso', requireAuth, requireRole('admin'), (req, res) => {
+  const org = getUserOrg(req.session.userId);
+  if (!org) return res.status(400).json({ error: 'No org context' });
+  res.json({
+    org: { id: org.id, slug: org.slug, name: org.name, domain: org.domain },
+    sso: {
+      enabled: !!org.sso_enabled,
+      issuer: org.sso_issuer || '',
+      clientId: org.sso_client_id || '',
+      hasClientSecret: !!org.sso_client_secret_enc,
+      autoProvision: !!org.sso_auto_provision,
+    },
+    callbackUrl: `${BASE_URL}/sso/callback`,
+  });
+});
+
+app.post('/api/settings/sso', requireAuth, requireRole('admin'), (req, res) => {
+  const org = getUserOrg(req.session.userId);
+  if (!org) return res.status(400).json({ error: 'No org context' });
+  const { enabled, issuer, clientId, clientSecret, autoProvision } = req.body;
+  if (enabled) {
+    if (!issuer || !/^https:\/\//.test(String(issuer))) return res.status(400).json({ error: 'issuer must be an https:// URL' });
+    if (!clientId) return res.status(400).json({ error: 'clientId required' });
+  }
+  // Preserve existing secret if caller didn't send a new one
+  const newSecretEnc = clientSecret ? encryptSecret(String(clientSecret)) : org.sso_client_secret_enc;
+  orgOps.updateSSO(org.id, {
+    enabled: !!enabled,
+    issuer: issuer || null,
+    clientId: clientId || null,
+    clientSecretEnc: newSecretEnc,
+    autoProvision: autoProvision !== false,
+  });
+  res.json({ ok: true });
+});
+
+// Cache discovered IdPs per issuer to avoid re-fetching discovery on every login
+const oidcClientCache = new Map();
+async function getOidcClient(org) {
+  const key = `${org.id}:${org.sso_issuer}`;
+  if (oidcClientCache.has(key)) return oidcClientCache.get(key);
+  const { Issuer } = require('openid-client');
+  const issuer = await Issuer.discover(org.sso_issuer);
+  const secret = decryptSecret(org.sso_client_secret_enc);
+  if (!secret) throw new Error('Could not decrypt SSO client secret');
+  const client = new issuer.Client({
+    client_id: org.sso_client_id,
+    client_secret: secret,
+    redirect_uris: [`${BASE_URL}/sso/callback`],
+    response_types: ['code'],
+  });
+  oidcClientCache.set(key, client);
+  return client;
+}
+
+// Start OIDC login. Accepts either ?email=... (to route by domain) or ?org=<slug>.
+app.get('/sso/start', rateLimit(60000, 10), async (req, res) => {
+  try {
+    const { generators } = require('openid-client');
+    const emailHint = String(req.query.email || '').toLowerCase();
+    const orgSlug = String(req.query.org || '');
+    let org = null;
+    if (orgSlug) org = orgOps.findBySlug(orgSlug);
+    else if (emailHint) {
+      const domain = emailHint.split('@')[1];
+      if (domain) org = orgOps.findByDomain(domain);
+    }
+    if (!org || !org.sso_enabled) return res.status(404).send('SSO not configured for this org');
+
+    const client = await getOidcClient(org);
+    const codeVerifier = generators.codeVerifier();
+    const codeChallenge = generators.codeChallenge(codeVerifier);
+    const nonce = generators.nonce();
+    const state = generators.state();
+
+    req.session.ssoFlow = { orgId: org.id, codeVerifier, nonce, state };
+
+    const authUrl = client.authorizationUrl({
+      scope: 'openid email profile',
+      code_challenge: codeChallenge,
+      code_challenge_method: 'S256',
+      nonce,
+      state,
+      ...(emailHint ? { login_hint: emailHint } : {}),
+    });
+    res.redirect(authUrl);
+  } catch (err) {
+    console.error('SSO start error:', err.message);
+    res.status(500).send('Could not start SSO flow');
+  }
+});
+
+// OIDC callback
+app.get('/sso/callback', rateLimit(60000, 10), async (req, res) => {
+  try {
+    const flow = req.session.ssoFlow;
+    if (!flow) return res.status(400).send('No SSO flow in session');
+    const org = orgOps.findById(flow.orgId);
+    if (!org || !org.sso_enabled) return res.status(400).send('Org SSO no longer configured');
+
+    const client = await getOidcClient(org);
+    const params = client.callbackParams(req);
+    const tokenSet = await client.callback(`${BASE_URL}/sso/callback`, params, {
+      code_verifier: flow.codeVerifier,
+      nonce: flow.nonce,
+      state: flow.state,
+    });
+    const claims = tokenSet.claims();
+    const email = String(claims.email || '').toLowerCase();
+    if (!email) return res.status(400).send('IdP did not return an email claim');
+
+    // Ensure the email domain matches the org (prevent cross-org impersonation)
+    const emailDomain = email.split('@')[1];
+    if (org.domain && emailDomain && org.domain !== emailDomain && !org.sso_auto_provision) {
+      return res.status(403).send('Email domain does not match this org');
+    }
+
+    // JIT provision — findOrCreate auto-assigns by domain; then force to this org if the domain matched
+    let user = userOps.findByEmail(email);
+    if (!user) {
+      if (!org.sso_auto_provision) return res.status(403).send('Just-in-time provisioning disabled for this org');
+      user = userOps.create(email, claims.name || email);
+    }
+
+    // Clear flow + regenerate session
+    delete req.session.ssoFlow;
+    req.session.regenerate((err) => {
+      if (err) return res.status(500).send('Session error');
+      req.session.userId = user.id;
+      req.session.userEmail = user.email;
+      req.session.userName = user.name;
+      req.session.userRole = user.role || 'member';
+      res.redirect('/dashboard');
+    });
+  } catch (err) {
+    console.error('SSO callback error:', err.message);
+    res.status(500).send('SSO login failed: ' + err.message);
+  }
+});
+
 // ─── Branding / white-label ───
 app.get('/api/settings/branding', requireAuth, (req, res) => {
   res.json(userOps.getBranding(req.session.userId) || {});
@@ -721,6 +894,94 @@ app.get('/api/analytics/summary', requireAuth, requireRole('admin', 'member'), (
   } catch (err) {
     console.error('Analytics error:', err.message);
     res.status(500).json({ error: 'Could not compute analytics' });
+  }
+});
+
+// ─── Analytics: funnel + bottlenecks ───
+app.get('/api/analytics/funnel', requireAuth, requireRole('admin', 'member'), (req, res) => {
+  const db = require('./database').db;
+  const userId = req.session.userId;
+  const days = Math.min(Math.max(parseInt(req.query.days, 10) || 30, 1), 365);
+  try {
+    // Funnel: sent -> signed/declined/still-pending (per-signer)
+    const funnel = db.prepare(`SELECT
+      COUNT(s.id) as total,
+      SUM(CASE WHEN s.status = 'sent' THEN 1 ELSE 0 END) as awaiting,
+      SUM(CASE WHEN s.status = 'signed' THEN 1 ELSE 0 END) as signed,
+      SUM(CASE WHEN s.status = 'declined' THEN 1 ELSE 0 END) as declined,
+      SUM(CASE WHEN s.status = 'skipped' THEN 1 ELSE 0 END) as skipped,
+      SUM(CASE WHEN s.reassigned_at IS NOT NULL THEN 1 ELSE 0 END) as reassigned
+      FROM signers s JOIN documents d ON s.document_id = d.id
+      WHERE d.created_by = ? AND d.created_at >= datetime('now', '-${days} days') AND s.role != 'cc'`).get(userId);
+
+    // Bottleneck: average hours pending per sign_order position
+    const bottlenecks = db.prepare(`SELECT
+      s.sign_order as step,
+      COUNT(*) as total,
+      AVG(CASE WHEN s.signed_at IS NOT NULL THEN (julianday(s.signed_at) - julianday(d.created_at)) * 24 ELSE NULL END) as avg_hours_to_sign,
+      AVG(s.reminder_count) as avg_reminders,
+      SUM(CASE WHEN s.status = 'declined' THEN 1 ELSE 0 END) as declined_count
+      FROM signers s JOIN documents d ON s.document_id = d.id
+      WHERE d.created_by = ? AND d.created_at >= datetime('now', '-${days} days') AND s.role != 'cc'
+      GROUP BY s.sign_order
+      ORDER BY s.sign_order
+      LIMIT 10`).all(userId);
+
+    // Dropoff rate: docs that got stuck at each step
+    const dropoff = db.prepare(`SELECT
+      s.sign_order as step,
+      SUM(CASE WHEN s.status IN ('sent','pending') AND d.status = 'pending' THEN 1 ELSE 0 END) as stuck
+      FROM signers s JOIN documents d ON s.document_id = d.id
+      WHERE d.created_by = ? AND d.created_at >= datetime('now', '-${days} days') AND s.role != 'cc'
+      GROUP BY s.sign_order ORDER BY s.sign_order LIMIT 10`).all(userId);
+
+    res.json({
+      period_days: days,
+      funnel,
+      bottlenecks: bottlenecks.map(b => ({
+        step: b.step, total: b.total,
+        avg_hours_to_sign: b.avg_hours_to_sign ? Number(b.avg_hours_to_sign.toFixed(2)) : null,
+        avg_reminders: b.avg_reminders ? Number(b.avg_reminders.toFixed(1)) : 0,
+        declined_count: b.declined_count || 0,
+      })),
+      dropoff,
+    });
+  } catch (err) {
+    console.error('Funnel error:', err.message);
+    res.status(500).json({ error: 'Could not compute funnel' });
+  }
+});
+
+// ─── Analytics: CSV export ───
+app.get('/api/analytics/export.csv', requireAuth, requireRole('admin', 'member'), (req, res) => {
+  const db = require('./database').db;
+  const userId = req.session.userId;
+  const days = Math.min(Math.max(parseInt(req.query.days, 10) || 90, 1), 365);
+  try {
+    const rows = db.prepare(`SELECT
+      d.uuid, d.title, d.status, d.signing_mode, d.created_at, d.completed_at,
+      (SELECT COUNT(*) FROM signers WHERE document_id = d.id AND role != 'cc') as total_signers,
+      (SELECT COUNT(*) FROM signers WHERE document_id = d.id AND status = 'signed') as signed_count,
+      (SELECT COUNT(*) FROM signers WHERE document_id = d.id AND status = 'declined') as declined_count,
+      d.bulk_group_id
+      FROM documents d WHERE d.created_by = ? AND d.created_at >= datetime('now', '-${days} days')
+      ORDER BY d.created_at DESC`).all(userId);
+
+    const escCsv = (v) => {
+      if (v == null) return '';
+      const s = String(v);
+      return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    const header = ['uuid','title','status','signing_mode','created_at','completed_at','total_signers','signed_count','declined_count','bulk_group_id'];
+    const body = rows.map(r => header.map(col => escCsv(r[col])).join(',')).join('\n');
+    const csv = header.join(',') + '\n' + body + '\n';
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="sealforge-documents-${days}d.csv"`);
+    res.send(csv);
+  } catch (err) {
+    console.error('CSV export error:', err.message);
+    res.status(500).json({ error: 'Could not export' });
   }
 });
 
@@ -1425,11 +1686,91 @@ app.get('/api/sign/:token/pdf', (req, res) => {
   res.sendFile(filePath);
 });
 
+// ─── Decline (signer rejects the document with a reason) ───
+app.post('/api/sign/:token/decline', rateLimit(60000, 5), async (req, res) => {
+  const signer = signerOps.findByToken(req.params.token);
+  if (!signer) return res.status(404).json({ error: 'Not found' });
+  if (signer.doc_status === 'cancelled') return res.status(410).json({ error: 'This signing request was cancelled' });
+  if (signer.doc_status === 'completed') return res.status(400).json({ error: 'Document already completed' });
+  if (signer.status !== 'sent') return res.status(403).json({ error: 'It is not your turn' });
+  if (!req.session.verifiedSigners?.[req.params.token]) return res.status(403).json({ error: 'Verify your email first' });
+
+  const reason = sanitize(String(req.body.reason || '')).slice(0, 500);
+  if (!reason || reason.length < 3) return res.status(400).json({ error: 'Please provide a reason (at least 3 characters)' });
+
+  const ok = signerOps.decline(signer.id, reason);
+  if (!ok) return res.status(409).json({ error: 'Could not decline (already actioned)' });
+
+  // Mark the whole document as declined — no further signers will be notified
+  docOps.updateStatus(signer.document_id, 'declined');
+
+  // Notify the document owner via email + webhook
+  const doc = docOps.findById(signer.document_id);
+  const creator = require('./database').db.prepare('SELECT email, name FROM users WHERE id = ?').get(doc.created_by);
+  if (creator && email.isConfigured()) {
+    try {
+      await email.sendDeclineNotice(creator.email, creator.name || creator.email, doc.title, signer.name, reason);
+    } catch (e) { console.error('Decline email failed:', e.message); }
+  }
+  fireWebhooks(doc.created_by, 'document.declined', {
+    document: { uuid: doc.uuid, title: doc.title },
+    signer: { name: signer.name, email: signer.email, sign_order: signer.sign_order },
+    reason,
+  });
+
+  res.json({ ok: true });
+});
+
+// ─── Reassign (signer forwards the request to someone else) ───
+app.post('/api/sign/:token/reassign', rateLimit(60000, 3), async (req, res) => {
+  const signer = signerOps.findByToken(req.params.token);
+  if (!signer) return res.status(404).json({ error: 'Not found' });
+  if (signer.doc_status === 'cancelled') return res.status(410).json({ error: 'Cancelled' });
+  if (signer.doc_status === 'completed') return res.status(400).json({ error: 'Already completed' });
+  if (signer.status !== 'sent') return res.status(403).json({ error: 'It is not your turn' });
+  if (!req.session.verifiedSigners?.[req.params.token]) return res.status(403).json({ error: 'Verify your email first' });
+
+  const newName = sanitize(String(req.body.name || '')).slice(0, 120);
+  const newEmail = sanitize(String(req.body.email || '')).toLowerCase().slice(0, 254);
+  if (!newName || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(newEmail)) {
+    return res.status(400).json({ error: 'Valid replacement name and email required' });
+  }
+  if (newEmail === signer.email) return res.status(400).json({ error: 'New email must be different from yours' });
+
+  const result = signerOps.reassign(signer.id, newName, newEmail);
+  if (!result) return res.status(409).json({ error: 'Could not reassign (already actioned)' });
+
+  // Notify the new signer with a fresh signing link
+  const doc = docOps.findById(signer.document_id);
+  const creator = require('./database').db.prepare('SELECT email, name FROM users WHERE id = ?').get(doc.created_by);
+  const senderName = creator?.name || creator?.email || 'SealForge';
+  const brand = userOps.getBranding(doc.created_by);
+  const signUrl = `${BASE_URL}/sign/${result.token}`;
+  if (email.isConfigured()) {
+    try {
+      await email.sendSigningRequest(newEmail, newName, senderName, doc.title, signUrl, `(Reassigned from ${result.prevName})`, brand);
+      // Also notify the document creator that a reassignment happened
+      await email.sendReassignNotice(creator.email, creator.name || creator.email, doc.title, result.prevName, newName, newEmail);
+    } catch (e) { console.error('Reassign email failed:', e.message); }
+  }
+  fireWebhooks(doc.created_by, 'document.reassigned', {
+    document: { uuid: doc.uuid, title: doc.title },
+    from: { name: result.prevName, email: result.prevEmail },
+    to: { name: newName, email: newEmail, sign_order: signer.sign_order },
+  });
+
+  // Destroy the old session's verifiedSigners flag for this token (old token is dead now anyway)
+  if (req.session.verifiedSigners) delete req.session.verifiedSigners[req.params.token];
+
+  res.json({ ok: true, newSignUrl: email.isConfigured() ? null : signUrl });
+});
+
 app.post('/api/sign/:token/submit', rateLimit(60000, 10), async (req, res) => {
   const signer = signerOps.findByToken(req.params.token);
   if (!signer) return res.status(404).json({ error: 'Not found' });
   if (signer.status === 'signed') return res.status(400).json({ error: 'Already signed' });
   if (signer.doc_status === 'cancelled') return res.status(410).json({ error: 'This signing request was cancelled' });
+  if (signer.doc_status === 'declined') return res.status(410).json({ error: 'This request was declined by a prior signer' });
   if (signer.status !== 'sent') return res.status(403).json({ error: 'It is not your turn to sign yet' });
 
   if (!req.session.verifiedSigners?.[req.params.token]) {
@@ -2296,6 +2637,65 @@ app.get('/api/v1/events', requireApiKey('ro'), (req, res) => {
     id: e.id, event: e.event, data: JSON.parse(e.payload_json || '{}'), created_at: e.created_at,
   }));
   res.json({ events });
+});
+
+// ─── API v1: Embedded signing sessions ───
+// Mint a short-lived token that allows loading the signing page in an iframe from a specific origin.
+// The customer's backend calls this with the signer's UUID → then embeds /embed/sign/<token> in an iframe.
+app.post('/api/v1/signers/:signerUuid/embed-session', requireApiKey('rw'), (req, res) => {
+  const { allowedOrigin, ttlSeconds } = req.body;
+  // Validate origin format: must be https:// scheme + host, no path
+  if (!allowedOrigin || !/^https?:\/\/[a-zA-Z0-9.-]+(:\d+)?$/.test(String(allowedOrigin))) {
+    return res.status(400).json({ error: 'allowedOrigin must be a scheme+host (e.g., https://app.example.com)' });
+  }
+  // Only allow http:// for localhost origins (dev). Public embeds must be HTTPS.
+  if (/^http:\/\//.test(allowedOrigin) && !/localhost|127\.0\.0\.1/.test(allowedOrigin)) {
+    return res.status(400).json({ error: 'Non-localhost origins must use https://' });
+  }
+  // Find signer by its token (signerUuid in the URL is actually the signer's current token — keeps API stable across reassigns)
+  const signer = signerOps.findByToken(req.params.signerUuid);
+  if (!signer) return res.status(404).json({ error: 'Signer not found' });
+  // Ensure the API caller owns the document
+  const doc = docOps.findById(signer.document_id);
+  if (!doc || doc.created_by !== req.apiUser.id) return res.status(403).json({ error: 'Access denied' });
+  if (signer.status !== 'sent' && signer.status !== 'pending') {
+    return res.status(400).json({ error: 'Signer is not awaiting action (status: ' + signer.status + ')' });
+  }
+
+  const ttl = Math.min(Math.max(parseInt(ttlSeconds, 10) || 1800, 60), 3600); // 1 min to 1 hour
+  const session = embedOps.create(signer.id, String(allowedOrigin), ttl);
+  res.json({
+    ok: true,
+    embedToken: session.token,
+    embedUrl: `${BASE_URL}/embed/sign/${session.token}`,
+    expiresAt: session.expires,
+  });
+});
+
+// Public embed page — loaded in an iframe from the customer's domain.
+// The bootstrap call sets req.session.embedOrigin which relaxes frame-ancestors via the post-session middleware.
+app.get('/embed/sign/:embedToken', (req, res) => {
+  const session = embedOps.findValid(req.params.embedToken);
+  if (!session) return res.status(404).send('Session expired or not found');
+  // Pre-authorize the origin in the session BEFORE serving the page so CSP allows the iframe to load at all.
+  req.session.embedOrigin = session.allowed_origin;
+  req.session.embedExpiresAt = session.expires_at;
+  // Re-run CSP for this response since we just changed the session
+  res.setHeader('X-Frame-Options', `ALLOW-FROM ${session.allowed_origin}`);
+  const existing = res.getHeader('Content-Security-Policy') || '';
+  res.setHeader('Content-Security-Policy', String(existing).replace(/frame-ancestors '[^']*'/, `frame-ancestors 'self' ${session.allowed_origin}`));
+  sendHtml(res, path.join(__dirname, 'public', 'embed-sign.html'));
+});
+
+// Embed bootstrap — one-time exchange of the embed token for the real signer token.
+app.get('/api/embed/sign/:embedToken/bootstrap', rateLimit(60000, 10), (req, res) => {
+  const session = embedOps.findValid(req.params.embedToken);
+  if (!session) return res.status(404).json({ error: 'Session expired' });
+  req.session.embedOrigin = session.allowed_origin;
+  req.session.embedSignerToken = session.signer_token;
+  req.session.embedExpiresAt = session.expires_at;
+  embedOps.markUsed(req.params.embedToken);
+  res.json({ ok: true, signerToken: session.signer_token });
 });
 
 // ─── QR Code (authenticated — guard against abuse & CPU DoS) ───

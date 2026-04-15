@@ -188,6 +188,46 @@ ensureColumn('users', 'brand_email_footer', "TEXT");
 // ─── Signer attachments ───
 ensureColumn('signers', 'attachments_json', "TEXT NOT NULL DEFAULT '[]'");
 
+// ─── Org workspaces ───
+db.exec(`
+  CREATE TABLE IF NOT EXISTS orgs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    domain TEXT,
+    sso_enabled INTEGER NOT NULL DEFAULT 0,
+    sso_issuer TEXT,
+    sso_client_id TEXT,
+    sso_client_secret_enc TEXT,
+    sso_auto_provision INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_orgs_domain ON orgs(domain);
+`);
+ensureColumn('users', 'org_id', "INTEGER");
+
+// ─── Embedded signing sessions ───
+db.exec(`
+  CREATE TABLE IF NOT EXISTS embed_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token TEXT UNIQUE NOT NULL,
+    signer_id INTEGER NOT NULL,
+    allowed_origin TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (signer_id) REFERENCES signers(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_embed_token ON embed_sessions(token);
+`);
+
+// ─── Collaboration: decline/reassign ───
+ensureColumn('signers', 'decline_reason', "TEXT");          // signer-supplied text when declining
+ensureColumn('signers', 'declined_at', "TEXT");             // ISO timestamp
+ensureColumn('signers', 'reassigned_from_name', "TEXT");    // if this signer replaced someone, their name
+ensureColumn('signers', 'reassigned_from_email', "TEXT");   // and their email
+ensureColumn('signers', 'reassigned_at', "TEXT");           // when the reassign happened
+
 // ─── RFC 3161 timestamp (feature: TSA / LTV) ───
 ensureColumn('documents', 'tsa_url', "TEXT");                       // TSA endpoint used
 ensureColumn('documents', 'tsa_token_path', "TEXT");                // filesystem path of .tst file
@@ -212,6 +252,30 @@ function generateTemplateUUID() {
   return 'TPL-' + crypto.randomBytes(16).toString('hex').toUpperCase().match(/.{4}/g).join('-');
 }
 
+// ─── Org operations ───
+const orgOps = {
+  create(name, domain) {
+    const slug = String(name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || crypto.randomBytes(4).toString('hex');
+    // Ensure slug is unique
+    let finalSlug = slug, i = 1;
+    while (db.prepare('SELECT 1 FROM orgs WHERE slug = ?').get(finalSlug)) {
+      finalSlug = slug + '-' + (++i);
+    }
+    const result = db.prepare('INSERT INTO orgs (slug, name, domain) VALUES (?, ?, ?)').run(finalSlug, name, domain || null);
+    return { id: result.lastInsertRowid, slug: finalSlug, name, domain };
+  },
+  findById(id) { return db.prepare('SELECT * FROM orgs WHERE id = ?').get(id); },
+  findBySlug(slug) { return db.prepare('SELECT * FROM orgs WHERE slug = ?').get(slug); },
+  findByDomain(domain) { return db.prepare('SELECT * FROM orgs WHERE domain = ?').get(domain); },
+  updateSSO(id, { enabled, issuer, clientId, clientSecretEnc, autoProvision }) {
+    db.prepare(`UPDATE orgs SET sso_enabled = ?, sso_issuer = ?, sso_client_id = ?, sso_client_secret_enc = ?, sso_auto_provision = ? WHERE id = ?`)
+      .run(enabled ? 1 : 0, issuer || null, clientId || null, clientSecretEnc || null, autoProvision ? 1 : 0, id);
+  },
+  listMembers(orgId) {
+    return db.prepare('SELECT id, email, name, role, created_at FROM users WHERE org_id = ? ORDER BY created_at').all(orgId);
+  },
+};
+
 // ─── User operations ───
 const VALID_ROLES = ['admin', 'member', 'viewer'];
 const userOps = {
@@ -225,8 +289,20 @@ const userOps = {
     // First user ever → admin; everyone else → member
     const count = db.prepare('SELECT COUNT(*) as cnt FROM users').get().cnt;
     const role = count === 0 ? 'admin' : 'member';
-    const result = db.prepare('INSERT INTO users (email, name, role) VALUES (?, ?, ?)').run(email.toLowerCase(), name, role);
-    return { id: result.lastInsertRowid, email: email.toLowerCase(), name, role };
+    // Auto-provision: match org by email domain, or create a new org for this domain.
+    // First user in an org = admin (already handled above for first-ever user).
+    const domain = (email.split('@')[1] || '').toLowerCase();
+    let org = domain ? orgOps.findByDomain(domain) : null;
+    if (!org) {
+      const orgName = domain ? domain.split('.')[0].replace(/[^a-z0-9]/gi, ' ').replace(/\b\w/g, c => c.toUpperCase()) : (name || 'Personal');
+      org = orgOps.create(orgName, domain);
+    }
+    const orgId = org.id;
+    // First user to join an org becomes admin of that org, regardless of global role rule
+    const existingOrgMembers = db.prepare('SELECT COUNT(*) as cnt FROM users WHERE org_id = ?').get(orgId).cnt;
+    const finalRole = existingOrgMembers === 0 ? 'admin' : role;
+    const result = db.prepare('INSERT INTO users (email, name, role, org_id) VALUES (?, ?, ?, ?)').run(email.toLowerCase(), name, finalRole, orgId);
+    return { id: result.lastInsertRowid, email: email.toLowerCase(), name, role: finalRole, org_id: orgId };
   },
   findOrCreate(email, name = '') {
     let user = this.findByEmail(email);
@@ -517,6 +593,26 @@ const signerOps = {
   markReminded(id) {
     db.prepare("UPDATE signers SET last_reminded_at = datetime('now'), reminder_count = reminder_count + 1 WHERE id = ?").run(id);
   },
+  // ─── Decline ───
+  decline(id, reason) {
+    // Atomic: only succeeds if signer is currently sent (not already signed/declined)
+    const result = db.prepare(`UPDATE signers SET status = 'declined', decline_reason = ?, declined_at = datetime('now')
+      WHERE id = ? AND status = 'sent'`).run(String(reason || '').slice(0, 500), id);
+    return result.changes === 1;
+  },
+  // ─── Reassign: replace current signer's identity (name+email+new token).
+  // Preserves the sign_order and records the previous identity for audit trail.
+  reassign(id, newName, newEmail) {
+    const signer = db.prepare('SELECT * FROM signers WHERE id = ? AND status = \'sent\'').get(id);
+    if (!signer) return null;
+    const newToken = generateToken();
+    db.prepare(`UPDATE signers SET name = ?, email = ?, token = ?,
+      reassigned_from_name = ?, reassigned_from_email = ?, reassigned_at = datetime('now'),
+      otp = NULL, otp_expires = NULL
+      WHERE id = ? AND status = 'sent'`)
+      .run(newName, newEmail.toLowerCase(), newToken, signer.name, signer.email, id);
+    return { token: newToken, prevName: signer.name, prevEmail: signer.email };
+  },
   addAttachment(id, attachment) {
     const row = db.prepare('SELECT attachments_json FROM signers WHERE id = ?').get(id);
     const list = row ? JSON.parse(row.attachments_json || '[]') : [];
@@ -654,6 +750,28 @@ const webhookOps = {
   }
 };
 
+// ─── Embedded signing sessions ───
+const embedOps = {
+  create(signerId, allowedOrigin, ttlSeconds = 1800) {
+    const token = crypto.randomBytes(32).toString('hex');
+    const expires = new Date(Date.now() + ttlSeconds * 1000).toISOString();
+    db.prepare('INSERT INTO embed_sessions (token, signer_id, allowed_origin, expires_at) VALUES (?, ?, ?, ?)')
+      .run(token, signerId, allowedOrigin, expires);
+    return { token, expires };
+  },
+  findValid(token) {
+    return db.prepare(`SELECT es.*, s.id as s_id, s.token as signer_token, s.document_id
+      FROM embed_sessions es JOIN signers s ON es.signer_id = s.id
+      WHERE es.token = ? AND es.used_at IS NULL AND es.expires_at > datetime('now')`).get(token);
+  },
+  markUsed(token) {
+    db.prepare("UPDATE embed_sessions SET used_at = datetime('now') WHERE token = ?").run(token);
+  },
+  purgeExpired() {
+    db.prepare("DELETE FROM embed_sessions WHERE expires_at <= datetime('now') OR used_at IS NOT NULL").run();
+  },
+};
+
 // ─── Event log (Zapier/Make polling) ───
 db.exec(`
   CREATE TABLE IF NOT EXISTS event_log (
@@ -723,4 +841,4 @@ const workflowOps = {
   },
 };
 
-module.exports = { db, userOps, otpOps, sessionOps, docOps, signerOps, templateOps, apiKeyOps, webhookOps, eventLogOps, workflowOps, generateToken, VALID_ROLES };
+module.exports = { db, userOps, otpOps, sessionOps, docOps, signerOps, templateOps, apiKeyOps, webhookOps, eventLogOps, workflowOps, embedOps, orgOps, generateToken, VALID_ROLES };

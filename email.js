@@ -208,4 +208,51 @@ async function sendExpiredNotice(toEmail, ownerName, docTitle, docUUID) {
   return true;
 }
 
-module.exports = { init, isConfigured, sendLoginOTP, sendSignerOTP, sendSigningRequest, sendCompletionNotice, sendReminder, sendExpiredNotice };
+async function sendDeclineNotice(toEmail, ownerName, docTitle, signerName, reason) {
+  if (!transporter) return false;
+  await transporter.sendMail({
+    from: `"${FROM_NAME}" <${FROM_EMAIL}>`,
+    to: toEmail,
+    subject: `Declined: ${signerName} declined to sign "${docTitle}"`,
+    html: `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;">
+        <div style="background:#c62828;padding:16px 24px;border-radius:8px 8px 0 0;">
+          <span style="color:#fff;font-size:24px;font-weight:800;">Seal</span><span style="color:#ffb3b3;font-size:24px;font-weight:600;">Forge</span>
+        </div>
+        <div style="padding:24px;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
+          <p>Hi ${esc(ownerName)},</p>
+          <div style="background:#ffebee;border:1px solid #ef5350;padding:14px;border-radius:8px;margin:16px 0;color:#c62828;">
+            <strong>${esc(signerName)}</strong> has declined to sign <strong>"${esc(docTitle)}"</strong>.
+          </div>
+          <p style="font-size:13px;color:#555;"><b>Reason:</b></p>
+          <div style="background:#f5f7fa;padding:12px;border-radius:6px;font-size:13px;color:#333;white-space:pre-wrap;">${esc(reason)}</div>
+          <p style="color:#666;font-size:13px;margin-top:16px;">The document has been marked as declined. No further signers will be notified.</p>
+        </div>
+      </div>`,
+  });
+  return true;
+}
+
+async function sendReassignNotice(toEmail, ownerName, docTitle, fromName, toName, toEmailAddr) {
+  if (!transporter) return false;
+  await transporter.sendMail({
+    from: `"${FROM_NAME}" <${FROM_EMAIL}>`,
+    to: toEmail,
+    subject: `Reassigned: ${fromName} forwarded "${docTitle}" to ${toName}`,
+    html: `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;">
+        ${brandHeader(null)}
+        <div style="padding:24px;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
+          <p>Hi ${esc(ownerName)},</p>
+          <div style="background:#fff3e0;border:1px solid #ff9800;padding:14px;border-radius:8px;margin:16px 0;color:#6d4c00;">
+            <strong>${esc(fromName)}</strong> reassigned their signing task on <strong>"${esc(docTitle)}"</strong> to:
+            <div style="margin-top:8px;">${esc(toName)} &lt;${esc(toEmailAddr)}&gt;</div>
+          </div>
+          <p style="color:#666;font-size:13px;">${esc(toName)} has been sent a signing link. The original signer's link is no longer valid.</p>
+        </div>
+      </div>`,
+  });
+  return true;
+}
+
+module.exports = { init, isConfigured, sendLoginOTP, sendSignerOTP, sendSigningRequest, sendCompletionNotice, sendReminder, sendExpiredNotice, sendDeclineNotice, sendReassignNotice };

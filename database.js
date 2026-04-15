@@ -203,8 +203,77 @@ db.exec(`
     created_at TEXT DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_orgs_domain ON orgs(domain);
+
+  CREATE TABLE IF NOT EXISTS org_members (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    role TEXT NOT NULL DEFAULT 'member',
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE(org_id, user_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_org_members_user ON org_members(user_id);
+  CREATE INDEX IF NOT EXISTS idx_org_members_org ON org_members(org_id);
+
+  CREATE TABLE IF NOT EXISTS org_invites (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL,
+    email TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'member',
+    token TEXT UNIQUE NOT NULL,
+    invited_by INTEGER NOT NULL,
+    expires_at TEXT NOT NULL,
+    accepted_at TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE,
+    FOREIGN KEY (invited_by) REFERENCES users(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_org_invites_org ON org_invites(org_id);
+  CREATE INDEX IF NOT EXISTS idx_org_invites_token ON org_invites(token);
+  CREATE INDEX IF NOT EXISTS idx_org_invites_email ON org_invites(email);
 `);
 ensureColumn('users', 'org_id', "INTEGER");
+
+// org_id columns on owned resources (nullable for legacy; backfill below)
+ensureColumn('templates', 'org_id', "INTEGER");
+ensureColumn('documents', 'org_id', "INTEGER");
+ensureColumn('webhooks', 'org_id', "INTEGER");
+ensureColumn('api_keys', 'org_id', "INTEGER");
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_templates_org ON templates(org_id);
+  CREATE INDEX IF NOT EXISTS idx_documents_org ON documents(org_id);
+  CREATE INDEX IF NOT EXISTS idx_webhooks_org ON webhooks(org_id);
+  CREATE INDEX IF NOT EXISTS idx_apikeys_org ON api_keys(org_id);
+`);
+
+// ─── Backfill: populate org_members from users.org_id, and back-stamp org_id on legacy rows ───
+(function backfillOrgWorkspaces() {
+  try {
+    // 1. Ensure every user with org_id has an org_members row
+    const usersNeedingMembership = db.prepare(`
+      SELECT u.id as user_id, u.org_id, u.role
+      FROM users u
+      LEFT JOIN org_members m ON m.org_id = u.org_id AND m.user_id = u.id
+      WHERE u.org_id IS NOT NULL AND m.id IS NULL
+    `).all();
+    const insertMember = db.prepare('INSERT INTO org_members (org_id, user_id, role) VALUES (?, ?, ?)');
+    for (const u of usersNeedingMembership) {
+      insertMember.run(u.org_id, u.user_id, u.role || 'member');
+    }
+
+    // 2. Back-stamp org_id on templates/documents/webhooks/api_keys from owner
+    db.exec(`
+      UPDATE templates  SET org_id = (SELECT org_id FROM users WHERE users.id = templates.user_id)  WHERE org_id IS NULL AND user_id IS NOT NULL;
+      UPDATE documents  SET org_id = (SELECT org_id FROM users WHERE users.id = documents.created_by) WHERE org_id IS NULL AND created_by IS NOT NULL;
+      UPDATE webhooks   SET org_id = (SELECT org_id FROM users WHERE users.id = webhooks.user_id)    WHERE org_id IS NULL AND user_id IS NOT NULL;
+      UPDATE api_keys   SET org_id = (SELECT org_id FROM users WHERE users.id = api_keys.user_id)    WHERE org_id IS NULL AND user_id IS NOT NULL;
+    `);
+  } catch (err) {
+    console.error('Org workspace backfill error:', err.message);
+  }
+})();
 
 // ─── Embedded signing sessions ───
 db.exec(`
@@ -271,8 +340,94 @@ const orgOps = {
     db.prepare(`UPDATE orgs SET sso_enabled = ?, sso_issuer = ?, sso_client_id = ?, sso_client_secret_enc = ?, sso_auto_provision = ? WHERE id = ?`)
       .run(enabled ? 1 : 0, issuer || null, clientId || null, clientSecretEnc || null, autoProvision ? 1 : 0, id);
   },
+  // Legacy: listMembers by users.org_id (pre-workspace-switcher). Prefer orgMemberOps.listMembers which
+  // uses org_members and supports multi-org membership.
   listMembers(orgId) {
     return db.prepare('SELECT id, email, name, role, created_at FROM users WHERE org_id = ? ORDER BY created_at').all(orgId);
+  },
+  updateName(id, name) {
+    const clean = String(name || '').trim().slice(0, 80);
+    if (!clean) return false;
+    db.prepare('UPDATE orgs SET name = ? WHERE id = ?').run(clean, id);
+    return true;
+  },
+};
+
+// ─── Org member operations (per-org roles, multi-org membership) ───
+const ORG_ROLES = ['admin', 'member', 'viewer'];
+const orgMemberOps = {
+  add(orgId, userId, role = 'member') {
+    const safeRole = ORG_ROLES.includes(role) ? role : 'member';
+    try {
+      db.prepare('INSERT INTO org_members (org_id, user_id, role) VALUES (?, ?, ?)').run(orgId, userId, safeRole);
+      return true;
+    } catch (e) {
+      // Already a member — update role if different
+      db.prepare('UPDATE org_members SET role = ? WHERE org_id = ? AND user_id = ?').run(safeRole, orgId, userId);
+      return false;
+    }
+  },
+  remove(orgId, userId) {
+    return db.prepare('DELETE FROM org_members WHERE org_id = ? AND user_id = ?').run(orgId, userId).changes > 0;
+  },
+  setRole(orgId, userId, role) {
+    if (!ORG_ROLES.includes(role)) return false;
+    return db.prepare('UPDATE org_members SET role = ? WHERE org_id = ? AND user_id = ?').run(role, orgId, userId).changes > 0;
+  },
+  getRole(orgId, userId) {
+    const row = db.prepare('SELECT role FROM org_members WHERE org_id = ? AND user_id = ?').get(orgId, userId);
+    return row ? row.role : null;
+  },
+  listMembers(orgId) {
+    return db.prepare(`SELECT u.id, u.email, u.name, m.role, m.created_at as joined_at
+      FROM org_members m JOIN users u ON m.user_id = u.id
+      WHERE m.org_id = ? ORDER BY m.created_at`).all(orgId);
+  },
+  countAdmins(orgId) {
+    return db.prepare("SELECT COUNT(*) as cnt FROM org_members WHERE org_id = ? AND role = 'admin'").get(orgId).cnt;
+  },
+  listOrgsForUser(userId) {
+    return db.prepare(`SELECT o.id, o.slug, o.name, o.domain, m.role
+      FROM org_members m JOIN orgs o ON m.org_id = o.id
+      WHERE m.user_id = ? ORDER BY o.name`).all(userId);
+  },
+  isMember(orgId, userId) {
+    return !!db.prepare('SELECT 1 FROM org_members WHERE org_id = ? AND user_id = ?').get(orgId, userId);
+  },
+};
+
+// ─── Org invite operations ───
+const orgInviteOps = {
+  create(orgId, email, role, invitedBy, ttlHours = 168) {
+    const safeRole = ORG_ROLES.includes(role) ? role : 'member';
+    const token = crypto.randomBytes(24).toString('hex');
+    const expires = new Date(Date.now() + ttlHours * 3600 * 1000).toISOString();
+    // Revoke any existing pending invite for (org, email)
+    db.prepare('DELETE FROM org_invites WHERE org_id = ? AND lower(email) = ? AND accepted_at IS NULL').run(orgId, String(email).toLowerCase());
+    const result = db.prepare('INSERT INTO org_invites (org_id, email, role, token, invited_by, expires_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(orgId, String(email).toLowerCase(), safeRole, token, invitedBy, expires);
+    return { id: result.lastInsertRowid, token, expires };
+  },
+  findByToken(token) {
+    return db.prepare(`SELECT i.*, o.name as org_name, o.slug as org_slug, u.name as inviter_name, u.email as inviter_email
+      FROM org_invites i JOIN orgs o ON i.org_id = o.id LEFT JOIN users u ON i.invited_by = u.id
+      WHERE i.token = ? AND i.accepted_at IS NULL AND i.expires_at > datetime('now')`).get(token);
+  },
+  markAccepted(id) {
+    // Atomic: single-use
+    return db.prepare("UPDATE org_invites SET accepted_at = datetime('now') WHERE id = ? AND accepted_at IS NULL").run(id).changes === 1;
+  },
+  listPending(orgId) {
+    return db.prepare(`SELECT i.id, i.email, i.role, i.expires_at, i.created_at, u.email as invited_by_email
+      FROM org_invites i LEFT JOIN users u ON i.invited_by = u.id
+      WHERE i.org_id = ? AND i.accepted_at IS NULL AND i.expires_at > datetime('now')
+      ORDER BY i.created_at DESC`).all(orgId);
+  },
+  revoke(id, orgId) {
+    return db.prepare('DELETE FROM org_invites WHERE id = ? AND org_id = ? AND accepted_at IS NULL').run(id, orgId).changes > 0;
+  },
+  cleanExpired() {
+    db.prepare("DELETE FROM org_invites WHERE expires_at <= datetime('now') AND accepted_at IS NULL").run();
   },
 };
 
@@ -302,6 +457,10 @@ const userOps = {
     const existingOrgMembers = db.prepare('SELECT COUNT(*) as cnt FROM users WHERE org_id = ?').get(orgId).cnt;
     const finalRole = existingOrgMembers === 0 ? 'admin' : role;
     const result = db.prepare('INSERT INTO users (email, name, role, org_id) VALUES (?, ?, ?, ?)').run(email.toLowerCase(), name, finalRole, orgId);
+    // Record membership in org_members (per-org role, supports multi-org membership)
+    try {
+      db.prepare('INSERT INTO org_members (org_id, user_id, role) VALUES (?, ?, ?)').run(orgId, result.lastInsertRowid, finalRole);
+    } catch {}
     return { id: result.lastInsertRowid, email: email.toLowerCase(), name, role: finalRole, org_id: orgId };
   },
   findOrCreate(email, name = '') {
@@ -413,12 +572,18 @@ const sessionOps = {
 
 // ─── Document operations ───
 const docOps = {
-  create(userId, title, originalFilename, originalHash, message, signingMode = 'sequential') {
+  create(userId, title, originalFilename, originalHash, message, signingMode = 'sequential', orgId = null) {
     const uuid = generateDocUUID();
     const mode = signingMode === 'parallel' ? 'parallel' : 'sequential';
-    const result = db.prepare('INSERT INTO documents (uuid, title, original_filename, original_hash, status, created_by, message, signing_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(uuid, title, originalFilename, originalHash, 'draft', userId, message || '', mode);
+    const result = db.prepare('INSERT INTO documents (uuid, title, original_filename, original_hash, status, created_by, message, signing_mode, org_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(uuid, title, originalFilename, originalHash, 'draft', userId, message || '', mode, orgId);
     return { id: result.lastInsertRowid, uuid };
+  },
+  listByOrg(orgId) {
+    return db.prepare('SELECT * FROM documents WHERE org_id = ? ORDER BY created_at DESC').all(orgId);
+  },
+  listByBulkGroupOrg(orgId, groupId) {
+    return db.prepare('SELECT * FROM documents WHERE org_id = ? AND bulk_group_id = ? ORDER BY created_at').all(orgId, groupId);
   },
   findByUUID(uuid) {
     return db.prepare('SELECT * FROM documents WHERE uuid = ?').get(uuid);
@@ -633,19 +798,24 @@ const signerOps = {
 
 // ─── Template operations ───
 const templateOps = {
-  create(userId, { name, title, message, signingMode, signers, hasPdf, pdfHash, pdfFilename, fields }) {
+  create(userId, { name, title, message, signingMode, signers, hasPdf, pdfHash, pdfFilename, fields, orgId = null }) {
     const uuid = generateTemplateUUID();
     const mode = signingMode === 'parallel' ? 'parallel' : 'sequential';
     const result = db.prepare(`INSERT INTO templates
-      (uuid, user_id, name, title, message, signing_mode, signers_json, has_pdf, pdf_hash, pdf_filename, fields_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      (uuid, user_id, name, title, message, signing_mode, signers_json, has_pdf, pdf_hash, pdf_filename, fields_json, org_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(uuid, userId, name, title || '', message || '', mode,
         JSON.stringify(signers || []), hasPdf ? 1 : 0,
-        pdfHash || null, pdfFilename || null, JSON.stringify(fields || []));
+        pdfHash || null, pdfFilename || null, JSON.stringify(fields || []), orgId);
     return { id: result.lastInsertRowid, uuid };
   },
   listByUser(userId) {
     return db.prepare('SELECT * FROM templates WHERE user_id = ? ORDER BY created_at DESC').all(userId);
+  },
+  listByOrg(orgId) {
+    return db.prepare(`SELECT t.*, u.email as owner_email, u.name as owner_name
+      FROM templates t LEFT JOIN users u ON t.user_id = u.id
+      WHERE t.org_id = ? ORDER BY t.created_at DESC`).all(orgId);
   },
   findByUUID(uuid, userId) {
     const row = db.prepare('SELECT * FROM templates WHERE uuid = ? AND user_id = ?').get(uuid, userId);
@@ -654,8 +824,18 @@ const templateOps = {
     row.fields = JSON.parse(row.fields_json || '[]');
     return row;
   },
+  findByUUIDInOrg(uuid, orgId) {
+    const row = db.prepare('SELECT * FROM templates WHERE uuid = ? AND org_id = ?').get(uuid, orgId);
+    if (!row) return null;
+    row.signers = JSON.parse(row.signers_json || '[]');
+    row.fields = JSON.parse(row.fields_json || '[]');
+    return row;
+  },
   delete(uuid, userId) {
     return db.prepare('DELETE FROM templates WHERE uuid = ? AND user_id = ?').run(uuid, userId).changes > 0;
+  },
+  deleteInOrg(uuid, orgId) {
+    return db.prepare('DELETE FROM templates WHERE uuid = ? AND org_id = ?').run(uuid, orgId).changes > 0;
   },
   // ─── Public template links ───
   findBySlug(slug) {
@@ -677,8 +857,22 @@ const templateOps = {
     const result = db.prepare('UPDATE templates SET is_public = 1, public_slug = ? WHERE uuid = ? AND user_id = ?').run(slug, uuid, userId);
     return result.changes > 0 ? slug : null;
   },
+  publishInOrg(uuid, orgId) {
+    let slug;
+    for (let i = 0; i < 5; i++) {
+      const candidate = crypto.randomBytes(6).toString('base64url').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toLowerCase();
+      const existing = db.prepare('SELECT 1 FROM templates WHERE public_slug = ?').get(candidate);
+      if (!existing) { slug = candidate; break; }
+    }
+    if (!slug) return null;
+    const result = db.prepare('UPDATE templates SET is_public = 1, public_slug = ? WHERE uuid = ? AND org_id = ?').run(slug, uuid, orgId);
+    return result.changes > 0 ? slug : null;
+  },
   unpublish(uuid, userId) {
     return db.prepare('UPDATE templates SET is_public = 0, public_slug = NULL WHERE uuid = ? AND user_id = ?').run(uuid, userId).changes > 0;
+  },
+  unpublishInOrg(uuid, orgId) {
+    return db.prepare('UPDATE templates SET is_public = 0, public_slug = NULL WHERE uuid = ? AND org_id = ?').run(uuid, orgId).changes > 0;
   },
   incrementSubmissions(uuid) {
     db.prepare('UPDATE templates SET public_submissions = public_submissions + 1 WHERE uuid = ?').run(uuid);
@@ -688,14 +882,14 @@ const templateOps = {
 // ─── API key operations ───
 const apiKeyOps = {
   // Returns plaintext key ONCE (only available at creation time).
-  create(userId, name, scope = 'rw') {
+  create(userId, name, scope = 'rw', orgId = null) {
     const safeScope = ['ro', 'rw'].includes(scope) ? scope : 'rw';
     const raw = crypto.randomBytes(24).toString('hex');
     const plaintext = `ds_live_${raw}`;
     const prefix = plaintext.slice(0, 12);
     const hash = crypto.createHash('sha256').update(plaintext).digest('hex');
-    const result = db.prepare('INSERT INTO api_keys (user_id, name, prefix, key_hash, scope) VALUES (?, ?, ?, ?, ?)')
-      .run(userId, name, prefix, hash, safeScope);
+    const result = db.prepare('INSERT INTO api_keys (user_id, name, prefix, key_hash, scope, org_id) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(userId, name, prefix, hash, safeScope, orgId);
     return { id: result.lastInsertRowid, plaintext, prefix, scope: safeScope };
   },
   findByPlaintext(plaintext) {
@@ -713,22 +907,35 @@ const apiKeyOps = {
   listByUser(userId) {
     return db.prepare('SELECT id, name, prefix, scope, last_used_at, created_at FROM api_keys WHERE user_id = ? ORDER BY created_at DESC').all(userId);
   },
+  listByOrg(orgId) {
+    return db.prepare(`SELECT k.id, k.name, k.prefix, k.scope, k.last_used_at, k.created_at, u.email as created_by_email
+      FROM api_keys k LEFT JOIN users u ON k.user_id = u.id
+      WHERE k.org_id = ? ORDER BY k.created_at DESC`).all(orgId);
+  },
   revoke(id, userId) {
     return db.prepare('DELETE FROM api_keys WHERE id = ? AND user_id = ?').run(id, userId).changes > 0;
+  },
+  revokeInOrg(id, orgId) {
+    return db.prepare('DELETE FROM api_keys WHERE id = ? AND org_id = ?').run(id, orgId).changes > 0;
   }
 };
 
 // ─── Webhook operations ───
 const webhookOps = {
-  create(userId, url, events) {
+  create(userId, url, events, orgId = null) {
     const secret = 'whsec_' + crypto.randomBytes(24).toString('hex');
     const evs = Array.isArray(events) && events.length ? events : ['*'];
-    const result = db.prepare('INSERT INTO webhooks (user_id, url, secret, events_json) VALUES (?, ?, ?, ?)')
-      .run(userId, url, secret, JSON.stringify(evs));
+    const result = db.prepare('INSERT INTO webhooks (user_id, url, secret, events_json, org_id) VALUES (?, ?, ?, ?, ?)')
+      .run(userId, url, secret, JSON.stringify(evs), orgId);
     return { id: result.lastInsertRowid, secret };
   },
   listByUser(userId) {
     return db.prepare('SELECT * FROM webhooks WHERE user_id = ? ORDER BY created_at DESC').all(userId);
+  },
+  listByOrg(orgId) {
+    return db.prepare(`SELECT w.*, u.email as created_by_email
+      FROM webhooks w LEFT JOIN users u ON w.user_id = u.id
+      WHERE w.org_id = ? ORDER BY w.created_at DESC`).all(orgId);
   },
   listForEvent(userId, event) {
     const rows = db.prepare('SELECT * FROM webhooks WHERE user_id = ? AND active = 1').all(userId);
@@ -739,11 +946,26 @@ const webhookOps = {
       } catch { return false; }
     });
   },
+  listForEventInOrg(orgId, event) {
+    const rows = db.prepare('SELECT * FROM webhooks WHERE org_id = ? AND active = 1').all(orgId);
+    return rows.filter(w => {
+      try {
+        const evs = JSON.parse(w.events_json);
+        return evs.includes('*') || evs.includes(event);
+      } catch { return false; }
+    });
+  },
   toggle(id, userId, active) {
     return db.prepare('UPDATE webhooks SET active = ? WHERE id = ? AND user_id = ?').run(active ? 1 : 0, id, userId).changes > 0;
   },
+  toggleInOrg(id, orgId, active) {
+    return db.prepare('UPDATE webhooks SET active = ? WHERE id = ? AND org_id = ?').run(active ? 1 : 0, id, orgId).changes > 0;
+  },
   delete(id, userId) {
     return db.prepare('DELETE FROM webhooks WHERE id = ? AND user_id = ?').run(id, userId).changes > 0;
+  },
+  deleteInOrg(id, orgId) {
+    return db.prepare('DELETE FROM webhooks WHERE id = ? AND org_id = ?').run(id, orgId).changes > 0;
   },
   recordFire(id, status) {
     db.prepare("UPDATE webhooks SET last_status = ?, last_fired_at = datetime('now') WHERE id = ?").run(status, id);
@@ -841,4 +1063,4 @@ const workflowOps = {
   },
 };
 
-module.exports = { db, userOps, otpOps, sessionOps, docOps, signerOps, templateOps, apiKeyOps, webhookOps, eventLogOps, workflowOps, embedOps, orgOps, generateToken, VALID_ROLES };
+module.exports = { db, userOps, otpOps, sessionOps, docOps, signerOps, templateOps, apiKeyOps, webhookOps, eventLogOps, workflowOps, embedOps, orgOps, orgMemberOps, orgInviteOps, generateToken, VALID_ROLES, ORG_ROLES };

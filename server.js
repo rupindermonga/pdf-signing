@@ -11,7 +11,7 @@ const { P12Signer } = require('@signpdf/signer-p12');
 const { pdflibAddPlaceholder } = require('@signpdf/placeholder-pdf-lib');
 const { PDFDocument } = require('pdf-lib');
 
-const { userOps, otpOps, sessionOps, docOps, signerOps, templateOps, apiKeyOps, webhookOps, eventLogOps, workflowOps, embedOps, orgOps, VALID_ROLES } = require('./database');
+const { userOps, otpOps, sessionOps, docOps, signerOps, templateOps, apiKeyOps, webhookOps, eventLogOps, workflowOps, embedOps, orgOps, orgMemberOps, orgInviteOps, VALID_ROLES, ORG_ROLES } = require('./database');
 const email = require('./email');
 const { TOTP, Secret } = require('otpauth');
 const stripe = require('./stripe');
@@ -361,6 +361,70 @@ function requireRole(...roles) {
   };
 }
 
+// Seed session identity after successful login / SSO / invite accept.
+// Picks the active workspace: previously-selected (if user is still a member) or the first membership.
+function setSessionIdentity(req, user, preferredOrgId = null) {
+  req.session.userId = user.id;
+  req.session.userEmail = user.email;
+  req.session.userName = user.name || '';
+  req.session.userRole = user.role || 'member';
+  // Determine active workspace
+  let orgId = null;
+  if (preferredOrgId && orgMemberOps.isMember(preferredOrgId, user.id)) {
+    orgId = preferredOrgId;
+  } else {
+    const orgs = orgMemberOps.listOrgsForUser(user.id);
+    if (orgs.length) orgId = orgs[0].id;
+    else if (user.org_id) orgId = user.org_id; // legacy fallback
+  }
+  req.session.orgId = orgId;
+  // Per-org role snapshot (re-checked via requireOrgRole on each request)
+  req.session.orgRole = orgId ? orgMemberOps.getRole(orgId, user.id) : null;
+}
+
+// Doc access check for session auth — returns true if the user can see the document.
+// Org members share read access to all documents in their workspace; legacy (no-org)
+// docs remain creator-private.
+function docAccessibleToSession(doc, req) {
+  if (!doc || !req.session || !req.session.userId) return false;
+  if (doc.created_by === req.session.userId) return true;
+  const orgId = req.session.orgId || null;
+  if (orgId && doc.org_id === orgId) return true;
+  return false;
+}
+// Mutation permission: creator, or workspace admin. Session required.
+function docMutableBySession(doc, req) {
+  if (!doc || !req.session || !req.session.userId) return false;
+  if (doc.created_by === req.session.userId) return true;
+  const orgId = req.session.orgId || null;
+  if (orgId && doc.org_id === orgId) {
+    const role = orgMemberOps.getRole(orgId, req.session.userId);
+    return role === 'admin';
+  }
+  return false;
+}
+
+// Per-org role middleware. Re-reads from org_members on every request so role changes
+// and removals take effect immediately (no session-cache drift).
+function requireOrgRole(...roles) {
+  return (req, res, next) => {
+    let userId = null, orgId = null;
+    if (req.session && req.session.userId) {
+      userId = req.session.userId;
+      orgId = req.session.orgId;
+    } else if (req.apiUser) {
+      userId = req.apiUser.id;
+      orgId = req.apiOrgId || null;
+    }
+    if (!userId || !orgId) return res.status(403).json({ error: 'No workspace selected' });
+    const role = orgMemberOps.getRole(orgId, userId);
+    if (!role) return res.status(403).json({ error: 'Not a member of this workspace' });
+    if (req.session) req.session.orgRole = role;
+    if (roles.includes(role)) return next();
+    res.status(403).json({ error: 'Insufficient permissions in workspace' });
+  };
+}
+
 // ─── TOTP helpers ───
 const totpEncKey = crypto.createHash('sha256')
   .update(process.env.TOTP_KEY || process.env.SESSION_SECRET || 'sealforge-dev-totp')
@@ -395,6 +459,12 @@ function requireApiKey(scope = 'rw') {
     if (scope === 'rw' && key.scope === 'ro') return res.status(403).json({ error: 'API key is read-only' });
     req.apiUser = { id: key.user_id, email: key.email, name: key.user_name };
     req.apiKey = { id: key.id, scope: key.scope };
+    // API key is scoped to its creator's workspace — fall back to creator's primary org for legacy keys.
+    req.apiOrgId = key.org_id || null;
+    if (!req.apiOrgId) {
+      const creator = userOps.findById(key.user_id);
+      req.apiOrgId = creator ? (creator.org_id || null) : null;
+    }
     next();
   };
 }
@@ -444,10 +514,14 @@ async function resolveAndCheckUrl(urlStr) {
 }
 
 // ─── Webhook fire (async, fire-and-forget) ───
+// Fires org-level webhooks if the owning user has an org; otherwise falls back to
+// user-scoped webhooks (legacy). Event log is always keyed on the user for per-user polling.
 async function fireWebhooks(userId, event, payload) {
   // Record event for polling (Zapier/Make)
   try { eventLogOps.record(userId, event, payload); } catch {}
-  const hooks = webhookOps.listForEvent(userId, event);
+  const ownerUser = userOps.findById(userId);
+  const orgId = ownerUser ? ownerUser.org_id : null;
+  const hooks = orgId ? webhookOps.listForEventInOrg(orgId, event) : webhookOps.listForEvent(userId, event);
   for (const w of hooks) {
     const ts = Math.floor(Date.now() / 1000);
     const body = JSON.stringify({ event, created_at: new Date().toISOString(), data: payload });
@@ -535,10 +609,7 @@ app.post('/api/auth/verify-otp', rateLimit(60000, 10), (req, res) => {
   // Regenerate session to prevent session fixation
   req.session.regenerate((err) => {
     if (err) return res.status(500).json({ error: 'Session error' });
-    req.session.userId = user.id;
-    req.session.userEmail = user.email;
-    req.session.userName = user.name || cleanName;
-    req.session.userRole = user.role || 'member';
+    setSessionIdentity(req, { ...user, name: user.name || cleanName });
     res.json({ ok: true, redirect: '/dashboard' });
   });
 });
@@ -561,10 +632,7 @@ app.post('/api/auth/verify-totp', rateLimit(60000, 10), (req, res) => {
   delete req.session.pendingMfaUserId;
   req.session.regenerate((err) => {
     if (err) return res.status(500).json({ error: 'Session error' });
-    req.session.userId = user.id;
-    req.session.userEmail = user.email;
-    req.session.userName = user.name;
-    req.session.userRole = user.role || 'member';
+    setSessionIdentity(req, user);
     res.json({ ok: true, redirect: '/dashboard' });
   });
 });
@@ -580,7 +648,16 @@ app.get('/api/auth/me', requireAuth, (req, res) => {
   const user = userOps.findById(req.session.userId);
   const role = user ? user.role : 'member';
   req.session.userRole = role;
-  res.json({ id: req.session.userId, email: req.session.userEmail, name: req.session.userName, role });
+  const orgId = req.session.orgId || null;
+  const orgRole = orgId ? orgMemberOps.getRole(orgId, req.session.userId) : null;
+  const org = orgId ? orgOps.findById(orgId) : null;
+  const workspaces = orgMemberOps.listOrgsForUser(req.session.userId);
+  if (orgRole) req.session.orgRole = orgRole;
+  res.json({
+    id: req.session.userId, email: req.session.userEmail, name: req.session.userName, role,
+    org: org ? { id: org.id, slug: org.slug, name: org.name, domain: org.domain, role: orgRole } : null,
+    workspaces: workspaces.map(w => ({ id: w.id, slug: w.slug, name: w.name, role: w.role })),
+  });
 });
 
 // ─── TOTP setup routes ───
@@ -763,20 +840,185 @@ app.get('/sso/callback', rateLimit(60000, 10), async (req, res) => {
       user = userOps.create(email, claims.name || email);
     }
 
-    // Clear flow + regenerate session
+    // Clear flow + regenerate session. For SSO, pin the active org to the issuing org
+    // so the session lands in the workspace that initiated the flow.
     delete req.session.ssoFlow;
+    const ssoOrgId = org.id;
+    // Ensure SSO-provisioned user is a member of the issuing org (JIT provisioning).
+    if (!orgMemberOps.isMember(ssoOrgId, user.id)) {
+      orgMemberOps.add(ssoOrgId, user.id, 'member');
+    }
     req.session.regenerate((err) => {
       if (err) return res.status(500).send('Session error');
-      req.session.userId = user.id;
-      req.session.userEmail = user.email;
-      req.session.userName = user.name;
-      req.session.userRole = user.role || 'member';
+      setSessionIdentity(req, user, ssoOrgId);
       res.redirect('/dashboard');
     });
   } catch (err) {
     console.error('SSO callback error:', err.message);
     res.status(500).send('SSO login failed: ' + err.message);
   }
+});
+
+// ─── Org workspace management ───
+// All routes below require the user's active workspace (req.session.orgId)
+// and, where noted, per-org admin role via requireOrgRole('admin').
+
+app.get('/org', requireAuth, (req, res) => {
+  sendHtml(res, path.join(__dirname, 'public', 'org.html'));
+});
+
+// Current workspace metadata + counts
+app.get('/api/org', requireAuth, (req, res) => {
+  const orgId = req.session.orgId;
+  if (!orgId) return res.status(400).json({ error: 'No active workspace' });
+  const org = orgOps.findById(orgId);
+  if (!org) return res.status(404).json({ error: 'Workspace not found' });
+  const role = orgMemberOps.getRole(orgId, req.session.userId);
+  if (!role) return res.status(403).json({ error: 'Not a member of this workspace' });
+  const memberCount = orgMemberOps.listMembers(orgId).length;
+  const pendingInvites = role === 'admin' ? orgInviteOps.listPending(orgId).length : 0;
+  res.json({
+    org: { id: org.id, slug: org.slug, name: org.name, domain: org.domain },
+    role,
+    memberCount,
+    pendingInvites,
+  });
+});
+
+// Update workspace name (admin only)
+app.post('/api/org', requireAuth, requireOrgRole('admin'), (req, res) => {
+  const { name } = req.body;
+  if (!name || !String(name).trim()) return res.status(400).json({ error: 'Name required' });
+  const ok = orgOps.updateName(req.session.orgId, sanitize(String(name)));
+  res.json({ ok });
+});
+
+// List members
+app.get('/api/org/members', requireAuth, requireOrgRole('admin', 'member', 'viewer'), (req, res) => {
+  const members = orgMemberOps.listMembers(req.session.orgId);
+  res.json({ members, currentUserId: req.session.userId });
+});
+
+// Change a member's role (admin only)
+app.put('/api/org/members/:userId/role', requireAuth, requireOrgRole('admin'), (req, res) => {
+  const targetUserId = parseInt(req.params.userId, 10);
+  const { role } = req.body;
+  if (!ORG_ROLES.includes(role)) return res.status(400).json({ error: 'Invalid role' });
+  // Prevent removing the last admin
+  if (role !== 'admin') {
+    const current = orgMemberOps.getRole(req.session.orgId, targetUserId);
+    if (current === 'admin' && orgMemberOps.countAdmins(req.session.orgId) <= 1) {
+      return res.status(400).json({ error: 'Cannot demote the last admin of the workspace' });
+    }
+  }
+  const ok = orgMemberOps.setRole(req.session.orgId, targetUserId, role);
+  if (!ok) return res.status(404).json({ error: 'Member not found' });
+  res.json({ ok: true });
+});
+
+// Remove a member (admin only)
+app.delete('/api/org/members/:userId', requireAuth, requireOrgRole('admin'), (req, res) => {
+  const targetUserId = parseInt(req.params.userId, 10);
+  if (targetUserId === req.session.userId) return res.status(400).json({ error: 'Cannot remove yourself — transfer admin first' });
+  const role = orgMemberOps.getRole(req.session.orgId, targetUserId);
+  if (role === 'admin' && orgMemberOps.countAdmins(req.session.orgId) <= 1) {
+    return res.status(400).json({ error: 'Cannot remove the last admin' });
+  }
+  const ok = orgMemberOps.remove(req.session.orgId, targetUserId);
+  res.json({ ok });
+});
+
+// List pending invites (admin only)
+app.get('/api/org/invites', requireAuth, requireOrgRole('admin'), (req, res) => {
+  res.json({ invites: orgInviteOps.listPending(req.session.orgId) });
+});
+
+// Create an invite (admin only)
+app.post('/api/org/invites', requireAuth, requireOrgRole('admin'), rateLimit(60000, 20), async (req, res) => {
+  const inviteEmail = String(req.body.email || '').trim().toLowerCase();
+  const role = ORG_ROLES.includes(req.body.role) ? req.body.role : 'member';
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(inviteEmail)) return res.status(400).json({ error: 'Valid email required' });
+  // If user exists and is already a member, skip
+  const existingUser = userOps.findByEmail(inviteEmail);
+  if (existingUser && orgMemberOps.isMember(req.session.orgId, existingUser.id)) {
+    return res.status(400).json({ error: 'User is already a member of this workspace' });
+  }
+  const inv = orgInviteOps.create(req.session.orgId, inviteEmail, role, req.session.userId);
+  const org = orgOps.findById(req.session.orgId);
+  const inviteUrl = `${BASE_URL}/invite/${inv.token}`;
+  // Send invite email (non-blocking — log if fails but still return success with URL)
+  try {
+    const brand = userOps.getBranding(req.session.userId) || {};
+    await email.sendInvite(inviteEmail, {
+      orgName: org.name,
+      inviterName: req.session.userName || req.session.userEmail,
+      role,
+      url: inviteUrl,
+    }, brand);
+  } catch (err) {
+    console.error('Invite email failed:', err.message);
+  }
+  res.json({ ok: true, url: inviteUrl, expires_at: inv.expires });
+});
+
+// Revoke invite (admin only)
+app.delete('/api/org/invites/:id', requireAuth, requireOrgRole('admin'), (req, res) => {
+  const ok = orgInviteOps.revoke(parseInt(req.params.id, 10), req.session.orgId);
+  res.json({ ok });
+});
+
+// Accept invite — public page (user signs in / signs up if needed, then POSTs below)
+app.get('/invite/:token', (req, res) => {
+  sendHtml(res, path.join(__dirname, 'public', 'accept-invite.html'));
+});
+
+app.get('/api/invite/:token', (req, res) => {
+  const inv = orgInviteOps.findByToken(String(req.params.token));
+  if (!inv) return res.status(404).json({ error: 'Invite not found or expired' });
+  res.json({
+    email: inv.email,
+    org_name: inv.org_name,
+    role: inv.role,
+    inviter_email: inv.inviter_email,
+    signed_in: !!(req.session && req.session.userId),
+    signed_in_email: req.session && req.session.userEmail ? req.session.userEmail : null,
+  });
+});
+
+// Accept invite — requires signed-in session with matching email
+app.post('/api/invite/:token/accept', requireAuth, rateLimit(60000, 10), (req, res) => {
+  const inv = orgInviteOps.findByToken(String(req.params.token));
+  if (!inv) return res.status(404).json({ error: 'Invite not found or expired' });
+  // Email must match the authenticated user (case-insensitive)
+  if (String(req.session.userEmail).toLowerCase() !== String(inv.email).toLowerCase()) {
+    return res.status(403).json({ error: `This invite is for ${inv.email}. Sign in with that email.` });
+  }
+  // Add membership, mark invite accepted atomically
+  orgMemberOps.add(inv.org_id, req.session.userId, inv.role);
+  const accepted = orgInviteOps.markAccepted(inv.id);
+  if (!accepted) return res.status(409).json({ error: 'Invite already accepted' });
+  // Switch active workspace to the newly joined org
+  req.session.orgId = inv.org_id;
+  req.session.orgRole = inv.role;
+  res.json({ ok: true, org_slug: inv.org_slug });
+});
+
+// List workspaces user belongs to
+app.get('/api/org/workspaces', requireAuth, (req, res) => {
+  const workspaces = orgMemberOps.listOrgsForUser(req.session.userId);
+  res.json({ workspaces, currentOrgId: req.session.orgId });
+});
+
+// Switch active workspace
+app.post('/api/org/switch', requireAuth, (req, res) => {
+  const targetOrgId = parseInt(req.body.orgId, 10);
+  if (!targetOrgId) return res.status(400).json({ error: 'orgId required' });
+  if (!orgMemberOps.isMember(targetOrgId, req.session.userId)) {
+    return res.status(403).json({ error: 'Not a member of that workspace' });
+  }
+  req.session.orgId = targetOrgId;
+  req.session.orgRole = orgMemberOps.getRole(targetOrgId, req.session.userId);
+  res.json({ ok: true });
 });
 
 // ─── Branding / white-label ───
@@ -815,33 +1057,40 @@ app.get('/analytics', requireAuth, requireRole('admin', 'member'), (req, res) =>
 app.get('/api/analytics/summary', requireAuth, requireRole('admin', 'member'), (req, res) => {
   const db = require('./database').db;
   const userId = req.session.userId;
+  const orgId = req.session.orgId || null;
   const days = Math.min(Math.max(parseInt(req.query.days, 10) || 30, 1), 365);
   const since = `datetime('now', '-${days} days')`;
+  // Scope: if the session has an active workspace, roll up by org; else fall back to user-scoped
+  const docScope = orgId ? 'org_id = ?' : 'created_by = ?';
+  const docJoinScope = orgId ? 'd.org_id = ?' : 'd.created_by = ?';
+  const tplScope = orgId ? 'org_id = ?' : 'user_id = ?';
+  const whScope = orgId ? 'org_id = ?' : 'user_id = ?';
+  const scopeParam = orgId || userId;
 
   try {
-    // Document stats (owned docs only)
+    // Document stats (workspace-scoped)
     const totals = db.prepare(`SELECT
       COUNT(*) as total,
       SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as completed,
       SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) as pending,
       SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END) as cancelled,
       SUM(CASE WHEN status='draft' THEN 1 ELSE 0 END) as draft
-      FROM documents WHERE created_by = ? AND created_at >= ${since}`).get(userId);
+      FROM documents WHERE ${docScope} AND created_at >= ${since}`).get(scopeParam);
 
     // Average time-to-sign in hours (for completed documents)
     const timing = db.prepare(`SELECT
       AVG((julianday(completed_at) - julianday(created_at)) * 24) as avg_hours,
       MIN((julianday(completed_at) - julianday(created_at)) * 24) as min_hours,
       MAX((julianday(completed_at) - julianday(created_at)) * 24) as max_hours
-      FROM documents WHERE created_by = ? AND status='completed' AND completed_at IS NOT NULL AND created_at >= ${since}`).get(userId);
+      FROM documents WHERE ${docScope} AND status='completed' AND completed_at IS NOT NULL AND created_at >= ${since}`).get(scopeParam);
 
     // Daily activity (documents sent per day)
     const daily = db.prepare(`SELECT
       date(created_at) as day,
       COUNT(*) as sent,
       SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as completed
-      FROM documents WHERE created_by = ? AND created_at >= ${since}
-      GROUP BY date(created_at) ORDER BY day`).all(userId);
+      FROM documents WHERE ${docScope} AND created_at >= ${since}
+      GROUP BY date(created_at) ORDER BY day`).all(scopeParam);
 
     // Per-signer signing rate (how many signers signed vs how many were sent)
     const signerStats = db.prepare(`SELECT
@@ -849,18 +1098,18 @@ app.get('/api/analytics/summary', requireAuth, requireRole('admin', 'member'), (
       SUM(CASE WHEN s.status='signed' THEN 1 ELSE 0 END) as signed,
       AVG(CASE WHEN s.signed_at IS NOT NULL THEN s.reminder_count ELSE NULL END) as avg_reminders_before_sign
       FROM signers s JOIN documents d ON s.document_id = d.id
-      WHERE d.created_by = ? AND d.created_at >= ${since} AND s.role != 'cc'`).get(userId);
+      WHERE ${docJoinScope} AND d.created_at >= ${since} AND s.role != 'cc'`).get(scopeParam);
 
     // Template usage (most-used templates in period)
     const templateUsage = db.prepare(`SELECT name, public_submissions, is_public FROM templates
-      WHERE user_id = ? ORDER BY public_submissions DESC LIMIT 5`).all(userId);
+      WHERE ${tplScope} ORDER BY public_submissions DESC LIMIT 5`).all(scopeParam);
 
     // Webhook health (recent firings)
     const webhookHealth = db.prepare(`SELECT
       COUNT(*) as total,
       SUM(CASE WHEN last_status LIKE '2%' THEN 1 ELSE 0 END) as ok,
       SUM(CASE WHEN last_status IS NOT NULL AND last_status NOT LIKE '2%' THEN 1 ELSE 0 END) as failing
-      FROM webhooks WHERE user_id = ? AND active = 1`).get(userId);
+      FROM webhooks WHERE ${whScope} AND active = 1`).get(scopeParam);
 
     // Completion rate
     const totalSent = (totals.completed || 0) + (totals.pending || 0) + (totals.cancelled || 0);
@@ -901,7 +1150,10 @@ app.get('/api/analytics/summary', requireAuth, requireRole('admin', 'member'), (
 app.get('/api/analytics/funnel', requireAuth, requireRole('admin', 'member'), (req, res) => {
   const db = require('./database').db;
   const userId = req.session.userId;
+  const orgId = req.session.orgId || null;
   const days = Math.min(Math.max(parseInt(req.query.days, 10) || 30, 1), 365);
+  const scope = orgId ? 'd.org_id = ?' : 'd.created_by = ?';
+  const scopeParam = orgId || userId;
   try {
     // Funnel: sent -> signed/declined/still-pending (per-signer)
     const funnel = db.prepare(`SELECT
@@ -912,7 +1164,7 @@ app.get('/api/analytics/funnel', requireAuth, requireRole('admin', 'member'), (r
       SUM(CASE WHEN s.status = 'skipped' THEN 1 ELSE 0 END) as skipped,
       SUM(CASE WHEN s.reassigned_at IS NOT NULL THEN 1 ELSE 0 END) as reassigned
       FROM signers s JOIN documents d ON s.document_id = d.id
-      WHERE d.created_by = ? AND d.created_at >= datetime('now', '-${days} days') AND s.role != 'cc'`).get(userId);
+      WHERE ${scope} AND d.created_at >= datetime('now', '-${days} days') AND s.role != 'cc'`).get(scopeParam);
 
     // Bottleneck: average hours pending per sign_order position
     const bottlenecks = db.prepare(`SELECT
@@ -922,18 +1174,18 @@ app.get('/api/analytics/funnel', requireAuth, requireRole('admin', 'member'), (r
       AVG(s.reminder_count) as avg_reminders,
       SUM(CASE WHEN s.status = 'declined' THEN 1 ELSE 0 END) as declined_count
       FROM signers s JOIN documents d ON s.document_id = d.id
-      WHERE d.created_by = ? AND d.created_at >= datetime('now', '-${days} days') AND s.role != 'cc'
+      WHERE ${scope} AND d.created_at >= datetime('now', '-${days} days') AND s.role != 'cc'
       GROUP BY s.sign_order
       ORDER BY s.sign_order
-      LIMIT 10`).all(userId);
+      LIMIT 10`).all(scopeParam);
 
     // Dropoff rate: docs that got stuck at each step
     const dropoff = db.prepare(`SELECT
       s.sign_order as step,
       SUM(CASE WHEN s.status IN ('sent','pending') AND d.status = 'pending' THEN 1 ELSE 0 END) as stuck
       FROM signers s JOIN documents d ON s.document_id = d.id
-      WHERE d.created_by = ? AND d.created_at >= datetime('now', '-${days} days') AND s.role != 'cc'
-      GROUP BY s.sign_order ORDER BY s.sign_order LIMIT 10`).all(userId);
+      WHERE ${scope} AND d.created_at >= datetime('now', '-${days} days') AND s.role != 'cc'
+      GROUP BY s.sign_order ORDER BY s.sign_order LIMIT 10`).all(scopeParam);
 
     res.json({
       period_days: days,
@@ -956,7 +1208,10 @@ app.get('/api/analytics/funnel', requireAuth, requireRole('admin', 'member'), (r
 app.get('/api/analytics/export.csv', requireAuth, requireRole('admin', 'member'), (req, res) => {
   const db = require('./database').db;
   const userId = req.session.userId;
+  const orgId = req.session.orgId || null;
   const days = Math.min(Math.max(parseInt(req.query.days, 10) || 90, 1), 365);
+  const scope = orgId ? 'd.org_id = ?' : 'd.created_by = ?';
+  const scopeParam = orgId || userId;
   try {
     const rows = db.prepare(`SELECT
       d.uuid, d.title, d.status, d.signing_mode, d.created_at, d.completed_at,
@@ -964,8 +1219,8 @@ app.get('/api/analytics/export.csv', requireAuth, requireRole('admin', 'member')
       (SELECT COUNT(*) FROM signers WHERE document_id = d.id AND status = 'signed') as signed_count,
       (SELECT COUNT(*) FROM signers WHERE document_id = d.id AND status = 'declined') as declined_count,
       d.bulk_group_id
-      FROM documents d WHERE d.created_by = ? AND d.created_at >= datetime('now', '-${days} days')
-      ORDER BY d.created_at DESC`).all(userId);
+      FROM documents d WHERE ${scope} AND d.created_at >= datetime('now', '-${days} days')
+      ORDER BY d.created_at DESC`).all(scopeParam);
 
     const escCsv = (v) => {
       if (v == null) return '';
@@ -1028,13 +1283,16 @@ app.get('/dashboard', requireAuth, (req, res) => {
 });
 
 app.get('/api/documents', requireAuth, (req, res) => {
-  const docs = docOps.listByUser(req.session.userId);
+  // Org-scoped: all docs in the active workspace. Falls back to user-scoped
+  // for legacy sessions that don't have an orgId set.
+  const orgId = req.session.orgId;
+  const docs = orgId ? docOps.listByOrg(orgId) : docOps.listByUser(req.session.userId);
   const enriched = docs.map(doc => {
     const signers = signerOps.listByDocument(doc.id);
     const signed = signers.filter(s => s.status === 'signed').length;
     return { ...doc, signers, signedCount: signed, totalSigners: signers.length };
   });
-  res.json({ documents: enriched, user: { email: req.session.userEmail, name: req.session.userName, role: req.session.userRole || 'member' } });
+  res.json({ documents: enriched, user: { email: req.session.userEmail, name: req.session.userName, role: req.session.userRole || 'member', org_role: req.session.orgRole || null } });
 });
 
 // ─── Create Signing Request ───
@@ -1095,7 +1353,7 @@ app.post('/api/documents/create', requireAuth, requireRole('admin', 'member'), (
     const hash = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
 
     // Create document record
-    const doc = docOps.create(req.session.userId, cleanTitle, cleanFilename, hash, cleanMessage, cleanMode);
+    const doc = docOps.create(req.session.userId, cleanTitle, cleanFilename, hash, cleanMessage, cleanMode, req.session.orgId || null);
 
     // Save PDF file
     fs.writeFileSync(path.join(storageDir, `${doc.uuid}.pdf`), req.file.buffer);
@@ -1236,7 +1494,7 @@ app.post('/api/documents/bulk-create', requireAuth, requireRole('admin', 'member
     const created = [];
 
     for (const r of cleanRecipients) {
-      const doc = docOps.create(req.session.userId, cleanTitle, cleanFilename, hash, cleanMessage, 'sequential');
+      const doc = docOps.create(req.session.userId, cleanTitle, cleanFilename, hash, cleanMessage, 'sequential', req.session.orgId || null);
       docOps.setBulkGroup(doc.id, groupId);
       // Each recipient gets their own copy of the PDF (saves bytes via hardlink? no, simpler to copy)
       fs.writeFileSync(path.join(storageDir, `${doc.uuid}.pdf`), req.file.buffer);
@@ -1551,11 +1809,11 @@ app.post('/api/sign/:token/attachments', rateLimit(60000, 10), (req, res, next) 
   res.json({ ok: true, filename: safeOriginal, size: req.file.size });
 });
 
-// Document owner downloads a signer's attachment (decrypted on the fly)
+// Document owner / workspace member downloads a signer's attachment (decrypted on the fly)
 app.get('/api/documents/:uuid/attachments/:signerId/:index', requireAuth, (req, res) => {
   const doc = docOps.findByUUID(req.params.uuid);
   if (!doc) return res.status(404).json({ error: 'Not found' });
-  if (doc.created_by !== req.session.userId) return res.status(403).json({ error: 'Access denied' });
+  if (!docAccessibleToSession(doc, req)) return res.status(403).json({ error: 'Access denied' });
   const signerId = parseInt(req.params.signerId, 10);
   const signer = signerOps.findById(signerId);
   if (!signer || signer.document_id !== doc.id) return res.status(404).json({ error: 'Not found' });
@@ -1859,11 +2117,11 @@ app.post('/api/sign/:token/submit', rateLimit(60000, 10), async (req, res) => {
   res.json({ ok: true, completed: false });
 });
 
-// ─── Cancel a document (creator only, while pending) ───
+// ─── Cancel a document (creator or workspace admin, while pending) ───
 app.post('/api/documents/:uuid/cancel', requireAuth, requireRole('admin', 'member'), (req, res) => {
   const doc = docOps.findByUUID(req.params.uuid);
   if (!doc) return res.status(404).json({ error: 'Not found' });
-  if (doc.created_by !== req.session.userId) return res.status(403).json({ error: 'Access denied' });
+  if (!docMutableBySession(doc, req)) return res.status(403).json({ error: 'Only the creator or a workspace admin can cancel this document' });
   if (doc.status === 'completed') return res.status(400).json({ error: 'Already completed' });
   if (doc.status === 'cancelled') return res.status(400).json({ error: 'Already cancelled' });
   docOps.cancel(doc.id);
@@ -1873,11 +2131,11 @@ app.post('/api/documents/:uuid/cancel', requireAuth, requireRole('admin', 'membe
   res.json({ ok: true });
 });
 
-// ─── Resend signing request to a specific signer (creator only) ───
+// ─── Resend signing request to a specific signer (creator or workspace admin) ───
 app.post('/api/documents/:uuid/signers/:signerId/resend', requireAuth, requireRole('admin', 'member'), async (req, res) => {
   const doc = docOps.findByUUID(req.params.uuid);
   if (!doc) return res.status(404).json({ error: 'Not found' });
-  if (doc.created_by !== req.session.userId) return res.status(403).json({ error: 'Access denied' });
+  if (!docMutableBySession(doc, req)) return res.status(403).json({ error: 'Only the creator or a workspace admin can resend' });
   if (doc.status !== 'pending') return res.status(400).json({ error: 'Document not pending' });
 
   const signer = signerOps.findById(parseInt(req.params.signerId, 10));
@@ -2126,7 +2384,7 @@ async function generateFinalPdf(documentId) {
 app.get('/api/documents/:uuid/download', requireAuth, (req, res) => {
   const doc = docOps.findByUUID(req.params.uuid);
   if (!doc) return res.status(404).json({ error: 'Not found' });
-  if (doc.created_by !== req.session.userId) return res.status(403).json({ error: 'Access denied' });
+  if (!docAccessibleToSession(doc, req)) return res.status(403).json({ error: 'Access denied' });
 
   const signedPath = path.join(storageDir, `${doc.uuid}_signed.pdf`);
   const originalPath = path.join(storageDir, `${doc.uuid}.pdf`);
@@ -2144,7 +2402,7 @@ app.get('/api/documents/:uuid/download', requireAuth, (req, res) => {
 app.get('/api/documents/:uuid/timestamp', requireAuth, (req, res) => {
   const doc = docOps.findByUUID(req.params.uuid);
   if (!doc) return res.status(404).json({ error: 'Not found' });
-  if (doc.created_by !== req.session.userId) return res.status(403).json({ error: 'Access denied' });
+  if (!docAccessibleToSession(doc, req)) return res.status(403).json({ error: 'Access denied' });
   if (!doc.tsa_token_path || !fs.existsSync(doc.tsa_token_path)) {
     return res.status(404).json({ error: 'No timestamp token available for this document' });
   }
@@ -2157,7 +2415,7 @@ app.get('/api/documents/:uuid/timestamp', requireAuth, (req, res) => {
 app.get('/api/documents/:uuid', requireAuth, (req, res) => {
   const doc = docOps.findByUUID(req.params.uuid);
   if (!doc) return res.status(404).json({ error: 'Not found' });
-  if (doc.created_by !== req.session.userId) return res.status(403).json({ error: 'Access denied' });
+  if (!docAccessibleToSession(doc, req)) return res.status(403).json({ error: 'Access denied' });
 
   const signers = signerOps.listByDocument(doc.id);
   // Strip tokens — only show sign URLs when email is NOT configured (owner needs to share manually)
@@ -2188,19 +2446,24 @@ app.get('/templates', requireAuth, (req, res) => {
 });
 
 app.get('/api/templates', requireAuth, (req, res) => {
-  const list = templateOps.listByUser(req.session.userId).map(t => ({
+  const orgId = req.session.orgId;
+  const rows = orgId ? templateOps.listByOrg(orgId) : templateOps.listByUser(req.session.userId);
+  const list = rows.map(t => ({
     uuid: t.uuid, name: t.name, title: t.title, message: t.message,
     signing_mode: t.signing_mode, has_pdf: !!t.has_pdf, pdf_filename: t.pdf_filename,
     signers: JSON.parse(t.signers_json || '[]'),
     fields_count: JSON.parse(t.fields_json || '[]').length,
     is_public: !!t.is_public, public_slug: t.public_slug, public_submissions: t.public_submissions || 0,
     created_at: t.created_at,
+    owner_email: t.owner_email || null,
+    owner_id: t.user_id,
   }));
   res.json({ templates: list });
 });
 
 app.get('/api/templates/:uuid', requireAuth, (req, res) => {
-  const tpl = templateOps.findByUUID(req.params.uuid, req.session.userId);
+  const orgId = req.session.orgId;
+  const tpl = orgId ? templateOps.findByUUIDInOrg(req.params.uuid, orgId) : templateOps.findByUUID(req.params.uuid, req.session.userId);
   if (!tpl) return res.status(404).json({ error: 'Not found' });
   res.json({
     uuid: tpl.uuid, name: tpl.name, title: tpl.title, message: tpl.message,
@@ -2250,6 +2513,7 @@ app.post('/api/templates', requireAuth, (req, res, next) => {
       pdfHash,
       pdfFilename,
       fields: fields ? cleanFieldList(JSON.parse(fields)) : [],
+      orgId: req.session.orgId || null,
     });
 
     if (pdfBuffer) {
@@ -2264,9 +2528,15 @@ app.post('/api/templates', requireAuth, (req, res, next) => {
 });
 
 app.delete('/api/templates/:uuid', requireAuth, (req, res) => {
-  const tpl = templateOps.findByUUID(req.params.uuid, req.session.userId);
+  // Org-scoped: admin can delete anyone's template in the workspace; member can only delete their own
+  const orgId = req.session.orgId;
+  const tpl = orgId ? templateOps.findByUUIDInOrg(req.params.uuid, orgId) : templateOps.findByUUID(req.params.uuid, req.session.userId);
   if (!tpl) return res.status(404).json({ error: 'Not found' });
-  templateOps.delete(req.params.uuid, req.session.userId);
+  const role = orgId ? orgMemberOps.getRole(orgId, req.session.userId) : req.session.userRole;
+  const canDelete = tpl.user_id === req.session.userId || role === 'admin';
+  if (!canDelete) return res.status(403).json({ error: 'Only the template owner or a workspace admin can delete this template' });
+  if (orgId) templateOps.deleteInOrg(req.params.uuid, orgId);
+  else templateOps.delete(req.params.uuid, req.session.userId);
   const pdfPath = path.join(templatesDir, `${req.params.uuid}.pdf`);
   if (fs.existsSync(pdfPath)) fs.unlinkSync(pdfPath);
   res.json({ ok: true });
@@ -2274,16 +2544,18 @@ app.delete('/api/templates/:uuid', requireAuth, (req, res) => {
 
 // ─── Publish / unpublish template as public web form ───
 app.post('/api/templates/:uuid/publish', requireAuth, requireRole('admin', 'member'), (req, res) => {
-  const tpl = templateOps.findByUUID(req.params.uuid, req.session.userId);
+  const orgId = req.session.orgId;
+  const tpl = orgId ? templateOps.findByUUIDInOrg(req.params.uuid, orgId) : templateOps.findByUUID(req.params.uuid, req.session.userId);
   if (!tpl) return res.status(404).json({ error: 'Not found' });
   if (!tpl.has_pdf) return res.status(400).json({ error: 'Template must include a PDF to be published as a public form' });
-  const slug = tpl.public_slug || templateOps.publish(req.params.uuid, req.session.userId);
+  const slug = tpl.public_slug || (orgId ? templateOps.publishInOrg(req.params.uuid, orgId) : templateOps.publish(req.params.uuid, req.session.userId));
   if (!slug) return res.status(500).json({ error: 'Failed to publish template' });
   res.json({ ok: true, slug, url: `${BASE_URL}/f/${slug}` });
 });
 
 app.post('/api/templates/:uuid/unpublish', requireAuth, requireRole('admin', 'member'), (req, res) => {
-  const ok = templateOps.unpublish(req.params.uuid, req.session.userId);
+  const orgId = req.session.orgId;
+  const ok = orgId ? templateOps.unpublishInOrg(req.params.uuid, orgId) : templateOps.unpublish(req.params.uuid, req.session.userId);
   res.json({ ok });
 });
 
@@ -2337,7 +2609,8 @@ app.post('/api/public/forms/:slug/submit', rateLimit(60000, 3), async (req, res)
     // Create a new document owned by the template owner
     const cleanFilename = sanitize(tpl.pdf_filename || 'form.pdf').replace(/[^\w.\-() ]/g, '_');
     const title = sanitize(tpl.title || tpl.name || 'Public Form') + ' — ' + cleanName;
-    const doc = docOps.create(tpl.user_id, title, cleanFilename, hash, tpl.message || '', 'sequential');
+    // Inherit the template's org so the doc is visible to the workspace, not just the template owner
+    const doc = docOps.create(tpl.user_id, title, cleanFilename, hash, tpl.message || '', 'sequential', tpl.org_id || null);
     fs.writeFileSync(path.join(storageDir, `${doc.uuid}.pdf`), pdfBuffer);
 
     // Copy template fields
@@ -2391,7 +2664,8 @@ app.post('/api/public/forms/:slug/submit', rateLimit(60000, 3), async (req, res)
 
 // Serve a template PDF (used by send.html when the user picks a template)
 app.get('/api/templates/:uuid/pdf', requireAuth, (req, res) => {
-  const tpl = templateOps.findByUUID(req.params.uuid, req.session.userId);
+  const orgId = req.session.orgId;
+  const tpl = orgId ? templateOps.findByUUIDInOrg(req.params.uuid, orgId) : templateOps.findByUUID(req.params.uuid, req.session.userId);
   if (!tpl || !tpl.has_pdf) return res.status(404).json({ error: 'No PDF in template' });
   const pdfPath = path.join(templatesDir, `${tpl.uuid}.pdf`);
   if (!fs.existsSync(pdfPath)) return res.status(404).json({ error: 'PDF file missing' });
@@ -2399,40 +2673,42 @@ app.get('/api/templates/:uuid/pdf', requireAuth, (req, res) => {
   res.sendFile(pdfPath);
 });
 
-// ─── Settings page (API keys + webhooks) ───
-app.get('/settings', requireAuth, requireRole('admin'), (req, res) => {
+// ─── Settings page (API keys + webhooks) — open to any authenticated user;
+// the page itself gates admin-only sections by checking /api/org role ───
+app.get('/settings', requireAuth, (req, res) => {
   sendHtml(res, path.join(__dirname, 'public', 'settings.html'));
 });
 
-// API key management (session auth)
-app.get('/api/settings/keys', requireAuth, requireRole('admin'), (req, res) => {
-  res.json({ keys: apiKeyOps.listByUser(req.session.userId) });
+// API key management (session auth) — org-scoped so all admins in a workspace share the same key set
+app.get('/api/settings/keys', requireAuth, requireOrgRole('admin'), (req, res) => {
+  res.json({ keys: apiKeyOps.listByOrg(req.session.orgId) });
 });
-app.post('/api/settings/keys', requireAuth, requireRole('admin'), (req, res) => {
+app.post('/api/settings/keys', requireAuth, requireOrgRole('admin'), (req, res) => {
   const name = sanitize(req.body.name || '');
   if (!name) return res.status(400).json({ error: 'Name required' });
   const scope = req.body.scope === 'ro' ? 'ro' : 'rw';
-  const created = apiKeyOps.create(req.session.userId, name, scope);
+  const created = apiKeyOps.create(req.session.userId, name, scope, req.session.orgId);
   res.json({ ok: true, name, plaintext: created.plaintext, prefix: created.prefix, scope: created.scope });
 });
-app.delete('/api/settings/keys/:id', requireAuth, requireRole('admin'), (req, res) => {
-  const ok = apiKeyOps.revoke(parseInt(req.params.id, 10), req.session.userId);
+app.delete('/api/settings/keys/:id', requireAuth, requireOrgRole('admin'), (req, res) => {
+  const ok = apiKeyOps.revokeInOrg(parseInt(req.params.id, 10), req.session.orgId);
   res.json({ ok });
 });
 
-// Webhook management
-app.get('/api/settings/webhooks', requireAuth, requireRole('admin'), (req, res) => {
-  const list = webhookOps.listByUser(req.session.userId).map(w => ({
+// Webhook management — org-scoped
+app.get('/api/settings/webhooks', requireAuth, requireOrgRole('admin'), (req, res) => {
+  const list = webhookOps.listByOrg(req.session.orgId).map(w => ({
     id: w.id, url: w.url,
     // Secret redacted — only shown once at creation time
     secret_prefix: w.secret ? w.secret.slice(0, 10) + '...' : '',
     events: JSON.parse(w.events_json || '[]'),
     active: !!w.active, last_status: w.last_status, last_fired_at: w.last_fired_at,
     created_at: w.created_at,
+    created_by_email: w.created_by_email || null,
   }));
   res.json({ webhooks: list });
 });
-app.post('/api/settings/webhooks', requireAuth, requireRole('admin'), async (req, res) => {
+app.post('/api/settings/webhooks', requireAuth, requireOrgRole('admin'), async (req, res) => {
   const url = (req.body.url || '').trim();
   if (!url || !/^https:\/\//i.test(url)) return res.status(400).json({ error: 'Valid https:// URL required (plain http is not allowed for webhooks)' });
   // Defense-in-depth: reject private / link-local / loopback URLs at creation, not only at fire time
@@ -2442,15 +2718,15 @@ app.post('/api/settings/webhooks', requireAuth, requireRole('admin'), async (req
   const allowed = ['*', 'document.sent', 'document.signed_by', 'document.completed', 'document.cancelled'];
   const cleanEvents = events.filter(e => allowed.includes(e));
   if (!cleanEvents.length) return res.status(400).json({ error: 'No valid events' });
-  const created = webhookOps.create(req.session.userId, url, cleanEvents);
+  const created = webhookOps.create(req.session.userId, url, cleanEvents, req.session.orgId);
   res.json({ ok: true, id: created.id, secret: created.secret });
 });
-app.post('/api/settings/webhooks/:id/toggle', requireAuth, requireRole('admin'), (req, res) => {
-  const ok = webhookOps.toggle(parseInt(req.params.id, 10), req.session.userId, !!req.body.active);
+app.post('/api/settings/webhooks/:id/toggle', requireAuth, requireOrgRole('admin'), (req, res) => {
+  const ok = webhookOps.toggleInOrg(parseInt(req.params.id, 10), req.session.orgId, !!req.body.active);
   res.json({ ok });
 });
-app.delete('/api/settings/webhooks/:id', requireAuth, requireRole('admin'), (req, res) => {
-  const ok = webhookOps.delete(parseInt(req.params.id, 10), req.session.userId);
+app.delete('/api/settings/webhooks/:id', requireAuth, requireOrgRole('admin'), (req, res) => {
+  const ok = webhookOps.deleteInOrg(parseInt(req.params.id, 10), req.session.orgId);
   res.json({ ok });
 });
 
@@ -2460,7 +2736,8 @@ app.get('/api/v1/me', requireApiKey('ro'), (req, res) => {
 });
 
 app.get('/api/v1/documents', requireApiKey('ro'), (req, res) => {
-  const docs = docOps.listByUser(req.apiUser.id).map(d => {
+  const rows = req.apiOrgId ? docOps.listByOrg(req.apiOrgId) : docOps.listByUser(req.apiUser.id);
+  const docs = rows.map(d => {
     const signers = signerOps.listByDocument(d.id);
     return {
       uuid: d.uuid, title: d.title, status: d.status, signing_mode: d.signing_mode,
@@ -2476,7 +2753,10 @@ app.get('/api/v1/documents', requireApiKey('ro'), (req, res) => {
 
 app.get('/api/v1/documents/:uuid', requireApiKey('ro'), (req, res) => {
   const doc = docOps.findByUUID(req.params.uuid);
-  if (!doc || doc.created_by !== req.apiUser.id) return res.status(404).json({ error: 'Not found' });
+  // Org members all share document access; legacy keys fall back to creator-match
+  if (!doc) return res.status(404).json({ error: 'Not found' });
+  const accessible = req.apiOrgId ? (doc.org_id === req.apiOrgId) : (doc.created_by === req.apiUser.id);
+  if (!accessible) return res.status(404).json({ error: 'Not found' });
   const signers = signerOps.listByDocument(doc.id);
   res.json({
     uuid: doc.uuid, title: doc.title, status: doc.status, signing_mode: doc.signing_mode,
@@ -2529,7 +2809,9 @@ app.post('/api/v1/documents', requireApiKey('rw'), (req, res, next) => {
     const cleanMessage = sanitize(message);
     const hash = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
 
-    const doc = docOps.create(req.apiUser.id, cleanTitle, cleanFilename, hash, cleanMessage, cleanMode);
+    // API keys carry their own org_id (stamped at key creation); use it so API-created docs
+    // land in the same workspace as the key.
+    const doc = docOps.create(req.apiUser.id, cleanTitle, cleanFilename, hash, cleanMessage, cleanMode, req.apiOrgId || null);
     fs.writeFileSync(path.join(storageDir, `${doc.uuid}.pdf`), req.file.buffer);
 
     for (let i = 0; i < cleanSigners.length; i++) {
@@ -2572,7 +2854,9 @@ app.post('/api/v1/documents', requireApiKey('rw'), (req, res, next) => {
 
 app.post('/api/v1/documents/:uuid/cancel', requireApiKey('rw'), (req, res) => {
   const doc = docOps.findByUUID(req.params.uuid);
-  if (!doc || doc.created_by !== req.apiUser.id) return res.status(404).json({ error: 'Not found' });
+  if (!doc) return res.status(404).json({ error: 'Not found' });
+  const accessible = req.apiOrgId ? (doc.org_id === req.apiOrgId) : (doc.created_by === req.apiUser.id);
+  if (!accessible) return res.status(404).json({ error: 'Not found' });
   if (doc.status === 'completed') return res.status(400).json({ error: 'Already completed' });
   if (doc.status === 'cancelled') return res.status(400).json({ error: 'Already cancelled' });
   docOps.cancel(doc.id);
@@ -2582,7 +2866,9 @@ app.post('/api/v1/documents/:uuid/cancel', requireApiKey('rw'), (req, res) => {
 
 app.get('/api/v1/documents/:uuid/download', requireApiKey('ro'), (req, res) => {
   const doc = docOps.findByUUID(req.params.uuid);
-  if (!doc || doc.created_by !== req.apiUser.id) return res.status(404).json({ error: 'Not found' });
+  if (!doc) return res.status(404).json({ error: 'Not found' });
+  const accessible = req.apiOrgId ? (doc.org_id === req.apiOrgId) : (doc.created_by === req.apiUser.id);
+  if (!accessible) return res.status(404).json({ error: 'Not found' });
   if (doc.status !== 'completed') return res.status(409).json({ error: 'Document not completed yet' });
   const signedPath = path.join(storageDir, `${doc.uuid}_signed.pdf`);
   const finalPath = fs.existsSync(signedPath) ? signedPath : path.join(storageDir, `${doc.uuid}.pdf`);
@@ -2593,16 +2879,18 @@ app.get('/api/v1/documents/:uuid/download', requireApiKey('ro'), (req, res) => {
 });
 
 app.get('/api/v1/templates', requireApiKey('ro'), (req, res) => {
-  const list = templateOps.listByUser(req.apiUser.id).map(t => ({
+  const rows = req.apiOrgId ? templateOps.listByOrg(req.apiOrgId) : templateOps.listByUser(req.apiUser.id);
+  const list = rows.map(t => ({
     uuid: t.uuid, name: t.name, title: t.title, signing_mode: t.signing_mode,
     has_pdf: !!t.has_pdf, created_at: t.created_at,
   }));
   res.json({ templates: list });
 });
 
-// ─── API v1: Webhooks (Zapier/Make compatible) ───
+// ─── API v1: Webhooks (Zapier/Make compatible) — org-scoped for shared-workspace webhooks ───
 app.get('/api/v1/webhooks', requireApiKey('ro'), (req, res) => {
-  const hooks = webhookOps.listByUser(req.apiUser.id).map(w => ({
+  const rows = req.apiOrgId ? webhookOps.listByOrg(req.apiOrgId) : webhookOps.listByUser(req.apiUser.id);
+  const hooks = rows.map(w => ({
     id: w.id, url: w.url, events: JSON.parse(w.events_json || '["*"]'),
     active: !!w.active, last_status: w.last_status, last_fired_at: w.last_fired_at, created_at: w.created_at,
   }));
@@ -2619,12 +2907,12 @@ app.post('/api/v1/webhooks', requireApiKey('rw'), async (req, res) => {
     if (!check.ok) return res.status(400).json({ error: `Webhook URL rejected (${check.reason}) — public HTTPS endpoints only` });
   } catch (e) { return res.status(400).json({ error: e.message }); }
   const cleanEvents = Array.isArray(events) ? events.filter(e => ['*', 'document.sent', 'document.signed_by', 'document.completed', 'document.cancelled', 'document.expired'].includes(e)) : ['*'];
-  const result = webhookOps.create(req.apiUser.id, url, cleanEvents);
+  const result = webhookOps.create(req.apiUser.id, url, cleanEvents, req.apiOrgId || null);
   res.json({ ok: true, id: result.id, secret: result.secret });
 });
 
 app.delete('/api/v1/webhooks/:id', requireApiKey('rw'), (req, res) => {
-  const deleted = webhookOps.delete(parseInt(req.params.id, 10), req.apiUser.id);
+  const deleted = req.apiOrgId ? webhookOps.deleteInOrg(parseInt(req.params.id, 10), req.apiOrgId) : webhookOps.delete(parseInt(req.params.id, 10), req.apiUser.id);
   if (!deleted) return res.status(404).json({ error: 'Webhook not found' });
   res.json({ ok: true });
 });
@@ -2655,9 +2943,11 @@ app.post('/api/v1/signers/:signerUuid/embed-session', requireApiKey('rw'), (req,
   // Find signer by its token (signerUuid in the URL is actually the signer's current token — keeps API stable across reassigns)
   const signer = signerOps.findByToken(req.params.signerUuid);
   if (!signer) return res.status(404).json({ error: 'Signer not found' });
-  // Ensure the API caller owns the document
+  // Ensure the API caller owns the document (org-scoped when the key carries an org, else user-scoped)
   const doc = docOps.findById(signer.document_id);
-  if (!doc || doc.created_by !== req.apiUser.id) return res.status(403).json({ error: 'Access denied' });
+  if (!doc) return res.status(403).json({ error: 'Access denied' });
+  const accessible = req.apiOrgId ? (doc.org_id === req.apiOrgId) : (doc.created_by === req.apiUser.id);
+  if (!accessible) return res.status(403).json({ error: 'Access denied' });
   if (signer.status !== 'sent' && signer.status !== 'pending') {
     return res.status(400).json({ error: 'Signer is not awaiting action (status: ' + signer.status + ')' });
   }
@@ -2906,7 +3196,7 @@ app.post('/api/documents/create-kiosk', requireAuth, requireRole('admin', 'membe
     const cleanFilename = sanitize(req.file.originalname).replace(/[^\w.\-() ]/g, '_');
     const title = sanitize(req.body.title || cleanFilename || 'Untitled');
     const hash = crypto.createHash('sha256').update(pdfBuffer).digest('hex');
-    const doc = docOps.create(req.session.userId, title, cleanFilename, hash, '', 'sequential');
+    const doc = docOps.create(req.session.userId, title, cleanFilename, hash, '', 'sequential', req.session.orgId || null);
 
     // Save PDF
     fs.writeFileSync(path.join(storageDir, `${doc.uuid}.pdf`), pdfBuffer);

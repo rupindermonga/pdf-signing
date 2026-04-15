@@ -59,9 +59,11 @@
     <h1 data-i18n="common.dashboard">Dashboard</h1>
     <a href="/templates" class="header-link" data-i18n="common.templates">Templates</a>
     <a href="/analytics" class="header-link" id="nav-analytics" style="display:none;">Analytics</a>
-    <a href="/settings" class="header-link" id="nav-settings" style="display:none;">API</a>
+    <a href="/settings" class="header-link" id="nav-settings">API</a>
+    <a href="/org" class="header-link" id="nav-org" style="display:none;">Workspace</a>
     <a href="/admin" class="header-link" id="nav-admin" style="display:none;">Admin</a>
     <a href="/verify" class="header-link" data-i18n="common.verify">Verify</a>
+    <select id="workspace-switcher" style="display:none;margin-left:12px;padding:4px 8px;border:1px solid #d0d5dd;border-radius:6px;font-size:13px;"></select>
   </header>
 
   <main>
@@ -94,14 +96,37 @@
     const modalBg = document.getElementById('modal-bg');
     const modalContent = document.getElementById('modal-content');
 
+    async function loadWorkspaces() {
+      try {
+        const r = await fetch('/api/auth/me');
+        if (!r.ok) return;
+        const me = await r.json();
+        const workspaces = me.workspaces || [];
+        const switcher = document.getElementById('workspace-switcher');
+        if (me.org) document.getElementById('nav-org').style.display = '';
+        if (workspaces.length > 1) {
+          switcher.style.display = '';
+          switcher.innerHTML = workspaces.map(w =>
+            `<option value="${w.id}" ${me.org && w.id === me.org.id ? 'selected' : ''}>${w.name} · ${w.role}</option>`
+          ).join('');
+          switcher.addEventListener('change', async () => {
+            const orgId = parseInt(switcher.value, 10);
+            const resp = await fetch('/api/org/switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ orgId }) });
+            if (resp.ok) window.location.reload();
+            else alert('Could not switch workspace');
+          });
+        }
+      } catch (e) {}
+    }
+
     async function loadDocuments() {
       const resp = await fetch('/api/documents');
       if (resp.status === 401) return window.location.href = '/login';
       const { documents, user } = await resp.json();
       document.getElementById('user-email').textContent = user.name ? `${user.name} (${user.email})` : user.email;
-      // Role-based UI
-      const role = user.role || 'member';
-      if (role === 'admin') { document.getElementById('nav-settings').style.display = ''; document.getElementById('nav-admin').style.display = ''; }
+      // Role-based UI — prefer org role over global role for workspace-gated features
+      const role = user.org_role || user.role || 'member';
+      if (role === 'admin') { document.getElementById('nav-admin').style.display = ''; }
       if (role === 'admin' || role === 'member') { document.getElementById('nav-analytics').style.display = ''; }
       if (role === 'viewer') { document.querySelector('.actions').style.display = 'none'; }
 
@@ -227,6 +252,7 @@
 
     function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML.replace(/'/g, '&#39;'); }
 
+    loadWorkspaces();
     loadDocuments();
   </script>
 </body>

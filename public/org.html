@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SealForge - Workspace</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    .section { background: white; border-radius: 10px; padding: 20px 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 20px; }
+    .section h3 { color: #1a3b7a; margin-bottom: 12px; font-size: 16px; }
+    .section .muted { color: #888; font-size: 12px; margin-bottom: 14px; }
+    .row-flex { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .row-flex input, .row-flex select { padding: 8px 12px; border: 1px solid #d0d5dd; border-radius: 6px; font-size: 14px; }
+    .row-flex input[type="email"] { flex: 1; min-width: 220px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 10px; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #eee; }
+    th { font-size: 12px; text-transform: uppercase; color: #888; letter-spacing: 0.4px; }
+    .role-pill { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 12px; letter-spacing: 0.4px; text-transform: uppercase; }
+    .role-pill.admin { background: #e3f2fd; color: #1565c0; }
+    .role-pill.member { background: #f5f5f5; color: #555; }
+    .role-pill.viewer { background: #f3e5f5; color: #6a1b9a; }
+    .danger-btn { background: #fff; color: #c62828; border: 1px solid #c62828; padding: 5px 10px; border-radius: 5px; font-size: 12px; cursor: pointer; }
+    .danger-btn:hover { background: #ffebee; }
+    .link-btn { background: none; border: none; color: #1a3b7a; cursor: pointer; font-size: 12px; padding: 0; text-decoration: underline; }
+    .link-btn:hover { color: #2d5db8; }
+    .msg-ok { background: #e8f5e9; border: 1px solid #66bb6a; color: #2e7d32; padding: 10px 14px; border-radius: 6px; margin: 10px 0; font-size: 13px; display: none; }
+    .msg-ok.show { display: block; }
+    .msg-err { background: #ffebee; border: 1px solid #ef5350; color: #c62828; padding: 10px 14px; border-radius: 6px; margin: 10px 0; font-size: 13px; display: none; }
+    .msg-err.show { display: block; }
+    .invite-url { font-family: monospace; font-size: 12px; color: #1a3b7a; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo"><span class="logo-seal">Seal</span><span class="logo-forge">Forge</span></div>
+    <h1>Workspace</h1>
+    <a href="/dashboard" class="header-link">Dashboard</a>
+    <a href="/templates" class="header-link">Templates</a>
+    <a href="/analytics" class="header-link">Analytics</a>
+    <a href="/settings" class="header-link">API</a>
+  </header>
+
+  <main>
+    <div id="msg-ok" class="msg-ok"></div>
+    <div id="msg-err" class="msg-err"></div>
+
+    <!-- Org info -->
+    <div class="section">
+      <h3>Workspace details</h3>
+      <div class="muted">Your current workspace. Documents, templates, webhooks and API keys are scoped to this workspace.</div>
+      <div class="row-flex" id="org-info-row">
+        <strong id="org-name">Loading...</strong>
+        <span class="muted" id="org-slug"></span>
+        <span class="muted" id="org-domain"></span>
+        <span class="role-pill" id="my-role"></span>
+      </div>
+      <div class="row-flex" style="margin-top: 14px;" id="org-edit-row" style="display:none;">
+        <input type="text" id="org-name-input" placeholder="Workspace name">
+        <button class="btn-primary" id="save-name-btn" style="padding:8px 18px;font-size:13px;">Save name</button>
+      </div>
+    </div>
+
+    <!-- Members -->
+    <div class="section">
+      <h3>Members</h3>
+      <div class="muted">People who can access this workspace. Admins can invite, remove and change roles.</div>
+      <table id="members-table">
+        <thead>
+          <tr><th>Name</th><th>Email</th><th>Role</th><th>Joined</th><th></th></tr>
+        </thead>
+        <tbody id="members-body"><tr><td colspan="5" style="color:#888;padding:14px;">Loading...</td></tr></tbody>
+      </table>
+    </div>
+
+    <!-- Invites (admin only) -->
+    <div class="section" id="invites-section" style="display:none;">
+      <h3>Invite a member</h3>
+      <div class="muted">Send an invitation link that expires in 7 days. The recipient signs in with that email to accept.</div>
+      <div class="row-flex">
+        <input type="email" id="invite-email" placeholder="person@example.com">
+        <select id="invite-role">
+          <option value="member">Member</option>
+          <option value="admin">Admin</option>
+          <option value="viewer">Viewer</option>
+        </select>
+        <button class="btn-primary" id="send-invite-btn" style="padding:8px 18px;font-size:13px;">Send invite</button>
+      </div>
+      <h3 style="margin-top:20px;font-size:14px;">Pending invites</h3>
+      <table id="invites-table">
+        <thead>
+          <tr><th>Email</th><th>Role</th><th>Invited by</th><th>Expires</th><th></th></tr>
+        </thead>
+        <tbody id="invites-body"><tr><td colspan="5" style="color:#888;padding:14px;">No pending invites</td></tr></tbody>
+      </table>
+    </div>
+  </main>
+
+  <script>
+    const msgOk = document.getElementById('msg-ok');
+    const msgErr = document.getElementById('msg-err');
+    function showOk(m) { msgErr.classList.remove('show'); msgOk.textContent = m; msgOk.classList.add('show'); setTimeout(() => msgOk.classList.remove('show'), 4000); }
+    function showErr(m) { msgOk.classList.remove('show'); msgErr.textContent = m; msgErr.classList.add('show'); }
+    function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML.replace(/'/g, '&#39;'); }
+
+    let myRole = 'viewer';
+    let myUserId = 0;
+
+    async function loadOrg() {
+      const r = await fetch('/api/org');
+      if (r.status === 401) return window.location.href = '/login';
+      if (!r.ok) { showErr('Could not load workspace'); return; }
+      const data = await r.json();
+      myRole = data.role;
+      document.getElementById('org-name').textContent = data.org.name;
+      document.getElementById('org-slug').textContent = '· ' + data.org.slug;
+      document.getElementById('org-domain').textContent = data.org.domain ? '· ' + data.org.domain : '';
+      const pill = document.getElementById('my-role');
+      pill.textContent = data.role;
+      pill.className = 'role-pill ' + data.role;
+      // Admin-only UI
+      if (data.role === 'admin') {
+        document.getElementById('invites-section').style.display = '';
+        const editRow = document.getElementById('org-edit-row');
+        editRow.style.display = 'flex';
+        document.getElementById('org-name-input').value = data.org.name;
+        loadInvites();
+      }
+    }
+
+    async function loadMembers() {
+      const r = await fetch('/api/org/members');
+      if (!r.ok) return;
+      const { members, currentUserId } = await r.json();
+      myUserId = currentUserId;
+      const body = document.getElementById('members-body');
+      if (!members.length) { body.innerHTML = '<tr><td colspan="5" style="color:#888;padding:14px;">No members</td></tr>'; return; }
+      body.innerHTML = members.map(m => {
+        const isMe = m.id === currentUserId;
+        const roleCell = myRole === 'admin' && !isMe
+          ? `<select data-user-id="${m.id}" class="role-select">
+              <option value="admin" ${m.role === 'admin' ? 'selected' : ''}>Admin</option>
+              <option value="member" ${m.role === 'member' ? 'selected' : ''}>Member</option>
+              <option value="viewer" ${m.role === 'viewer' ? 'selected' : ''}>Viewer</option>
+            </select>`
+          : `<span class="role-pill ${esc(m.role)}">${esc(m.role)}</span>`;
+        const removeCell = myRole === 'admin' && !isMe
+          ? `<button class="danger-btn" data-remove-user-id="${m.id}">Remove</button>`
+          : (isMe ? '<span class="muted" style="color:#888;font-size:12px;">That\'s you</span>' : '');
+        return `<tr>
+          <td>${esc(m.name || '(no name)')}</td>
+          <td>${esc(m.email)}</td>
+          <td>${roleCell}</td>
+          <td style="color:#888;font-size:12px;">${esc(m.joined_at ? m.joined_at.slice(0, 10) : '')}</td>
+          <td>${removeCell}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    async function loadInvites() {
+      const r = await fetch('/api/org/invites');
+      if (!r.ok) return;
+      const { invites } = await r.json();
+      const body = document.getElementById('invites-body');
+      if (!invites.length) { body.innerHTML = '<tr><td colspan="5" style="color:#888;padding:14px;">No pending invites</td></tr>'; return; }
+      body.innerHTML = invites.map(i => `<tr>
+        <td>${esc(i.email)}</td>
+        <td><span class="role-pill ${esc(i.role)}">${esc(i.role)}</span></td>
+        <td style="color:#888;font-size:12px;">${esc(i.invited_by_email || '')}</td>
+        <td style="color:#888;font-size:12px;">${esc(i.expires_at ? i.expires_at.slice(0, 16).replace('T', ' ') : '')}</td>
+        <td><button class="danger-btn" data-revoke-invite-id="${i.id}">Revoke</button></td>
+      </tr>`).join('');
+    }
+
+    // Event delegation — avoid inline handlers (CSP)
+    document.addEventListener('click', async (e) => {
+      const rev = e.target.closest('[data-revoke-invite-id]');
+      if (rev) {
+        const id = rev.getAttribute('data-revoke-invite-id');
+        if (!confirm('Revoke this invite?')) return;
+        const r = await fetch('/api/org/invites/' + id, { method: 'DELETE' });
+        if (r.ok) { showOk('Invite revoked'); loadInvites(); } else { showErr('Could not revoke'); }
+        return;
+      }
+      const rem = e.target.closest('[data-remove-user-id]');
+      if (rem) {
+        const id = rem.getAttribute('data-remove-user-id');
+        if (!confirm('Remove this member from the workspace?')) return;
+        const r = await fetch('/api/org/members/' + id, { method: 'DELETE' });
+        if (r.ok) { showOk('Member removed'); loadMembers(); }
+        else { const d = await r.json().catch(() => ({})); showErr(d.error || 'Could not remove'); }
+        return;
+      }
+    });
+
+    document.addEventListener('change', async (e) => {
+      const sel = e.target.closest('.role-select');
+      if (!sel) return;
+      const userId = sel.getAttribute('data-user-id');
+      const role = sel.value;
+      const r = await fetch('/api/org/members/' + userId + '/role', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role }),
+      });
+      if (r.ok) showOk('Role updated');
+      else { const d = await r.json().catch(() => ({})); showErr(d.error || 'Could not update role'); loadMembers(); }
+    });
+
+    document.getElementById('send-invite-btn').addEventListener('click', async () => {
+      const emailEl = document.getElementById('invite-email');
+      const role = document.getElementById('invite-role').value;
+      const email = emailEl.value.trim();
+      if (!email) return showErr('Enter an email');
+      const r = await fetch('/api/org/invites', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, role }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (r.ok) {
+        showOk('Invite sent. URL: ' + data.url);
+        emailEl.value = '';
+        loadInvites();
+      } else {
+        showErr(data.error || 'Could not send invite');
+      }
+    });
+
+    document.getElementById('save-name-btn').addEventListener('click', async () => {
+      const name = document.getElementById('org-name-input').value.trim();
+      if (!name) return showErr('Name cannot be empty');
+      const r = await fetch('/api/org', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
+      });
+      if (r.ok) { showOk('Workspace name updated'); loadOrg(); }
+      else { showErr('Could not update'); }
+    });
+
+    loadOrg().then(() => loadMembers());
+  </script>
+</body>
+</html>

@@ -255,4 +255,31 @@ async function sendReassignNotice(toEmail, ownerName, docTitle, fromName, toName
   return true;
 }
 
-module.exports = { init, isConfigured, sendLoginOTP, sendSignerOTP, sendSigningRequest, sendCompletionNotice, sendReminder, sendExpiredNotice, sendDeclineNotice, sendReassignNotice };
+// Workspace invitation email. `opts` contains { orgName, inviterName, role, url }.
+// `brand` is the inviter's branding preferences (optional).
+async function sendInvite(toEmail, opts, brand) {
+  if (!transporter) return false;
+  const { orgName, inviterName, role, url } = opts;
+  const color = (brand && brand.color) || '#1a3b7a';
+  await transporter.sendMail({
+    from: fromField(brand),
+    to: toEmail,
+    subject: `${inviterName} invited you to join ${orgName} on SealForge`,
+    html: `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;">
+        ${brandHeader(brand)}
+        <div style="padding:24px;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
+          <p>Hi,</p>
+          <p><strong>${esc(inviterName)}</strong> has invited you to join the <strong>${esc(orgName)}</strong> workspace on SealForge as a <strong>${esc(role)}</strong>.</p>
+          <div style="text-align:center;margin:24px 0;">
+            <a href="${esc(url)}" style="display:inline-block;background:${esc(color)};color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:600;">Accept Invitation</a>
+          </div>
+          <p style="color:#666;font-size:13px;">This invitation expires in 7 days. If you don't recognise the sender, you can safely ignore this email.</p>
+          ${brandFooter(brand)}
+        </div>
+      </div>`,
+  });
+  return true;
+}
+
+module.exports = { init, isConfigured, sendLoginOTP, sendSignerOTP, sendSigningRequest, sendCompletionNotice, sendReminder, sendExpiredNotice, sendDeclineNotice, sendReassignNotice, sendInvite };

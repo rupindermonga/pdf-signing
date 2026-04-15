@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SealForge - Accept Invitation</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    .invite-box { max-width: 480px; margin: 80px auto; padding: 0 20px; }
+    .invite-card { background: white; border-radius: 16px; padding: 36px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); text-align: center; }
+    .invite-card h2 { color: #1a3b7a; margin-bottom: 12px; }
+    .invite-detail { background: #f5f7fa; padding: 16px; border-radius: 8px; margin: 18px 0; text-align: left; }
+    .invite-detail .label { font-size: 11px; text-transform: uppercase; color: #888; letter-spacing: 0.5px; margin-bottom: 3px; }
+    .invite-detail .value { font-size: 14px; color: #222; margin-bottom: 10px; }
+    .invite-detail .value:last-child { margin-bottom: 0; }
+    .error-msg { background: #ffebee; border: 1px solid #ef5350; color: #c62828; padding: 12px; border-radius: 8px; font-size: 13px; margin-top: 14px; display: none; }
+    .error-msg.show { display: block; }
+    .ok-msg { background: #e8f5e9; border: 1px solid #66bb6a; color: #2e7d32; padding: 12px; border-radius: 8px; font-size: 13px; margin-top: 14px; display: none; }
+    .ok-msg.show { display: block; }
+  </style>
+</head>
+<body>
+  <div class="invite-box">
+    <div class="invite-card">
+      <div class="logo-big" style="font-size:32px;font-weight:800;margin-bottom:8px;"><span style="color:#1a3b7a;">Seal</span><span style="color:#2d5db8;font-weight:600;">Forge</span></div>
+      <h2 id="title">Workspace invitation</h2>
+      <div id="loading" style="color:#666;">Loading invite...</div>
+
+      <div id="invite-view" style="display:none;">
+        <div class="invite-detail">
+          <div class="label">Workspace</div>
+          <div class="value" id="org-name"></div>
+          <div class="label">Your role</div>
+          <div class="value" id="role-val"></div>
+          <div class="label">Invited by</div>
+          <div class="value" id="inviter"></div>
+          <div class="label">For email</div>
+          <div class="value" id="email-val"></div>
+        </div>
+        <div id="sign-in-needed" style="display:none;">
+          <p style="color:#555;font-size:14px;margin-bottom:14px;">Sign in with <strong id="email-hint"></strong> to accept this invitation.</p>
+          <a href="#" id="sign-in-btn" class="btn-primary" style="text-decoration:none;display:inline-block;padding:12px 28px;">Sign in</a>
+        </div>
+        <div id="wrong-email" style="display:none;">
+          <p style="color:#c62828;font-size:14px;margin-bottom:14px;">You are signed in as <strong id="current-email"></strong>. This invite is for a different email — sign out first.</p>
+          <a href="#" id="logout-btn" class="btn-primary" style="text-decoration:none;display:inline-block;padding:12px 28px;background:#c62828;">Sign out</a>
+        </div>
+        <div id="ready-to-accept" style="display:none;">
+          <button class="btn-primary" id="accept-btn" style="padding:12px 32px;">Accept &amp; Join Workspace</button>
+        </div>
+      </div>
+
+      <div id="err" class="error-msg"></div>
+      <div id="ok" class="ok-msg"></div>
+    </div>
+  </div>
+
+  <script>
+    const token = window.location.pathname.split('/invite/')[1];
+    const errEl = document.getElementById('err');
+    const okEl = document.getElementById('ok');
+    function showErr(m) { errEl.textContent = m; errEl.classList.add('show'); }
+    function showOk(m) { okEl.textContent = m; okEl.classList.add('show'); }
+
+    async function init() {
+      try {
+        const r = await fetch('/api/invite/' + encodeURIComponent(token));
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          throw new Error(d.error || 'Invite not found');
+        }
+        const inv = await r.json();
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('invite-view').style.display = '';
+        document.getElementById('org-name').textContent = inv.org_name;
+        document.getElementById('role-val').textContent = inv.role;
+        document.getElementById('inviter').textContent = inv.inviter_email || '(unknown)';
+        document.getElementById('email-val').textContent = inv.email;
+
+        if (!inv.signed_in) {
+          document.getElementById('sign-in-needed').style.display = '';
+          document.getElementById('email-hint').textContent = inv.email;
+          document.getElementById('sign-in-btn').href = '/login?invite=' + encodeURIComponent(token);
+        } else if (String(inv.signed_in_email).toLowerCase() !== String(inv.email).toLowerCase()) {
+          document.getElementById('wrong-email').style.display = '';
+          document.getElementById('current-email').textContent = inv.signed_in_email;
+        } else {
+          document.getElementById('ready-to-accept').style.display = '';
+        }
+      } catch (e) {
+        document.getElementById('loading').style.display = 'none';
+        showErr(e.message);
+      }
+    }
+
+    document.getElementById('accept-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('accept-btn');
+      btn.disabled = true; btn.textContent = 'Joining...';
+      try {
+        const r = await fetch('/api/invite/' + encodeURIComponent(token) + '/accept', { method: 'POST' });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'Could not accept');
+        showOk('Welcome! Redirecting to your new workspace...');
+        setTimeout(() => window.location.href = '/dashboard', 1200);
+      } catch (e) {
+        btn.disabled = false; btn.textContent = 'Accept & Join Workspace';
+        showErr(e.message);
+      }
+    });
+
+    document.getElementById('logout-btn').addEventListener('click', async (e) => {
+      e.preventDefault();
+      await fetch('/api/auth/logout', { method: 'POST' });
+      window.location.href = '/login?invite=' + encodeURIComponent(token);
+    });
+
+    init();
+  </script>
+</body>
+</html>

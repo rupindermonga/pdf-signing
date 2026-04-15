@@ -82,10 +82,52 @@
         </div>
       </div>
 
+      <div class="two-col">
+        <div class="card">
+          <h2>Per-template conversion</h2>
+          <table>
+            <thead><tr><th>Template</th><th style="text-align:right;">Spawned</th><th style="text-align:right;">Completed</th><th style="text-align:right;">Rate</th></tr></thead>
+            <tbody id="templates-report-tbody"><tr><td colspan="4" style="text-align:center;color:#888;">Loading...</td></tr></tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h2>Reminder effectiveness</h2>
+          <p style="font-size:12px;color:#888;margin-bottom:8px;">How often a signer signs after N reminders.</p>
+          <table>
+            <thead><tr><th>Reminders</th><th style="text-align:right;">Signers</th><th style="text-align:right;">Signed</th><th style="text-align:right;">Rate</th></tr></thead>
+            <tbody id="reminder-tbody"><tr><td colspan="4" style="text-align:center;color:#888;">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="two-col">
+        <div class="card" id="users-card">
+          <h2>Per-user activity <span style="font-size:12px;color:#888;font-weight:400;" id="users-scope-hint"></span></h2>
+          <table>
+            <thead><tr><th>User</th><th style="text-align:right;">Sent</th><th style="text-align:right;">Completed</th><th style="text-align:right;">Rate</th></tr></thead>
+            <tbody id="users-tbody"><tr><td colspan="4" style="text-align:center;color:#888;">Loading...</td></tr></tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h2>Public forms</h2>
+          <table>
+            <thead><tr><th>Form</th><th style="text-align:right;">Submissions</th><th></th></tr></thead>
+            <tbody id="forms-tbody"><tr><td colspan="3" style="text-align:center;color:#888;">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Recent decline reasons</h2>
+        <p style="font-size:12px;color:#888;margin-bottom:10px;">The last 10 times a signer declined, and why.</p>
+        <div id="declines-list"><div style="color:#888;font-size:13px;">Loading...</div></div>
+      </div>
+
       <div class="card">
         <h2>Export</h2>
-        <p style="color:#555;font-size:13px;margin-bottom:10px;">Download all documents in the selected period as a CSV file.</p>
-        <a id="export-link" class="btn-primary" style="text-decoration:none;display:inline-block;" href="#">Download CSV</a>
+        <p style="color:#555;font-size:13px;margin-bottom:10px;">Download CSV of your workspace data.</p>
+        <a id="export-link" class="btn-primary" style="text-decoration:none;display:inline-block;margin-right:10px;" href="#">Documents CSV</a>
+        <a id="export-signers-link" class="btn-primary" style="text-decoration:none;display:inline-block;background:#2d5db8;" href="#">Signers CSV (detailed)</a>
       </div>
     </div>
   </div>
@@ -108,15 +150,27 @@
       renderTemplates(data.templates);
       renderWebhooks(data.webhooks);
 
-      // Funnel + bottleneck (separate endpoint)
+      // Funnel + bottleneck + decline reasons (separate endpoint)
       const fResp = await fetch('/api/analytics/funnel?days=' + currentDays);
       if (fResp.ok) {
         const f = await fResp.json();
         renderFunnel(f.funnel);
         renderBottleneck(f.bottlenecks);
+        renderDeclines(f.decline_reasons || []);
+      }
+
+      // Per-template / per-user / reminder effectiveness / public forms
+      const rResp = await fetch('/api/analytics/reports?days=' + currentDays);
+      if (rResp.ok) {
+        const r = await rResp.json();
+        renderTemplateReport(r.templates || []);
+        renderUsersReport(r.users || [], r.scope);
+        renderReminderReport(r.reminder_effectiveness || []);
+        renderPublicForms(r.public_forms || []);
       }
 
       document.getElementById('export-link').href = '/api/analytics/export.csv?days=' + currentDays;
+      document.getElementById('export-signers-link').href = '/api/analytics/signers.csv?days=' + currentDays;
 
       document.getElementById('loading').style.display = 'none';
       document.getElementById('content').style.display = 'block';
@@ -232,6 +286,72 @@
           </div>
           <div style="margin-left:auto;"><span class="badge badge-${health}">${esc(health === 'ok' ? 'ALL OK' : 'NEEDS ATTENTION')}</span></div>
         </div>`;
+    }
+
+    function renderTemplateReport(rows) {
+      const tbody = document.getElementById('templates-report-tbody');
+      if (!rows.length) { tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#888;">No templates yet.</td></tr>'; return; }
+      tbody.innerHTML = rows.map(r => {
+        const rateColor = r.conversion_pct >= 70 ? '#2e7d32' : r.conversion_pct >= 40 ? '#e65100' : '#c62828';
+        return `<tr>
+          <td>${esc(r.name)}${r.is_public ? ' <span class="badge badge-ok">PUBLIC</span>' : ''}</td>
+          <td style="text-align:right;">${esc(String(r.spawned))}</td>
+          <td style="text-align:right;">${esc(String(r.completed))}</td>
+          <td style="text-align:right;color:${rateColor};font-weight:600;">${esc(String(r.conversion_pct))}%</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function renderUsersReport(rows, scope) {
+      const tbody = document.getElementById('users-tbody');
+      const hint = document.getElementById('users-scope-hint');
+      if (scope !== 'org') {
+        hint.textContent = '(workspace-scope only)';
+        tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#888;">Available when you are in a workspace with multiple members.</td></tr>';
+        return;
+      }
+      hint.textContent = '';
+      if (!rows.length) { tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#888;">No activity yet.</td></tr>'; return; }
+      tbody.innerHTML = rows.map(u => {
+        const rateColor = u.completion_rate_pct >= 70 ? '#2e7d32' : u.completion_rate_pct >= 40 ? '#e65100' : '#888';
+        return `<tr>
+          <td><b>${esc(u.name || '(no name)')}</b><br><span style="color:#888;font-size:11px;">${esc(u.email)}</span></td>
+          <td style="text-align:right;">${esc(String(u.sent))}</td>
+          <td style="text-align:right;">${esc(String(u.completed))}</td>
+          <td style="text-align:right;color:${rateColor};font-weight:600;">${u.sent > 0 ? esc(String(u.completion_rate_pct)) + '%' : '—'}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function renderReminderReport(rows) {
+      const tbody = document.getElementById('reminder-tbody');
+      if (!rows.length) { tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#888;">No data.</td></tr>'; return; }
+      tbody.innerHTML = rows.map(r => `<tr>
+        <td><b>${r.reminder_count === 0 ? 'None' : r.reminder_count}</b></td>
+        <td style="text-align:right;">${esc(String(r.total))}</td>
+        <td style="text-align:right;">${esc(String(r.signed))}</td>
+        <td style="text-align:right;color:${r.signed_rate_pct >= 70 ? '#2e7d32' : '#e65100'};font-weight:600;">${esc(String(r.signed_rate_pct))}%</td>
+      </tr>`).join('');
+    }
+
+    function renderPublicForms(rows) {
+      const tbody = document.getElementById('forms-tbody');
+      if (!rows.length) { tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:#888;">No published forms.</td></tr>'; return; }
+      tbody.innerHTML = rows.map(f => `<tr>
+        <td>${esc(f.name)}</td>
+        <td style="text-align:right;">${esc(String(f.submissions))}</td>
+        <td style="text-align:right;"><a href="/f/${esc(f.slug)}" target="_blank" style="color:#1a3b7a;font-size:12px;">View form</a></td>
+      </tr>`).join('');
+    }
+
+    function renderDeclines(rows) {
+      const el = document.getElementById('declines-list');
+      if (!rows.length) { el.innerHTML = '<div style="color:#888;font-size:13px;">No declines in this period — nice.</div>'; return; }
+      el.innerHTML = rows.map(r => `<div style="border-left:3px solid #c62828;padding:8px 12px;margin-bottom:8px;background:#ffebee;border-radius:0 6px 6px 0;">
+        <div style="font-size:12px;color:#c62828;font-weight:600;">${esc(r.signer_name || '')} declined "${esc(r.doc_title || '')}"</div>
+        <div style="font-size:13px;color:#333;margin-top:4px;">${esc(r.decline_reason || '')}</div>
+        <div style="font-size:11px;color:#888;margin-top:4px;">${esc(r.declined_at || '')}</div>
+      </div>`).join('');
     }
 
     document.getElementById('period-select').querySelectorAll('button').forEach(b => {

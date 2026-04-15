@@ -1266,6 +1266,145 @@ app.get('/api/analytics/export.csv', requireAuth, requireRole('admin', 'member')
   }
 });
 
+// ─── Analytics: deeper reports (per-template, per-user, reminder effectiveness, public forms) ───
+app.get('/api/analytics/reports', requireAuth, requireRole('admin', 'member'), (req, res) => {
+  const db = require('./database').db;
+  const userId = req.session.userId;
+  const orgId = req.session.orgId || null;
+  const days = Math.min(Math.max(parseInt(req.query.days, 10) || 30, 1), 365);
+  const docScope = orgId ? 'd.org_id = ?' : 'd.created_by = ?';
+  const tplScope = orgId ? 'org_id = ?' : 'user_id = ?';
+  const scopeParam = orgId || userId;
+  const since = `datetime('now', '-${days} days')`;
+
+  try {
+    // Per-template conversion: submissions (docs spawned from the template) → completed ratio.
+    // We can't directly link docs→template without tracking, so we approximate using title match
+    // (template.title appears in doc.title for public-form docs). Qualify with `t.` explicitly —
+    // the LEFT JOIN users introduces an ambiguous `org_id` since users has that column too.
+    const tplScopeQualified = orgId ? 't.org_id = ?' : 't.user_id = ?';
+    const templates = db.prepare(`SELECT
+      t.uuid, t.name, t.title, t.is_public, t.public_slug, t.public_submissions, t.created_at,
+      u.email as owner_email, u.name as owner_name,
+      (SELECT COUNT(*) FROM documents d WHERE ${docScope} AND d.title LIKE t.title || '%' AND d.created_at >= ${since}) as spawned,
+      (SELECT COUNT(*) FROM documents d WHERE ${docScope} AND d.title LIKE t.title || '%' AND d.status = 'completed' AND d.created_at >= ${since}) as completed
+      FROM templates t LEFT JOIN users u ON t.user_id = u.id
+      WHERE ${tplScopeQualified} ORDER BY t.created_at DESC`)
+      .all(scopeParam, scopeParam, scopeParam);
+
+    const templateReports = templates.map(t => ({
+      uuid: t.uuid, name: t.name, is_public: !!t.is_public, public_slug: t.public_slug,
+      owner_email: t.owner_email, owner_name: t.owner_name,
+      spawned: t.spawned || 0, completed: t.completed || 0,
+      conversion_pct: (t.spawned || 0) > 0 ? Math.round(((t.completed || 0) / t.spawned) * 100) : 0,
+      public_submissions: t.public_submissions || 0,
+    }));
+
+    // Per-user stats within the workspace (org-scoped only; user-scoped returns just self)
+    let userReports = [];
+    if (orgId) {
+      userReports = db.prepare(`SELECT
+        u.id, u.email, u.name,
+        COUNT(d.id) as sent,
+        SUM(CASE WHEN d.status = 'completed' THEN 1 ELSE 0 END) as completed,
+        SUM(CASE WHEN d.status = 'cancelled' THEN 1 ELSE 0 END) as cancelled
+        FROM users u LEFT JOIN documents d ON d.created_by = u.id AND d.org_id = ? AND d.created_at >= ${since}
+        WHERE u.org_id = ?
+        GROUP BY u.id ORDER BY sent DESC`).all(orgId, orgId);
+    }
+
+    // Reminder effectiveness: bucket signers by how many reminders they got before signing/not
+    const reminderStats = db.prepare(`SELECT
+      s.reminder_count as bucket,
+      COUNT(*) as total,
+      SUM(CASE WHEN s.status = 'signed' THEN 1 ELSE 0 END) as signed
+      FROM signers s JOIN documents d ON s.document_id = d.id
+      WHERE ${docScope} AND d.created_at >= ${since} AND s.role != 'cc'
+      GROUP BY s.reminder_count ORDER BY s.reminder_count LIMIT 10`).all(scopeParam);
+
+    // Public forms: submission-level conversion (uses public_submissions for volume,
+    // docs spawned for completion). Only templates with is_public=1.
+    const publicForms = db.prepare(`SELECT
+      t.uuid, t.name, t.public_slug, t.public_submissions
+      FROM templates t WHERE ${tplScope} AND t.is_public = 1
+      ORDER BY t.public_submissions DESC LIMIT 20`).all(scopeParam);
+
+    // Webhook trend: last-status breakdown for the period
+    const webhookScope = orgId ? 'w.org_id = ?' : 'w.user_id = ?';
+    const webhookTrend = db.prepare(`SELECT
+      COUNT(*) as total,
+      SUM(CASE WHEN w.last_status LIKE '2%' THEN 1 ELSE 0 END) as ok,
+      SUM(CASE WHEN w.last_status IS NOT NULL AND w.last_status NOT LIKE '2%' THEN 1 ELSE 0 END) as failing,
+      SUM(CASE WHEN w.last_fired_at IS NULL THEN 1 ELSE 0 END) as never_fired
+      FROM webhooks w WHERE ${webhookScope} AND w.active = 1`).get(scopeParam);
+
+    res.json({
+      period_days: days,
+      scope: orgId ? 'org' : 'user',
+      templates: templateReports,
+      users: userReports.map(u => ({
+        id: u.id, email: u.email, name: u.name,
+        sent: u.sent || 0, completed: u.completed || 0, cancelled: u.cancelled || 0,
+        completion_rate_pct: u.sent > 0 ? Math.round(((u.completed || 0) / u.sent) * 100) : 0,
+      })),
+      reminder_effectiveness: reminderStats.map(r => ({
+        reminder_count: r.bucket, total: r.total,
+        signed: r.signed || 0,
+        signed_rate_pct: r.total > 0 ? Math.round(((r.signed || 0) / r.total) * 100) : 0,
+      })),
+      public_forms: publicForms.map(f => ({
+        uuid: f.uuid, name: f.name, slug: f.public_slug,
+        submissions: f.public_submissions || 0,
+      })),
+      webhooks: webhookTrend,
+    });
+  } catch (err) {
+    console.error('Analytics reports error:', err.message);
+    res.status(500).json({ error: 'Could not compute reports' });
+  }
+});
+
+// ─── Analytics: signer-level CSV (one row per signer) ───
+app.get('/api/analytics/signers.csv', requireAuth, requireRole('admin', 'member'), (req, res) => {
+  const db = require('./database').db;
+  const userId = req.session.userId;
+  const orgId = req.session.orgId || null;
+  const days = Math.min(Math.max(parseInt(req.query.days, 10) || 90, 1), 365);
+  const scope = orgId ? 'd.org_id = ?' : 'd.created_by = ?';
+  const scopeParam = orgId || userId;
+  try {
+    const rows = db.prepare(`SELECT
+      d.uuid as doc_uuid, d.title as doc_title, d.status as doc_status,
+      s.id as signer_id, s.name as signer_name, s.email as signer_email,
+      s.sign_order, s.role, s.status as signer_status,
+      s.signed_at, s.declined_at, s.decline_reason, s.reminder_count,
+      s.reassigned_from_email, s.substituted_by_owner, s.sendback_count,
+      s.ip_address, d.created_at as doc_created_at
+      FROM signers s JOIN documents d ON s.document_id = d.id
+      WHERE ${scope} AND d.created_at >= datetime('now', '-${days} days')
+      ORDER BY d.created_at DESC, s.sign_order`).all(scopeParam);
+
+    const escCsv = (v) => {
+      if (v == null) return '';
+      const s = String(v);
+      return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    const header = ['doc_uuid','doc_title','doc_status','doc_created_at',
+      'signer_id','signer_name','signer_email','sign_order','role','signer_status',
+      'signed_at','declined_at','decline_reason','reminder_count',
+      'reassigned_from_email','substituted_by_owner','sendback_count','ip_address'];
+    const body = rows.map(r => header.map(col => escCsv(r[col])).join(',')).join('\n');
+    const csv = header.join(',') + '\n' + body + '\n';
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="sealforge-signers-${days}d.csv"`);
+    res.send(csv);
+  } catch (err) {
+    console.error('Signer CSV export error:', err.message);
+    res.status(500).json({ error: 'Could not export' });
+  }
+});
+
 // ─── Admin: user management ───
 app.get('/admin', requireAuth, requireRole('admin'), (req, res) => {
   sendHtml(res, path.join(__dirname, 'public', 'admin.html'));

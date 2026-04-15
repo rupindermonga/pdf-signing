@@ -165,6 +165,17 @@
       </div>
     </div>
 
+    <!-- Comments — available once signer has verified email -->
+    <div class="card hidden" id="comments-card">
+      <h2 style="color:#1a3b7a;font-size:16px;">Comments</h2>
+      <p style="color:#666;font-size:12px;margin-bottom:10px;">Messages exchanged with the sender about this document.</p>
+      <div id="sign-comments-thread" style="max-height:220px;overflow-y:auto;border:1px solid #eee;border-radius:8px;padding:8px 12px;background:#fafbff;"><div style="color:#888;font-size:12px;">No comments yet.</div></div>
+      <div style="display:flex;gap:8px;margin-top:8px;">
+        <input type="text" id="sign-comment-input" placeholder="Add a comment..." maxlength="2000" style="flex:1;padding:8px 10px;border:1px solid #d0d5dd;border-radius:6px;font-size:13px;">
+        <button class="btn-primary" id="sign-comment-post-btn" style="padding:8px 16px;font-size:13px;">Post</button>
+      </div>
+    </div>
+
     <!-- Step 3: Success -->
     <div class="card hidden" id="success-card">
       <div class="success-card">
@@ -268,8 +279,57 @@
         return;
       }
       document.getElementById('sign-card').classList.remove('hidden');
+      document.getElementById('comments-card').classList.remove('hidden');
+      loadComments();
       loadPdf();
     }
+
+    // ── Comments thread (signer side) ──
+    async function loadComments() {
+      const thread = document.getElementById('sign-comments-thread');
+      if (!thread) return;
+      try {
+        const r = await fetch('/api/sign/' + token + '/comments');
+        if (!r.ok) return;
+        const { comments } = await r.json();
+        if (!comments.length) {
+          thread.innerHTML = '<div style="color:#888;font-size:12px;">No comments yet.</div>';
+          return;
+        }
+        thread.innerHTML = comments.map(c => {
+          const who = c.author_type === 'owner' ? 'Sender' : 'You';
+          const color = c.author_type === 'owner' ? '#1a3b7a' : '#2e7d32';
+          const ts = new Date(c.created_at + 'Z').toLocaleString();
+          return '<div style="margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid #eee;">' +
+            '<div style="font-size:11px;color:' + color + ';font-weight:600;">' + escHtml(c.author_name || who) + ' <span style="color:#999;font-weight:400;">· ' + escHtml(who) + ' · ' + escHtml(ts) + '</span></div>' +
+            '<div style="font-size:13px;color:#222;white-space:pre-wrap;margin-top:2px;">' + escHtml(c.body) + '</div>' +
+            '</div>';
+        }).join('');
+        thread.scrollTop = thread.scrollHeight;
+      } catch {}
+    }
+    function escHtml(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+    document.getElementById('sign-comment-post-btn').addEventListener('click', async () => {
+      const inp = document.getElementById('sign-comment-input');
+      const body = inp.value.trim();
+      if (!body) return;
+      const btn = document.getElementById('sign-comment-post-btn');
+      btn.disabled = true;
+      try {
+        const r = await fetch('/api/sign/' + token + '/comments', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ body }),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'Could not post');
+        inp.value = '';
+        loadComments();
+      } catch (e) { alert(e.message); }
+      btn.disabled = false;
+    });
+    document.getElementById('sign-comment-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); document.getElementById('sign-comment-post-btn').click(); }
+    });
 
     // ── ID verify flow ──
     let idvFiles = { id: null, selfie: null };

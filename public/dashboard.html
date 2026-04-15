@@ -176,23 +176,37 @@
         ${signers.map(s => {
           const role = s.role || 'sign';
           const canResend = doc.status === 'pending' && s.status !== 'signed' && role !== 'cc';
+          const isCurrent = s.status === 'sent' && role !== 'cc';
           return `
           <div class="signer-row">
             <span class="signer-order">${esc(String(s.sign_order))}</span>
             <div style="flex:1;min-width:0;">
               <div style="font-weight:600;">${esc(s.name)}<span class="role-badge role-${esc(role)}">${esc(role)}</span></div>
               <div style="color:#888;font-size:12px;">${esc(s.email)}</div>
-              ${(!emailConfigured && s.signUrl && (s.status === 'sent' || s.status === 'pending')) ? '<div class="link-box" onclick="copyLink(this)" title="Click to copy">' + esc(s.signUrl) + '</div>' : ''}
+              ${s.reassigned_from_name ? '<div style="font-size:11px;color:#888;margin-top:2px;">' + (s.substituted_by_owner ? 'Substituted by sender' : 'Reassigned') + ' from ' + esc(s.reassigned_from_name) + ' &lt;' + esc(s.reassigned_from_email || '') + '&gt;</div>' : ''}
+              ${s.status === 'declined' && s.decline_reason ? '<div style="margin-top:6px;background:#ffebee;border:1px solid #ef5350;padding:8px;border-radius:6px;font-size:12px;color:#c62828;"><b>Declined:</b> ' + esc(s.decline_reason) + '</div>' : ''}
+              ${s.sendback_count > 0 ? '<div style="font-size:11px;color:#e65100;margin-top:2px;">Changes requested ' + s.sendback_count + 'x</div>' : ''}
+              ${(!emailConfigured && s.signUrl && (s.status === 'sent' || s.status === 'pending')) ? '<div class="link-box" data-copy-link="1" title="Click to copy">' + esc(s.signUrl) + '</div>' : ''}
               ${(Array.isArray(s.attachments) && s.attachments.length) ? '<div style="margin-top:6px;font-size:11px;color:#555;">Attachments: ' + s.attachments.map(a => '<a href="/api/documents/' + esc(doc.uuid) + '/attachments/' + s.id + '/' + a.index + '" style="color:#1a3b7a;margin-right:6px;">' + esc(a.filename) + '</a>').join('') + '</div>' : ''}
             </div>
             <span class="signer-status">
               <span class="status-badge status-${s.status === 'signed' ? 'completed' : 'pending'}">${esc(s.status)}</span>
               ${canResend ? '<button class="resend-btn" data-resend-uuid="' + esc(doc.uuid) + '" data-signer-id="' + s.id + '">Resend</button>' : ''}
               ${canResend ? '<button class="resend-btn" data-embed-uuid="' + esc(doc.uuid) + '" data-signer-id="' + s.id + '" title="Generate iframe embed link">Embed</button>' : ''}
+              ${canResend ? '<button class="resend-btn" data-substitute-uuid="' + esc(doc.uuid) + '" data-signer-id="' + s.id + '" title="Replace with a different person">Substitute</button>' : ''}
+              ${isCurrent ? '<button class="resend-btn" data-sendback-uuid="' + esc(doc.uuid) + '" data-signer-id="' + s.id + '" title="Request changes">Send back</button>' : ''}
             </span>
           </div>`;
         }).join('')}
         ${!emailConfigured ? '<p style="font-size:12px;color:#e65100;margin-top:12px;">Email not configured. Share the signing links above manually.</p>' : ''}
+
+        <h4 style="color:#1a3b7a;margin-top:18px;margin-bottom:8px;">Comments</h4>
+        <div id="comments-thread" style="max-height:220px;overflow-y:auto;border:1px solid #eee;border-radius:8px;padding:8px 12px;background:#fafbff;"><div style="color:#888;font-size:12px;">Loading...</div></div>
+        <div style="display:flex;gap:8px;margin-top:8px;">
+          <input type="text" id="comment-input" placeholder="Add a comment or note..." maxlength="2000" style="flex:1;padding:8px 10px;border:1px solid #d0d5dd;border-radius:6px;font-size:13px;">
+          <button class="btn-primary" id="comment-post-btn" style="padding:8px 16px;font-size:13px;">Post</button>
+        </div>
+
         <div style="margin-top:18px;display:flex;gap:10px;align-items:center;">
           ${doc.status === 'completed' ? '<a href="/api/documents/' + esc(doc.uuid) + '/download" class="btn-primary" style="text-decoration:none;">Download Signed PDF</a>' : ''}
           ${canCancel ? '<button class="cancel-doc-btn" data-cancel-uuid="' + esc(doc.uuid) + '">Cancel Request</button>' : ''}
@@ -211,10 +225,114 @@
           generateEmbedLink(btn.dataset.embedUuid, Number(btn.dataset.signerId));
         });
       });
+      modalContent.querySelectorAll('.resend-btn[data-substitute-uuid]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          substituteSigner(btn.dataset.substituteUuid, Number(btn.dataset.signerId));
+        });
+      });
+      modalContent.querySelectorAll('.resend-btn[data-sendback-uuid]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          sendBack(btn.dataset.sendbackUuid, Number(btn.dataset.signerId));
+        });
+      });
+      modalContent.querySelectorAll('.link-box[data-copy-link="1"]').forEach(box => {
+        box.addEventListener('click', () => {
+          navigator.clipboard.writeText(box.textContent.trim()).then(() => {
+            const orig = box.textContent;
+            box.textContent = '✓ Copied!';
+            setTimeout(() => box.textContent = orig, 1200);
+          });
+        });
+      });
       const cancelBtn = modalContent.querySelector('.cancel-doc-btn[data-cancel-uuid]');
       if (cancelBtn) {
         cancelBtn.addEventListener('click', () => cancelDoc(cancelBtn.dataset.cancelUuid));
       }
+      // Comments thread
+      loadComments(uuid);
+      const postBtn = document.getElementById('comment-post-btn');
+      if (postBtn) postBtn.addEventListener('click', () => postComment(uuid));
+      const inp = document.getElementById('comment-input');
+      if (inp) inp.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); postComment(uuid); } });
+    }
+
+    async function loadComments(uuid) {
+      const thread = document.getElementById('comments-thread');
+      if (!thread) return;
+      try {
+        const r = await fetch('/api/documents/' + uuid + '/comments');
+        if (!r.ok) throw new Error('Could not load comments');
+        const { comments } = await r.json();
+        if (!comments.length) {
+          thread.innerHTML = '<div style="color:#888;font-size:12px;">No comments yet. Post one above to start a thread visible to signers.</div>';
+          return;
+        }
+        thread.innerHTML = comments.map(c => {
+          const who = c.author_type === 'owner' ? 'Sender' : 'Signer';
+          const color = c.author_type === 'owner' ? '#1a3b7a' : '#2e7d32';
+          const ts = new Date(c.created_at + 'Z').toLocaleString();
+          return `<div style="margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid #eee;">
+            <div style="font-size:11px;color:${color};font-weight:600;">${esc(c.author_name || who)} <span style="color:#999;font-weight:400;">· ${esc(who)} · ${esc(ts)}</span></div>
+            <div style="font-size:13px;color:#222;white-space:pre-wrap;margin-top:2px;">${esc(c.body)}</div>
+          </div>`;
+        }).join('');
+        thread.scrollTop = thread.scrollHeight;
+      } catch (e) {
+        thread.innerHTML = '<div style="color:#c62828;font-size:12px;">' + esc(e.message) + '</div>';
+      }
+    }
+
+    async function postComment(uuid) {
+      const inp = document.getElementById('comment-input');
+      const body = inp.value.trim();
+      if (!body) return;
+      const btn = document.getElementById('comment-post-btn');
+      btn.disabled = true;
+      try {
+        const r = await fetch('/api/documents/' + uuid + '/comments', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ body }),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'Could not post');
+        inp.value = '';
+        loadComments(uuid);
+      } catch (e) {
+        alert(e.message);
+      }
+      btn.disabled = false;
+    }
+
+    async function substituteSigner(uuid, signerId) {
+      const name = prompt('New signer name:');
+      if (!name) return;
+      const emailAddr = prompt('New signer email:');
+      if (!emailAddr) return;
+      try {
+        const r = await fetch('/api/documents/' + uuid + '/signers/' + signerId + '/substitute', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: name.trim(), email: emailAddr.trim() }),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'Could not substitute');
+        alert('Signer substituted. ' + (d.newSignUrl ? 'Link: ' + d.newSignUrl : 'Email sent to the new signer.'));
+        showDetail(uuid);
+      } catch (e) { alert(e.message); }
+    }
+
+    async function sendBack(uuid, signerId) {
+      const message = prompt('What changes should the signer make? (This will be sent as a comment + email)');
+      if (!message || !message.trim()) return;
+      try {
+        const r = await fetch('/api/documents/' + uuid + '/signers/' + signerId + '/send-back', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: message.trim() }),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'Could not send back');
+        alert('Sent back. The signer will see your message.');
+        showDetail(uuid);
+      } catch (e) { alert(e.message); }
     }
 
     async function generateEmbedLink(uuid, signerId) {

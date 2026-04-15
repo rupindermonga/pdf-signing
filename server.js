@@ -11,7 +11,7 @@ const { P12Signer } = require('@signpdf/signer-p12');
 const { pdflibAddPlaceholder } = require('@signpdf/placeholder-pdf-lib');
 const { PDFDocument } = require('pdf-lib');
 
-const { userOps, otpOps, sessionOps, docOps, signerOps, templateOps, apiKeyOps, webhookOps, eventLogOps, workflowOps, embedOps, orgOps, orgMemberOps, orgInviteOps, VALID_ROLES, ORG_ROLES } = require('./database');
+const { userOps, otpOps, sessionOps, docOps, signerOps, templateOps, apiKeyOps, webhookOps, eventLogOps, workflowOps, embedOps, orgOps, orgMemberOps, orgInviteOps, commentOps, VALID_ROLES, ORG_ROLES } = require('./database');
 const email = require('./email');
 const { TOTP, Secret } = require('otpauth');
 const stripe = require('./stripe');
@@ -362,7 +362,9 @@ function requireRole(...roles) {
 }
 
 // Seed session identity after successful login / SSO / invite accept.
-// Picks the active workspace: previously-selected (if user is still a member) or the first membership.
+// Picks the active workspace: previously-selected (if user is still a member) or the first
+// membership. For legacy users (pre-org migration, users.org_id IS NULL, no org_members row)
+// we auto-provision an org from their email domain here so requireOrgRole works for them.
 function setSessionIdentity(req, user, preferredOrgId = null) {
   req.session.userId = user.id;
   req.session.userEmail = user.email;
@@ -376,6 +378,21 @@ function setSessionIdentity(req, user, preferredOrgId = null) {
     const orgs = orgMemberOps.listOrgsForUser(user.id);
     if (orgs.length) orgId = orgs[0].id;
     else if (user.org_id) orgId = user.org_id; // legacy fallback
+  }
+  // Auto-provision for legacy users with no org at all
+  if (!orgId) {
+    const domain = (String(user.email).split('@')[1] || '').toLowerCase();
+    let org = domain ? orgOps.findByDomain(domain) : null;
+    if (!org) {
+      const orgName = domain ? domain.split('.')[0].replace(/[^a-z0-9]/gi, ' ').replace(/\b\w/g, c => c.toUpperCase()) : (user.name || 'Personal');
+      org = orgOps.create(orgName, domain || null);
+    }
+    orgId = org.id;
+    // Backfill users.org_id + org_members so the user now has a proper workspace.
+    const { db } = require('./database');
+    try { db.prepare('UPDATE users SET org_id = ? WHERE id = ?').run(orgId, user.id); } catch {}
+    // Legacy users were typically site admins; promote them to admin of their new org.
+    orgMemberOps.add(orgId, user.id, user.role === 'viewer' ? 'viewer' : 'admin');
   }
   req.session.orgId = orgId;
   // Per-org role snapshot (re-checked via requireOrgRole on each request)
@@ -1187,6 +1204,14 @@ app.get('/api/analytics/funnel', requireAuth, requireRole('admin', 'member'), (r
       WHERE ${scope} AND d.created_at >= datetime('now', '-${days} days') AND s.role != 'cc'
       GROUP BY s.sign_order ORDER BY s.sign_order LIMIT 10`).all(scopeParam);
 
+    // Recent decline reasons (last 10) for qualitative insight into why signers bail
+    const declineReasons = db.prepare(`SELECT
+      s.decline_reason, s.declined_at, s.name as signer_name, d.uuid as doc_uuid, d.title as doc_title
+      FROM signers s JOIN documents d ON s.document_id = d.id
+      WHERE ${scope} AND d.created_at >= datetime('now', '-${days} days')
+        AND s.status = 'declined' AND s.decline_reason IS NOT NULL
+      ORDER BY s.declined_at DESC LIMIT 10`).all(scopeParam);
+
     res.json({
       period_days: days,
       funnel,
@@ -1197,6 +1222,7 @@ app.get('/api/analytics/funnel', requireAuth, requireRole('admin', 'member'), (r
         declined_count: b.declined_count || 0,
       })),
       dropoff,
+      decline_reasons: declineReasons,
     });
   } catch (err) {
     console.error('Funnel error:', err.message);
@@ -2023,6 +2049,141 @@ app.post('/api/sign/:token/reassign', rateLimit(60000, 3), async (req, res) => {
   res.json({ ok: true, newSignUrl: email.isConfigured() ? null : signUrl });
 });
 
+// ─── Collaboration: comments (session-auth = owner view) ───
+app.get('/api/documents/:uuid/comments', requireAuth, (req, res) => {
+  const doc = docOps.findByUUID(req.params.uuid);
+  if (!doc) return res.status(404).json({ error: 'Not found' });
+  if (!docAccessibleToSession(doc, req)) return res.status(403).json({ error: 'Access denied' });
+  res.json({ comments: commentOps.listByDocument(doc.id) });
+});
+
+app.post('/api/documents/:uuid/comments', requireAuth, rateLimit(60000, 30), (req, res) => {
+  const doc = docOps.findByUUID(req.params.uuid);
+  if (!doc) return res.status(404).json({ error: 'Not found' });
+  if (!docAccessibleToSession(doc, req)) return res.status(403).json({ error: 'Access denied' });
+  const body = sanitize(String(req.body.body || '').trim()).slice(0, 2000);
+  if (!body) return res.status(400).json({ error: 'Comment body required' });
+  const inserted = commentOps.addByOwner(doc.id, req.session.userId, req.session.userName, req.session.userEmail, body);
+  res.json({ ok: true, id: inserted.id });
+});
+
+app.delete('/api/documents/:uuid/comments/:id', requireAuth, (req, res) => {
+  const doc = docOps.findByUUID(req.params.uuid);
+  if (!doc) return res.status(404).json({ error: 'Not found' });
+  if (!docMutableBySession(doc, req)) return res.status(403).json({ error: 'Only the creator or a workspace admin can delete comments' });
+  const ok = commentOps.deleteComment(parseInt(req.params.id, 10), doc.id);
+  res.json({ ok });
+});
+
+// ─── Collaboration: comments (signer-token view) ───
+app.get('/api/sign/:token/comments', (req, res) => {
+  const signer = signerOps.findByToken(req.params.token);
+  if (!signer) return res.status(404).json({ error: 'Not found' });
+  // Anyone holding the signer token can read the thread (they're the participant)
+  res.json({ comments: commentOps.listByDocument(signer.document_id) });
+});
+
+app.post('/api/sign/:token/comments', rateLimit(60000, 20), (req, res) => {
+  const signer = signerOps.findByToken(req.params.token);
+  if (!signer) return res.status(404).json({ error: 'Not found' });
+  if (signer.doc_status === 'cancelled') return res.status(410).json({ error: 'Cancelled' });
+  // Require OTP verification before allowing comments — same bar as signing
+  if (!req.session.verifiedSigners?.[req.params.token]) {
+    return res.status(403).json({ error: 'Verify your email first' });
+  }
+  const body = sanitize(String(req.body.body || '').trim()).slice(0, 2000);
+  if (!body) return res.status(400).json({ error: 'Comment body required' });
+  const inserted = commentOps.addBySigner(signer.document_id, signer.id, signer.name, signer.email, body);
+  res.json({ ok: true, id: inserted.id });
+});
+
+// ─── Collaboration: substitute signer (sender-initiated replacement) ───
+// Use case: sender realises Alice isn't the right person; swap in Bob without waiting
+// for Alice to reassign. Keeps sign_order, rotates token, sends fresh link.
+app.post('/api/documents/:uuid/signers/:signerId/substitute', requireAuth, rateLimit(60000, 10), async (req, res) => {
+  const doc = docOps.findByUUID(req.params.uuid);
+  if (!doc) return res.status(404).json({ error: 'Not found' });
+  if (!docMutableBySession(doc, req)) return res.status(403).json({ error: 'Only the creator or a workspace admin can substitute signers' });
+  const signerId = parseInt(req.params.signerId, 10);
+  const signer = signerOps.findById(signerId);
+  if (!signer || signer.document_id !== doc.id) return res.status(404).json({ error: 'Signer not found' });
+  if (signer.status !== 'sent' && signer.status !== 'pending') {
+    return res.status(400).json({ error: 'Signer has already signed or declined — cannot substitute' });
+  }
+  const newName = sanitize(String(req.body.name || '')).slice(0, 120);
+  const newEmail = sanitize(String(req.body.email || '')).toLowerCase().slice(0, 254);
+  if (!newName || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(newEmail)) {
+    return res.status(400).json({ error: 'Valid replacement name and email required' });
+  }
+  const result = signerOps.substitute(signerId, newName, newEmail);
+  if (!result) return res.status(409).json({ error: 'Could not substitute (status changed)' });
+
+  const signUrl = `${BASE_URL}/sign/${result.token}`;
+  // Notify the new signer with a fresh signing link only if their signer-state was 'sent'
+  // (i.e. it was the current signer). For 'pending' (not yet notified), leave the normal
+  // flow to send the link when their turn comes.
+  if (signer.status === 'sent' && email.isConfigured()) {
+    try {
+      const brand = userOps.getBranding(doc.created_by);
+      const creator = require('./database').db.prepare('SELECT email, name FROM users WHERE id = ?').get(doc.created_by);
+      const senderName = creator?.name || creator?.email || 'SealForge';
+      await email.sendSigningRequest(newEmail, newName, senderName, doc.title, signUrl,
+        `(You were added to this signing request — it was originally sent to ${result.prevName})`, brand);
+    } catch (e) { console.error('Substitute email failed:', e.message); }
+  }
+  // Log as a system comment for audit trail
+  try {
+    commentOps.addByOwner(doc.id, req.session.userId, req.session.userName, req.session.userEmail,
+      `Substituted signer at step ${signer.sign_order}: "${result.prevName} <${result.prevEmail}>" → "${newName} <${newEmail}>"`);
+  } catch {}
+  fireWebhooks(doc.created_by, 'document.reassigned', {
+    document: { uuid: doc.uuid, title: doc.title },
+    from: { name: result.prevName, email: result.prevEmail },
+    to: { name: newName, email: newEmail, sign_order: signer.sign_order },
+    kind: 'substitute',
+  });
+  res.json({ ok: true, newSignUrl: email.isConfigured() ? null : signUrl });
+});
+
+// ─── Collaboration: send back / request changes ───
+// Posts a comment asking the current signer to revisit, and re-sends their signing link.
+// Only valid when the signer hasn't signed yet (once signed, the PDF is immutable —
+// send-back post-sign would require cancelling + restarting the whole workflow).
+app.post('/api/documents/:uuid/signers/:signerId/send-back', requireAuth, rateLimit(60000, 10), async (req, res) => {
+  const doc = docOps.findByUUID(req.params.uuid);
+  if (!doc) return res.status(404).json({ error: 'Not found' });
+  if (!docMutableBySession(doc, req)) return res.status(403).json({ error: 'Only the creator or a workspace admin can send back' });
+  const signerId = parseInt(req.params.signerId, 10);
+  const signer = signerOps.findById(signerId);
+  if (!signer || signer.document_id !== doc.id) return res.status(404).json({ error: 'Signer not found' });
+  if (signer.status === 'signed') {
+    return res.status(400).json({ error: 'Signer has already signed — start a new signing request if you need changes' });
+  }
+  if (signer.status !== 'sent') {
+    return res.status(400).json({ error: 'Signer is not the current awaiting signer' });
+  }
+  const message = sanitize(String(req.body.message || '').trim()).slice(0, 2000);
+  if (!message) return res.status(400).json({ error: 'A change-request message is required' });
+
+  const bumped = signerOps.markSendBack(signerId);
+  if (!bumped) return res.status(409).json({ error: 'Could not send back (status changed)' });
+  // Post the message as an owner comment so the signer sees it
+  commentOps.addByOwner(doc.id, req.session.userId, req.session.userName, req.session.userEmail, message);
+
+  // Re-notify the signer with their existing link + the change-request message
+  if (email.isConfigured()) {
+    try {
+      const brand = userOps.getBranding(doc.created_by);
+      const creator = require('./database').db.prepare('SELECT email, name FROM users WHERE id = ?').get(doc.created_by);
+      const senderName = creator?.name || creator?.email || 'SealForge';
+      const signUrl = `${BASE_URL}/sign/${signer.token}`;
+      await email.sendSigningRequest(signer.email, signer.name, senderName, doc.title, signUrl,
+        `Change requested: ${message.slice(0, 200)}`, brand);
+    } catch (e) { console.error('Send-back email failed:', e.message); }
+  }
+  res.json({ ok: true });
+});
+
 app.post('/api/sign/:token/submit', rateLimit(60000, 10), async (req, res) => {
   const signer = signerOps.findByToken(req.params.token);
   if (!signer) return res.status(404).json({ error: 'Not found' });
@@ -2430,6 +2591,12 @@ app.get('/api/documents/:uuid', requireAuth, (req, res) => {
     ip_address: s.ip_address,
     location: s.location,
     browser_info: s.browser_info,
+    decline_reason: s.decline_reason || null,
+    declined_at: s.declined_at || null,
+    reassigned_from_name: s.reassigned_from_name || null,
+    reassigned_from_email: s.reassigned_from_email || null,
+    substituted_by_owner: !!s.substituted_by_owner,
+    sendback_count: s.sendback_count || 0,
     signUrl: (!email.isConfigured() && (s.status === 'sent' || s.status === 'pending'))
       ? `${BASE_URL}/sign/${s.token}` : undefined,
     attachments: (() => {
@@ -2437,7 +2604,12 @@ app.get('/api/documents/:uuid', requireAuth, (req, res) => {
       catch { return []; }
     })(),
   }));
-  res.json({ document: doc, signers: safeSigner, emailConfigured: email.isConfigured() });
+  res.json({
+    document: doc,
+    signers: safeSigner,
+    emailConfigured: email.isConfigured(),
+    commentCount: commentOps.countByDocument(doc.id),
+  });
 });
 
 // ─── Templates ───

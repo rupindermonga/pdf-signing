@@ -297,6 +297,31 @@ ensureColumn('signers', 'reassigned_from_name', "TEXT");    // if this signer re
 ensureColumn('signers', 'reassigned_from_email', "TEXT");   // and their email
 ensureColumn('signers', 'reassigned_at', "TEXT");           // when the reassign happened
 
+// ─── Collaboration: comments + send-back + substitute signer ───
+db.exec(`
+  CREATE TABLE IF NOT EXISTS document_comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id INTEGER NOT NULL,
+    author_type TEXT NOT NULL,        -- 'owner' | 'signer'
+    author_user_id INTEGER,           -- set when author_type='owner'
+    author_signer_id INTEGER,         -- set when author_type='signer'
+    author_name TEXT NOT NULL,        -- display name (de-normalised for history)
+    author_email TEXT,                -- display email
+    body TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+    FOREIGN KEY (author_user_id) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (author_signer_id) REFERENCES signers(id) ON DELETE SET NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_comments_doc ON document_comments(document_id, created_at);
+`);
+// Substitute tracking: same columns as reassign already cover "replaced from" lineage.
+// Add one more flag so UI can distinguish sender-substitute from signer-reassign.
+ensureColumn('signers', 'substituted_by_owner', "INTEGER NOT NULL DEFAULT 0");
+// Send-back tracking
+ensureColumn('signers', 'sendback_count', "INTEGER NOT NULL DEFAULT 0");
+ensureColumn('signers', 'last_sendback_at', "TEXT");
+
 // ─── RFC 3161 timestamp (feature: TSA / LTV) ───
 ensureColumn('documents', 'tsa_url', "TEXT");                       // TSA endpoint used
 ensureColumn('documents', 'tsa_token_path', "TEXT");                // filesystem path of .tst file
@@ -778,6 +803,27 @@ const signerOps = {
       .run(newName, newEmail.toLowerCase(), newToken, signer.name, signer.email, id);
     return { token: newToken, prevName: signer.name, prevEmail: signer.email };
   },
+  // Substitute: owner-initiated replacement of a signer who hasn't yet signed.
+  // Same as reassign (new token, reassigned_from_* tracked) but flagged as owner-driven
+  // so the audit trail + UI can distinguish it.
+  substitute(id, newName, newEmail) {
+    const signer = db.prepare(`SELECT * FROM signers WHERE id = ? AND status IN ('sent', 'pending')`).get(id);
+    if (!signer) return null;
+    const newToken = generateToken();
+    db.prepare(`UPDATE signers SET name = ?, email = ?, token = ?,
+      reassigned_from_name = ?, reassigned_from_email = ?, reassigned_at = datetime('now'),
+      substituted_by_owner = 1,
+      otp = NULL, otp_expires = NULL
+      WHERE id = ? AND status IN ('sent', 'pending')`)
+      .run(newName, newEmail.toLowerCase(), newToken, signer.name, signer.email, id);
+    return { token: newToken, prevName: signer.name, prevEmail: signer.email };
+  },
+  markSendBack(id) {
+    // Atomic bump + timestamp so two simultaneous send-backs don't both think they were first
+    const result = db.prepare(`UPDATE signers SET sendback_count = sendback_count + 1, last_sendback_at = datetime('now')
+      WHERE id = ? AND status IN ('sent', 'pending')`).run(id);
+    return result.changes === 1;
+  },
   addAttachment(id, attachment) {
     const row = db.prepare('SELECT attachments_json FROM signers WHERE id = ?').get(id);
     const list = row ? JSON.parse(row.attachments_json || '[]') : [];
@@ -994,6 +1040,35 @@ const embedOps = {
   },
 };
 
+// ─── Document comments (sender ↔ signer messaging) ───
+const commentOps = {
+  addByOwner(documentId, userId, userName, userEmail, body) {
+    const result = db.prepare(`INSERT INTO document_comments
+      (document_id, author_type, author_user_id, author_name, author_email, body)
+      VALUES (?, 'owner', ?, ?, ?, ?)`)
+      .run(documentId, userId, userName || '', userEmail || '', String(body).slice(0, 2000));
+    return { id: result.lastInsertRowid };
+  },
+  addBySigner(documentId, signerId, signerName, signerEmail, body) {
+    const result = db.prepare(`INSERT INTO document_comments
+      (document_id, author_type, author_signer_id, author_name, author_email, body)
+      VALUES (?, 'signer', ?, ?, ?, ?)`)
+      .run(documentId, signerId, signerName || '', signerEmail || '', String(body).slice(0, 2000));
+    return { id: result.lastInsertRowid };
+  },
+  listByDocument(documentId) {
+    return db.prepare(`SELECT id, author_type, author_user_id, author_signer_id, author_name, author_email, body, created_at
+      FROM document_comments WHERE document_id = ? ORDER BY created_at ASC`).all(documentId);
+  },
+  countByDocument(documentId) {
+    return db.prepare('SELECT COUNT(*) as cnt FROM document_comments WHERE document_id = ?').get(documentId).cnt;
+  },
+  deleteComment(id, documentId) {
+    // Any org member with mutate access can delete; caller enforces that
+    return db.prepare('DELETE FROM document_comments WHERE id = ? AND document_id = ?').run(id, documentId).changes > 0;
+  },
+};
+
 // ─── Event log (Zapier/Make polling) ───
 db.exec(`
   CREATE TABLE IF NOT EXISTS event_log (
@@ -1063,4 +1138,4 @@ const workflowOps = {
   },
 };
 
-module.exports = { db, userOps, otpOps, sessionOps, docOps, signerOps, templateOps, apiKeyOps, webhookOps, eventLogOps, workflowOps, embedOps, orgOps, orgMemberOps, orgInviteOps, generateToken, VALID_ROLES, ORG_ROLES };
+module.exports = { db, userOps, otpOps, sessionOps, docOps, signerOps, templateOps, apiKeyOps, webhookOps, eventLogOps, workflowOps, embedOps, orgOps, orgMemberOps, orgInviteOps, commentOps, generateToken, VALID_ROLES, ORG_ROLES };

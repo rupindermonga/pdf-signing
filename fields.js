@@ -18,7 +18,41 @@ const ALLOWED_FIELD_TYPES = [
 ];
 
 // Safe formula operators — explicit whitelist, no eval() ever.
-const FORMULA_OPS = ['sum', 'product', 'diff', 'avg', 'min', 'max', 'concat'];
+// - sum/product/diff/avg/min/max: numeric N-ary on f.calc.fields
+// - multiply: alias for product (more intuitive name)
+// - divide: binary (fields[0] / fields[1]); zero-divide yields 0
+// - round: one arg rounded to f.calc.decimals (default 0)
+// - abs/negate: one arg
+// - concat: string N-ary with optional separator
+// - if: conditional — f.calc.condField's value compared to f.calc.equals picks
+//   between f.calc.thenField and f.calc.elseField (copies that field's current value)
+const FORMULA_OPS = [
+  'sum', 'product', 'multiply', 'diff', 'divide', 'avg', 'min', 'max',
+  'round', 'abs', 'negate', 'concat', 'if',
+];
+
+// Visibility operators for visibleIf — gate whether a field is shown/stored at all
+// (vs. `conditional` which only gates required-ness).
+const VISIBILITY_OPS = ['equals', 'notEquals', 'contains', 'notContains', 'notEmpty', 'empty', 'gt', 'lt'];
+
+function evaluateVisibility(rule, allValues) {
+  if (!rule || !rule.fieldId) return true;
+  const op = VISIBILITY_OPS.includes(rule.operator) ? rule.operator : 'equals';
+  const raw = allValues[rule.fieldId];
+  const v = raw == null ? '' : String(raw);
+  const target = rule.equals == null ? '' : String(rule.equals);
+  switch (op) {
+    case 'equals': return v === target;
+    case 'notEquals': return v !== target;
+    case 'contains': return v.includes(target);
+    case 'notContains': return !v.includes(target);
+    case 'notEmpty': return v.length > 0;
+    case 'empty': return v.length === 0;
+    case 'gt': return parseFloat(v) > parseFloat(target);
+    case 'lt': return parseFloat(v) < parseFloat(target);
+    default: return true;
+  }
+}
 
 // Validate a regex pattern is safe-ish: cap length, reject catastrophic backtracking indicators.
 function cleanRegex(pattern) {
@@ -81,6 +115,23 @@ function cleanFieldList(parsedFields, { forceSignerOrder = null } = {}) {
         op: f.calc.op,
         fields: f.calc.fields.slice(0, 10).map(id => sanitize(String(id)).slice(0, 32)),
         ...(f.calc.separator && f.calc.op === 'concat' ? { separator: sanitize(String(f.calc.separator)).slice(0, 10) } : {}),
+        ...(f.calc.op === 'round' && f.calc.decimals != null ? { decimals: Math.max(0, Math.min(6, parseInt(f.calc.decimals, 10) || 0)) } : {}),
+        // if-op: compare condField to equals, then pick thenField or elseField
+        ...(f.calc.op === 'if' && f.calc.condField ? {
+          condField: sanitize(String(f.calc.condField)).slice(0, 32),
+          equals: sanitize(String(f.calc.equals == null ? '' : f.calc.equals)).slice(0, 120),
+          thenField: f.calc.thenField ? sanitize(String(f.calc.thenField)).slice(0, 32) : null,
+          elseField: f.calc.elseField ? sanitize(String(f.calc.elseField)).slice(0, 32) : null,
+        } : {}),
+      };
+    }
+    // visibleIf: hide the field entirely when the rule is false (stronger than `conditional`).
+    let visibleIf = null;
+    if (f.visibleIf && typeof f.visibleIf === 'object' && f.visibleIf.fieldId) {
+      visibleIf = {
+        fieldId: sanitize(String(f.visibleIf.fieldId)).slice(0, 32),
+        equals: sanitize(String(f.visibleIf.equals == null ? '' : f.visibleIf.equals)).slice(0, 120),
+        ...(VISIBILITY_OPS.includes(f.visibleIf.operator) ? { operator: f.visibleIf.operator } : {}),
       };
     }
     // Linked: mirror another field's value (e.g., signer name appearing in multiple places)
@@ -106,6 +157,7 @@ function cleanFieldList(parsedFields, { forceSignerOrder = null } = {}) {
       ...(defaultValue != null ? { defaultValue } : {}),
       ...(calc ? { calc } : {}),
       ...(linkedTo ? { linkedTo } : {}),
+      ...(visibleIf ? { visibleIf } : {}),
       ...(f.mask ? { mask: String(f.mask).slice(0, 20) } : {}),
     };
   });
@@ -122,6 +174,9 @@ function validateFieldSubmission(allFields, signerOrder, submittedValues) {
     if (f.type === 'hidden') continue;     // metadata — no user-visible input
     if (f.type === 'formula') continue;    // computed server-side
     if (f.type === 'linked') continue;     // mirrored from linkedTo
+    // visibleIf: if rule says the field shouldn't be visible, skip all validation.
+    // Submitted value (if any) is allowed but ignored.
+    if (f.visibleIf && !evaluateVisibility(f.visibleIf, submittedValues)) continue;
     // If locked, value must equal defaultValue (signer cannot modify)
     if (f.locked) {
       const v = submittedValues[f.id];
@@ -204,15 +259,44 @@ function applyCalculatedFields(allFields, signerOrder, submittedValues) {
     let result = '';
     switch (f.calc.op) {
       case 'sum': result = nums.reduce((a, b) => a + b, 0); break;
-      case 'product': result = nums.length ? nums.reduce((a, b) => a * b, 1) : 0; break;
+      case 'product':
+      case 'multiply': result = nums.length ? nums.reduce((a, b) => a * b, 1) : 0; break;
       case 'diff': result = nums.length ? nums.slice(1).reduce((a, b) => a - b, nums[0]) : 0; break;
+      case 'divide': {
+        if (nums.length < 2) { result = 0; break; }
+        const denom = nums[1];
+        result = denom === 0 ? 0 : nums[0] / denom;
+        break;
+      }
       case 'avg': result = nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : 0; break;
       case 'min': result = nums.length ? Math.min(...nums) : 0; break;
       case 'max': result = nums.length ? Math.max(...nums) : 0; break;
+      case 'round': {
+        const n = nums.length ? nums[0] : 0;
+        const d = Math.max(0, Math.min(6, parseInt(f.calc.decimals, 10) || 0));
+        result = Number(n.toFixed(d));
+        break;
+      }
+      case 'abs': result = nums.length ? Math.abs(nums[0]) : 0; break;
+      case 'negate': result = nums.length ? -nums[0] : 0; break;
       case 'concat': result = vals.map(v => String(v == null ? '' : v)).join(f.calc.separator || ' '); break;
+      case 'if': {
+        // condField's current value (string) compared to equals → pick thenField or elseField
+        const condVal = out[f.calc.condField];
+        const match = String(condVal == null ? '' : condVal) === String(f.calc.equals || '');
+        const pickId = match ? f.calc.thenField : f.calc.elseField;
+        result = pickId && out[pickId] != null ? out[pickId] : '';
+        break;
+      }
     }
-    if (f.calc.op !== 'concat' && typeof result === 'number') {
-      out[f.id] = Number.isFinite(result) ? Number(result.toFixed(2)) : 0;
+    // 'concat' and 'if' are string-valued; numeric ops keep 2 decimals by default.
+    // 'round' explicitly controls its own decimals via the branch above.
+    if (typeof result === 'number') {
+      if (f.calc.op === 'round') {
+        out[f.id] = Number.isFinite(result) ? result : 0;
+      } else {
+        out[f.id] = Number.isFinite(result) ? Number(result.toFixed(2)) : 0;
+      }
     } else {
       out[f.id] = String(result).slice(0, 500);
     }
@@ -220,4 +304,4 @@ function applyCalculatedFields(allFields, signerOrder, submittedValues) {
   return out;
 }
 
-module.exports = { ALLOWED_FIELD_TYPES, cleanFieldList, validateFieldSubmission, applyCalculatedFields, sanitize };
+module.exports = { ALLOWED_FIELD_TYPES, FORMULA_OPS, VISIBILITY_OPS, cleanFieldList, validateFieldSubmission, applyCalculatedFields, evaluateVisibility, sanitize };

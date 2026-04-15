@@ -569,9 +569,31 @@
       pageEl.appendChild(div);
     }
 
-    // A conditional field is only "active" when its dependency matches.
+    // Evaluate a visibleIf / conditional rule against current fieldValues.
+    // Mirrors server-side evaluateVisibility() in fields.js.
+    function evalRule(rule) {
+      if (!rule || !rule.fieldId) return true;
+      const op = rule.operator || 'equals';
+      const raw = fieldValues[rule.fieldId];
+      const v = raw == null ? '' : String(raw);
+      const target = rule.equals == null ? '' : String(rule.equals);
+      switch (op) {
+        case 'equals': return v === target;
+        case 'notEquals': return v !== target;
+        case 'contains': return v.includes(target);
+        case 'notContains': return !v.includes(target);
+        case 'notEmpty': return v.length > 0;
+        case 'empty': return v.length === 0;
+        case 'gt': return parseFloat(v) > parseFloat(target);
+        case 'lt': return parseFloat(v) < parseFloat(target);
+        default: return true;
+      }
+    }
+    // A field is "active" when BOTH: (a) its conditional gate (gates required) is met
+    // and (b) its visibleIf rule (gates rendering entirely) is met.
     // Inactive fields are hidden AND excluded from the required-count.
     function isFieldActive(f) {
+      if (f.visibleIf && !evalRule(f.visibleIf)) return false;
       if (!f.conditional || !f.conditional.fieldId) return true;
       const refVal = fieldValues[f.conditional.fieldId];
       const refStr = refVal == null ? '' : String(refVal);
@@ -580,12 +602,13 @@
     function refreshConditionalVisibility() {
       const myFields = (signerInfo && signerInfo.fields) || [];
       for (const f of myFields) {
-        if (!f.conditional) continue;
+        // Re-evaluate on every pass; both conditional and visibleIf can depend on other fields.
+        if (!f.conditional && !f.visibleIf) continue;
         const el = document.querySelector(`.pdf-field[data-fid="${f.id}"]`);
         if (!el) continue;
         const active = isFieldActive(f);
         el.style.display = active ? '' : 'none';
-        // Clear hidden field values so they don't stick through a condition flip
+        // Clear hidden field values so they don't stick through a rule flip
         if (!active) fieldValues[f.id] = (f.type === 'checkbox') ? false : '';
       }
     }
@@ -603,14 +626,38 @@
           let r = '';
           switch (f.calc.op) {
             case 'sum': r = nums.reduce((a, b) => a + b, 0); break;
-            case 'product': r = nums.length ? nums.reduce((a, b) => a * b, 1) : 0; break;
+            case 'product':
+            case 'multiply': r = nums.length ? nums.reduce((a, b) => a * b, 1) : 0; break;
             case 'diff': r = nums.length ? nums.slice(1).reduce((a, b) => a - b, nums[0]) : 0; break;
+            case 'divide': {
+              if (nums.length < 2) { r = 0; break; }
+              r = nums[1] === 0 ? 0 : nums[0] / nums[1];
+              break;
+            }
             case 'avg': r = nums.length ? (nums.reduce((a, b) => a + b, 0) / nums.length) : 0; break;
             case 'min': r = nums.length ? Math.min(...nums) : 0; break;
             case 'max': r = nums.length ? Math.max(...nums) : 0; break;
+            case 'round': {
+              const n = nums.length ? nums[0] : 0;
+              const d = Math.max(0, Math.min(6, parseInt(f.calc.decimals, 10) || 0));
+              r = Number(n.toFixed(d));
+              break;
+            }
+            case 'abs': r = nums.length ? Math.abs(nums[0]) : 0; break;
+            case 'negate': r = nums.length ? -nums[0] : 0; break;
             case 'concat': r = vals.map(v => String(v == null ? '' : v)).join(f.calc.separator || ' '); break;
+            case 'if': {
+              const condVal = fieldValues[f.calc.condField];
+              const match = String(condVal == null ? '' : condVal) === String(f.calc.equals || '');
+              const pickId = match ? f.calc.thenField : f.calc.elseField;
+              r = pickId && fieldValues[pickId] != null ? fieldValues[pickId] : '';
+              break;
+            }
           }
-          if (typeof r === 'number') r = Number.isFinite(r) ? r.toFixed(2) : '0';
+          if (typeof r === 'number') {
+            if (f.calc.op === 'round') r = Number.isFinite(r) ? String(r) : '0';
+            else r = Number.isFinite(r) ? r.toFixed(2) : '0';
+          }
           fieldValues[f.id] = r;
         }
         // Update DOM display for computed fields

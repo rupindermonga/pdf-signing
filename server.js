@@ -157,6 +157,8 @@ const templatesDir = path.join(__dirname, 'data', 'templates');
 if (!fs.existsSync(templatesDir)) fs.mkdirSync(templatesDir, { recursive: true });
 const idVerifDir = path.join(__dirname, 'data', 'idverif');
 if (!fs.existsSync(idVerifDir)) fs.mkdirSync(idVerifDir, { recursive: true });
+const attachmentsDir = path.join(__dirname, 'data', 'attachments');
+if (!fs.existsSync(attachmentsDir)) fs.mkdirSync(attachmentsDir, { recursive: true });
 
 // ─── ID-verification at-rest encryption (AES-256-GCM) ───
 // Key derived from ID_VERIF_KEY env; if unset, derive from SESSION_SECRET (dev fallback).
@@ -252,7 +254,8 @@ async function runScheduler() {
         try {
           const signUrl = `${BASE_URL}/sign/${s.token}`;
           if (email.isConfigured()) {
-            await email.sendReminder(s.email, s.name, senderName, doc.title, signUrl, doc.expires_at);
+            const brand = userOps.getBranding(doc.created_by);
+            await email.sendReminder(s.email, s.name, senderName, doc.title, signUrl, doc.expires_at, brand);
           }
           if (sms.isConfigured() && (s.notify_method === 'sms' || s.notify_method === 'both') && s.phone) {
             try { await sms.sendSigningLinkSMS(s.phone, s.name, senderName, doc.title, signUrl); } catch {}
@@ -603,6 +606,124 @@ app.get('/api/settings/totp/status', requireAuth, (req, res) => {
   res.json({ enabled: !!(user && user.totp_enabled) });
 });
 
+// ─── Branding / white-label ───
+app.get('/api/settings/branding', requireAuth, (req, res) => {
+  res.json(userOps.getBranding(req.session.userId) || {});
+});
+
+app.post('/api/settings/branding', requireAuth, requireRole('admin', 'member'), (req, res) => {
+  const { logoUrl, color, fromName, redirectUrl, emailFooter } = req.body;
+  // Validate logo URL — must be https:// to prevent mixed content / SSRF via img src
+  const cleanLogo = logoUrl ? String(logoUrl).trim() : '';
+  if (cleanLogo && !/^https:\/\//i.test(cleanLogo)) {
+    return res.status(400).json({ error: 'Logo URL must start with https://' });
+  }
+  // Validate color as #rrggbb
+  const cleanColor = color && /^#[0-9a-fA-F]{6}$/.test(String(color).trim()) ? String(color).trim() : '';
+  const cleanRedirect = redirectUrl ? String(redirectUrl).trim() : '';
+  if (cleanRedirect && !/^https:\/\//i.test(cleanRedirect)) {
+    return res.status(400).json({ error: 'Redirect URL must start with https://' });
+  }
+  userOps.updateBranding(req.session.userId, {
+    logoUrl: cleanLogo.slice(0, 500),
+    color: cleanColor,
+    fromName: sanitize(String(fromName || '')).slice(0, 80),
+    redirectUrl: cleanRedirect.slice(0, 500),
+    emailFooter: sanitize(String(emailFooter || '')).slice(0, 500),
+  });
+  res.json({ ok: true });
+});
+
+// ─── Analytics ───
+app.get('/analytics', requireAuth, requireRole('admin', 'member'), (req, res) => {
+  sendHtml(res, path.join(__dirname, 'public', 'analytics.html'));
+});
+
+app.get('/api/analytics/summary', requireAuth, requireRole('admin', 'member'), (req, res) => {
+  const db = require('./database').db;
+  const userId = req.session.userId;
+  const days = Math.min(Math.max(parseInt(req.query.days, 10) || 30, 1), 365);
+  const since = `datetime('now', '-${days} days')`;
+
+  try {
+    // Document stats (owned docs only)
+    const totals = db.prepare(`SELECT
+      COUNT(*) as total,
+      SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as completed,
+      SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) as pending,
+      SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END) as cancelled,
+      SUM(CASE WHEN status='draft' THEN 1 ELSE 0 END) as draft
+      FROM documents WHERE created_by = ? AND created_at >= ${since}`).get(userId);
+
+    // Average time-to-sign in hours (for completed documents)
+    const timing = db.prepare(`SELECT
+      AVG((julianday(completed_at) - julianday(created_at)) * 24) as avg_hours,
+      MIN((julianday(completed_at) - julianday(created_at)) * 24) as min_hours,
+      MAX((julianday(completed_at) - julianday(created_at)) * 24) as max_hours
+      FROM documents WHERE created_by = ? AND status='completed' AND completed_at IS NOT NULL AND created_at >= ${since}`).get(userId);
+
+    // Daily activity (documents sent per day)
+    const daily = db.prepare(`SELECT
+      date(created_at) as day,
+      COUNT(*) as sent,
+      SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as completed
+      FROM documents WHERE created_by = ? AND created_at >= ${since}
+      GROUP BY date(created_at) ORDER BY day`).all(userId);
+
+    // Per-signer signing rate (how many signers signed vs how many were sent)
+    const signerStats = db.prepare(`SELECT
+      COUNT(DISTINCT s.id) as total,
+      SUM(CASE WHEN s.status='signed' THEN 1 ELSE 0 END) as signed,
+      AVG(CASE WHEN s.signed_at IS NOT NULL THEN s.reminder_count ELSE NULL END) as avg_reminders_before_sign
+      FROM signers s JOIN documents d ON s.document_id = d.id
+      WHERE d.created_by = ? AND d.created_at >= ${since} AND s.role != 'cc'`).get(userId);
+
+    // Template usage (most-used templates in period)
+    const templateUsage = db.prepare(`SELECT name, public_submissions, is_public FROM templates
+      WHERE user_id = ? ORDER BY public_submissions DESC LIMIT 5`).all(userId);
+
+    // Webhook health (recent firings)
+    const webhookHealth = db.prepare(`SELECT
+      COUNT(*) as total,
+      SUM(CASE WHEN last_status LIKE '2%' THEN 1 ELSE 0 END) as ok,
+      SUM(CASE WHEN last_status IS NOT NULL AND last_status NOT LIKE '2%' THEN 1 ELSE 0 END) as failing
+      FROM webhooks WHERE user_id = ? AND active = 1`).get(userId);
+
+    // Completion rate
+    const totalSent = (totals.completed || 0) + (totals.pending || 0) + (totals.cancelled || 0);
+    const completionRate = totalSent > 0 ? Math.round(((totals.completed || 0) / totalSent) * 100) : 0;
+
+    res.json({
+      period_days: days,
+      documents: {
+        total: totals.total || 0,
+        completed: totals.completed || 0,
+        pending: totals.pending || 0,
+        cancelled: totals.cancelled || 0,
+        draft: totals.draft || 0,
+        completion_rate_pct: completionRate,
+      },
+      time_to_sign: {
+        avg_hours: timing.avg_hours ? Number(timing.avg_hours.toFixed(2)) : null,
+        min_hours: timing.min_hours ? Number(timing.min_hours.toFixed(2)) : null,
+        max_hours: timing.max_hours ? Number(timing.max_hours.toFixed(2)) : null,
+      },
+      signers: {
+        total: signerStats.total || 0,
+        signed: signerStats.signed || 0,
+        sign_rate_pct: signerStats.total > 0 ? Math.round((signerStats.signed / signerStats.total) * 100) : 0,
+        avg_reminders_before_sign: signerStats.avg_reminders_before_sign ? Number(signerStats.avg_reminders_before_sign.toFixed(1)) : 0,
+      },
+      templates: templateUsage.map(t => ({ name: t.name, submissions: t.public_submissions || 0, is_public: !!t.is_public })),
+      webhooks: webhookHealth,
+      daily_activity: daily,
+    });
+  } catch (err) {
+    console.error('Analytics error:', err.message);
+    res.status(500).json({ error: 'Could not compute analytics' });
+  }
+});
+
 // ─── Admin: user management ───
 app.get('/admin', requireAuth, requireRole('admin'), (req, res) => {
   sendHtml(res, path.join(__dirname, 'public', 'admin.html'));
@@ -891,8 +1012,10 @@ app.post('/api/documents/bulk-create', requireAuth, requireRole('admin', 'member
 async function notifySigner(signer, doc, senderName) {
   const signUrl = `${BASE_URL}/sign/${signer.token}`;
   const method = signer.notify_method || 'email';
+  // Load creator's branding so signer-facing emails use their logo/color/from-name
+  const brand = doc.created_by ? userOps.getBranding(doc.created_by) : null;
   if (method === 'email' || method === 'both') {
-    await email.sendSigningRequest(signer.email, signer.name, senderName, doc.title, signUrl, doc.message);
+    await email.sendSigningRequest(signer.email, signer.name, senderName, doc.title, signUrl, doc.message, brand);
   }
   if ((method === 'sms' || method === 'both') && signer.phone && sms.isConfigured()) {
     await sms.sendSigningLinkSMS(signer.phone, signer.name, senderName, doc.title, signUrl);
@@ -1100,6 +1223,99 @@ app.post('/api/sign/:token/id-verify', rateLimit(60000, 5), (req, res, next) => 
   res.json({ ok: true, status: 'verified' });
 });
 
+// ─── Signer attachment upload ───
+// Allows a signer to upload supporting documents when the template requires an 'attachment' field.
+// Files are AES-256-GCM encrypted at rest using the same idVerifKey (shared encryption boundary).
+const ATTACHMENT_MIME_WHITELIST = new Set([
+  'application/pdf', 'image/jpeg', 'image/png', 'image/webp',
+  'text/plain', 'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+]);
+app.post('/api/sign/:token/attachments', rateLimit(60000, 10), (req, res, next) => {
+  const attUpload = multer({
+    storage: multer.memoryStorage(),
+    fileFilter: (req, file, cb) => {
+      if (ATTACHMENT_MIME_WHITELIST.has(file.mimetype)) return cb(null, true);
+      cb(new Error('File type not allowed'), false);
+    },
+    limits: { fileSize: 15 * 1024 * 1024, files: 1 },
+  }).single('file');
+  attUpload(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    next();
+  });
+}, (req, res) => {
+  const signer = signerOps.findByToken(req.params.token);
+  if (!signer) return res.status(404).json({ error: 'Not found' });
+  if (signer.doc_status === 'cancelled') return res.status(410).json({ error: 'Cancelled' });
+  if (signer.status !== 'sent') return res.status(403).json({ error: 'Not your turn' });
+  if (!req.session.verifiedSigners?.[req.params.token]) return res.status(403).json({ error: 'Email not verified first' });
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+  const fieldId = sanitize(String(req.body.fieldId || '')).slice(0, 32);
+  if (!fieldId) return res.status(400).json({ error: 'fieldId required' });
+
+  // Verify field exists and belongs to this signer
+  const docFields = docOps.getFields(signer.document_id);
+  const field = docFields.find(f => f.id === fieldId && f.type === 'attachment' && f.signerOrder === signer.sign_order);
+  if (!field) return res.status(400).json({ error: 'Attachment field not found' });
+
+  // Enforce per-field attachment count cap (default 1)
+  const existing = signerOps.getAttachments(signer.id).filter(a => a.fieldId === fieldId);
+  const maxCount = Math.min(Math.max(parseInt(field.maxCount || 1, 10), 1), 5);
+  if (existing.length >= maxCount) {
+    return res.status(400).json({ error: `Maximum ${maxCount} attachment(s) reached for this field` });
+  }
+
+  const safeOriginal = sanitize(String(req.file.originalname || 'attachment')).replace(/[^\w.\-() ]/g, '_').slice(0, 100);
+  const storedName = `${signer.doc_uuid}_${signer.id}_${crypto.randomBytes(6).toString('hex')}_${safeOriginal}.enc`;
+  const filePath = path.join(attachmentsDir, storedName);
+  try {
+    fs.writeFileSync(filePath, encryptIdBlob(req.file.buffer));
+  } catch (e) {
+    console.error('Attachment encryption failed:', e.message);
+    return res.status(500).json({ error: 'Could not store attachment' });
+  }
+
+  signerOps.addAttachment(signer.id, {
+    fieldId,
+    filename: safeOriginal,
+    mime: req.file.mimetype,
+    size: req.file.size,
+    storedPath: filePath,
+    uploaded_at: new Date().toISOString(),
+  });
+  res.json({ ok: true, filename: safeOriginal, size: req.file.size });
+});
+
+// Document owner downloads a signer's attachment (decrypted on the fly)
+app.get('/api/documents/:uuid/attachments/:signerId/:index', requireAuth, (req, res) => {
+  const doc = docOps.findByUUID(req.params.uuid);
+  if (!doc) return res.status(404).json({ error: 'Not found' });
+  if (doc.created_by !== req.session.userId) return res.status(403).json({ error: 'Access denied' });
+  const signerId = parseInt(req.params.signerId, 10);
+  const signer = signerOps.findById(signerId);
+  if (!signer || signer.document_id !== doc.id) return res.status(404).json({ error: 'Not found' });
+
+  const attachments = signerOps.getAttachments(signerId);
+  const idx = parseInt(req.params.index, 10);
+  const att = attachments[idx];
+  if (!att || !att.storedPath || !fs.existsSync(att.storedPath)) return res.status(404).json({ error: 'Attachment not found' });
+
+  try {
+    const encrypted = fs.readFileSync(att.storedPath);
+    const decrypted = decryptIdBlob(encrypted);
+    res.setHeader('Content-Type', att.mime || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(att.filename)}"`);
+    res.send(decrypted);
+  } catch (e) {
+    console.error('Attachment decrypt failed:', e.message);
+    res.status(500).json({ error: 'Could not decrypt attachment' });
+  }
+});
+
 // ─── Stripe payment for signer ───
 app.post('/api/sign/:token/payment-checkout', rateLimit(60000, 5), async (req, res) => {
   const signer = signerOps.findByToken(req.params.token);
@@ -1249,6 +1465,9 @@ app.post('/api/sign/:token/submit', rateLimit(60000, 10), async (req, res) => {
   }
   const validationError = validateFieldSubmission(allFields, signer.sign_order, cleanValues);
   if (validationError) return res.status(400).json({ error: validationError });
+  // Compute calculated fields server-side (sum of referenced numeric fields)
+  const { applyCalculatedFields } = require('./fields');
+  const finalValues = applyCalculatedFields(allFields, signer.sign_order, cleanValues);
 
   const signed = signerOps.markSigned(signer.id, {
     signatureData: sanitize(signatureData || ''),
@@ -1256,7 +1475,7 @@ app.post('/api/sign/:token/submit', rateLimit(60000, 10), async (req, res) => {
     location: sanitize(location || ''),
     browserInfo: sanitize(browserInfo || ''),
     geoCoords: sanitize(geoCoords || ''),
-    fieldValues: cleanValues,
+    fieldValues: finalValues,
   });
   if (!signed) return res.status(409).json({ error: 'Signature already recorded (concurrent request)' });
 
@@ -1336,10 +1555,11 @@ app.post('/api/documents/:uuid/signers/:signerId/resend', requireAuth, requireRo
 
   const creatorUser = require('./database').db.prepare('SELECT * FROM users WHERE id = ?').get(doc.created_by);
   const signUrl = `${BASE_URL}/sign/${newToken}`;
+  const brand = userOps.getBranding(doc.created_by);
   await email.sendSigningRequest(
     signer.email, signer.name,
     creatorUser?.name || creatorUser?.email || 'Someone',
-    doc.title, signUrl, doc.message
+    doc.title, signUrl, doc.message, brand
   );
   res.json({ ok: true });
 });
@@ -1613,6 +1833,10 @@ app.get('/api/documents/:uuid', requireAuth, (req, res) => {
     browser_info: s.browser_info,
     signUrl: (!email.isConfigured() && (s.status === 'sent' || s.status === 'pending'))
       ? `${BASE_URL}/sign/${s.token}` : undefined,
+    attachments: (() => {
+      try { return JSON.parse(s.attachments_json || '[]').map((a, i) => ({ index: i, filename: a.filename, size: a.size, uploaded_at: a.uploaded_at })); }
+      catch { return []; }
+    })(),
   }));
   res.json({ document: doc, signers: safeSigner, emailConfigured: email.isConfigured() });
 });
@@ -1628,6 +1852,7 @@ app.get('/api/templates', requireAuth, (req, res) => {
     signing_mode: t.signing_mode, has_pdf: !!t.has_pdf, pdf_filename: t.pdf_filename,
     signers: JSON.parse(t.signers_json || '[]'),
     fields_count: JSON.parse(t.fields_json || '[]').length,
+    is_public: !!t.is_public, public_slug: t.public_slug, public_submissions: t.public_submissions || 0,
     created_at: t.created_at,
   }));
   res.json({ templates: list });
@@ -1704,6 +1929,123 @@ app.delete('/api/templates/:uuid', requireAuth, (req, res) => {
   const pdfPath = path.join(templatesDir, `${req.params.uuid}.pdf`);
   if (fs.existsSync(pdfPath)) fs.unlinkSync(pdfPath);
   res.json({ ok: true });
+});
+
+// ─── Publish / unpublish template as public web form ───
+app.post('/api/templates/:uuid/publish', requireAuth, requireRole('admin', 'member'), (req, res) => {
+  const tpl = templateOps.findByUUID(req.params.uuid, req.session.userId);
+  if (!tpl) return res.status(404).json({ error: 'Not found' });
+  if (!tpl.has_pdf) return res.status(400).json({ error: 'Template must include a PDF to be published as a public form' });
+  const slug = tpl.public_slug || templateOps.publish(req.params.uuid, req.session.userId);
+  if (!slug) return res.status(500).json({ error: 'Failed to publish template' });
+  res.json({ ok: true, slug, url: `${BASE_URL}/f/${slug}` });
+});
+
+app.post('/api/templates/:uuid/unpublish', requireAuth, requireRole('admin', 'member'), (req, res) => {
+  const ok = templateOps.unpublish(req.params.uuid, req.session.userId);
+  res.json({ ok });
+});
+
+// ─── Public form page (no auth) ───
+app.get('/f/:slug', (req, res) => {
+  const tpl = templateOps.findBySlug(req.params.slug);
+  if (!tpl) return res.status(404).send('Form not found');
+  sendHtml(res, path.join(__dirname, 'public', 'form.html'));
+});
+
+// Public form metadata (no auth)
+app.get('/api/public/forms/:slug/info', rateLimit(60000, 30), (req, res) => {
+  const tpl = templateOps.findBySlug(req.params.slug);
+  if (!tpl) return res.status(404).json({ error: 'Not found' });
+  // Surface only the first signer's fields — the submitter is always signer 1 on a public form
+  const firstSignerFields = tpl.fields.filter(f => (f.signerOrder || 1) === 1);
+  const owner = userOps.findById(tpl.user_id);
+  res.json({
+    templateName: tpl.name,
+    title: tpl.title || tpl.name,
+    message: tpl.message || '',
+    fields: firstSignerFields,
+    brand: owner ? {
+      fromName: owner.brand_from_name || owner.name || 'SealForge',
+      logoUrl: owner.brand_logo_url || '',
+      color: owner.brand_color || '#1a3b7a',
+    } : null,
+  });
+});
+
+// Public form submission — creates a one-off signing request
+app.post('/api/public/forms/:slug/submit', rateLimit(60000, 3), async (req, res) => {
+  const tpl = templateOps.findBySlug(req.params.slug);
+  if (!tpl) return res.status(404).json({ error: 'Not found' });
+  if (!tpl.has_pdf) return res.status(400).json({ error: 'Form is not configured properly' });
+
+  const { name, email, fieldValues } = req.body;
+  const cleanName = sanitize(String(name || '')).slice(0, 120);
+  const cleanEmail = sanitize(String(email || '')).toLowerCase().slice(0, 254);
+  if (!cleanName || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(cleanEmail)) {
+    return res.status(400).json({ error: 'Valid name and email required' });
+  }
+
+  try {
+    // Load template PDF
+    const tplPdfPath = path.join(templatesDir, `${tpl.uuid}.pdf`);
+    if (!fs.existsSync(tplPdfPath)) return res.status(400).json({ error: 'Template PDF missing' });
+    const pdfBuffer = fs.readFileSync(tplPdfPath);
+    const hash = crypto.createHash('sha256').update(pdfBuffer).digest('hex');
+
+    // Create a new document owned by the template owner
+    const cleanFilename = sanitize(tpl.pdf_filename || 'form.pdf').replace(/[^\w.\-() ]/g, '_');
+    const title = sanitize(tpl.title || tpl.name || 'Public Form') + ' — ' + cleanName;
+    const doc = docOps.create(tpl.user_id, title, cleanFilename, hash, tpl.message || '', 'sequential');
+    fs.writeFileSync(path.join(storageDir, `${doc.uuid}.pdf`), pdfBuffer);
+
+    // Copy template fields
+    docOps.setFields(doc.id, tpl.fields);
+
+    // Add submitter as signer 1
+    const signer = signerOps.addToDocument(doc.id, cleanName, cleanEmail, 1, 'sign');
+
+    // Pre-fill sanitized field values the submitter provided
+    const myFields = tpl.fields.filter(f => (f.signerOrder || 1) === 1);
+    const prefilled = {};
+    for (const f of myFields) {
+      const raw = fieldValues && Object.prototype.hasOwnProperty.call(fieldValues, f.id) ? fieldValues[f.id] : '';
+      if (f.type === 'checkbox') {
+        prefilled[f.id] = raw === true || raw === 'true' || raw === '1';
+      } else if (raw !== '' && raw != null) {
+        prefilled[f.id] = sanitize(String(raw)).slice(0, 500);
+      }
+    }
+    if (Object.keys(prefilled).length) {
+      require('./database').db.prepare('UPDATE signers SET field_values_json = ? WHERE id = ?').run(JSON.stringify(prefilled), signer.id);
+    }
+
+    // Copy additional signers from template (they sign after the submitter)
+    if (Array.isArray(tpl.signers) && tpl.signers.length) {
+      for (let i = 0; i < tpl.signers.length; i++) {
+        const s = tpl.signers[i];
+        signerOps.addToDocument(doc.id, sanitize(s.name || `Signer ${i + 2}`), sanitize(s.email || '').toLowerCase(), i + 2, s.role || 'sign');
+      }
+    }
+
+    // Kick off the signing flow — submitter is first
+    docOps.updateStatus(doc.id, 'pending');
+    const result = await sendToNextSigner(doc.id);
+    templateOps.incrementSubmissions(tpl.uuid);
+
+    fireWebhooks(tpl.user_id, 'document.sent', {
+      document: { uuid: doc.uuid, title, signing_mode: 'sequential' },
+      source: 'public_form',
+      form: { slug: req.params.slug, template_uuid: tpl.uuid },
+    });
+
+    // If email isn't configured, return the sign URL so the submitter can proceed immediately
+    const signUrl = result && result.signUrl;
+    res.json({ ok: true, submitted: true, signUrl: signUrl || null });
+  } catch (err) {
+    console.error('Public form submit error:', err.message);
+    res.status(500).json({ error: 'Could not submit form' });
+  }
 });
 
 // Serve a template PDF (used by send.html when the user picks a template)

@@ -53,20 +53,53 @@
         list.innerHTML = '<div class="empty-state"><div class="icon">&#128196;</div><h3>No templates yet</h3><p>Create a signing request and tick "Save as template" to add one.</p></div>';
         return;
       }
-      list.innerHTML = templates.map(t => `
+      list.innerHTML = templates.map(t => {
+        const parsedSigners = Array.isArray(t.signers) ? t.signers : JSON.parse(t.signers_json || '[]');
+        const pubUrl = t.is_public ? window.location.origin + '/f/' + t.public_slug : '';
+        return `
         <div class="tpl-card">
           <h3>${esc(t.name)}</h3>
-          <div class="tpl-meta">${esc(t.signers.length)} signer(s) &middot; ${esc(t.signing_mode)} &middot; ${t.has_pdf ? 'PDF included' : 'No PDF'}</div>
+          <div class="tpl-meta">${esc(parsedSigners.length)} signer(s) &middot; ${esc(t.signing_mode)} &middot; ${t.has_pdf ? 'PDF included' : 'No PDF'}</div>
           ${t.title ? `<div style="font-size:13px;color:#444;">Title: ${esc(t.title)}</div>` : ''}
           <div class="tpl-meta">Created ${esc(new Date(t.created_at).toLocaleDateString())}</div>
+          ${t.is_public ? `
+            <div style="background:#e8f5e9;border:1px solid #4caf50;border-radius:6px;padding:8px;margin-top:8px;font-size:12px;">
+              <b style="color:#2e7d32;">PUBLIC FORM</b>
+              <div class="mono" style="font-size:11px;word-break:break-all;color:#1a3b7a;user-select:all;margin-top:4px;font-family:monospace;">${esc(pubUrl)}</div>
+              <div style="color:#555;margin-top:4px;">${esc(t.public_submissions || 0)} submission(s)</div>
+            </div>` : ''}
           <div class="tpl-actions">
             <a class="tpl-use" href="/send?template=${esc(t.uuid)}">Use</a>
+            ${t.has_pdf ? (t.is_public
+              ? `<button class="tpl-del" data-unpublish-uuid="${esc(t.uuid)}">Unpublish</button>`
+              : `<button class="tpl-use" style="background:#2e7d32;" data-publish-uuid="${esc(t.uuid)}">Publish form</button>`) : ''}
             <button class="tpl-del" data-del-uuid="${esc(t.uuid)}" data-del-name="${esc(t.name)}">Delete</button>
           </div>
-        </div>`).join('');
+        </div>`;
+      }).join('');
       list.querySelectorAll('[data-del-uuid]').forEach(btn => {
         btn.addEventListener('click', () => del(btn.dataset.delUuid, btn.dataset.delName));
       });
+      list.querySelectorAll('[data-publish-uuid]').forEach(btn => {
+        btn.addEventListener('click', () => publish(btn.dataset.publishUuid));
+      });
+      list.querySelectorAll('[data-unpublish-uuid]').forEach(btn => {
+        btn.addEventListener('click', () => unpublish(btn.dataset.unpublishUuid));
+      });
+    }
+
+    async function publish(uuid) {
+      const resp = await fetch('/api/templates/' + uuid + '/publish', { method: 'POST' });
+      const data = await resp.json();
+      if (!resp.ok) return alert(data.error || 'Publish failed');
+      alert('Form published!\n\nShareable URL:\n' + data.url);
+      load();
+    }
+    async function unpublish(uuid) {
+      if (!confirm('Unpublish this form? Existing submissions will remain but the URL will stop working.')) return;
+      const resp = await fetch('/api/templates/' + uuid + '/unpublish', { method: 'POST' });
+      if (!resp.ok) return alert('Unpublish failed');
+      load();
     }
 
     async function del(uuid, name) {

@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SealForge - Analytics</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <script src="/js/i18n.js" defer></script>
+  <style>
+    .analytics-container { max-width: 1100px; margin: 24px auto; padding: 0 20px; }
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 20px; }
+    .stat-card { background: white; border-radius: 12px; padding: 18px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+    .stat-card .num { font-size: 32px; font-weight: 700; color: #1a3b7a; line-height: 1; }
+    .stat-card .label { font-size: 12px; color: #888; margin-top: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .stat-card .sub { font-size: 12px; color: #555; margin-top: 4px; }
+    .card { background: white; border-radius: 12px; padding: 22px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); margin-bottom: 18px; }
+    .card h2 { color: #1a3b7a; font-size: 18px; margin-bottom: 14px; }
+    .period-select { display: flex; gap: 6px; margin-bottom: 18px; }
+    .period-select button { padding: 6px 14px; border: 1px solid #d0d5dd; background: white; border-radius: 6px; font-size: 13px; cursor: pointer; }
+    .period-select button.active { background: #1a3b7a; color: white; border-color: #1a3b7a; }
+    .chart { height: 200px; position: relative; margin: 12px 0; }
+    .chart svg { width: 100%; height: 100%; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; padding: 8px 10px; background: #f4f6fa; color: #1a3b7a; font-weight: 600; font-size: 12px; }
+    td { padding: 10px; border-bottom: 1px solid #eee; }
+    .badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; }
+    .badge-ok { background: #e8f5e9; color: #2e7d32; }
+    .badge-warn { background: #fff3e0; color: #e65100; }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    @media (max-width: 720px) { .two-col { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo"><span class="logo-seal">Seal</span><span class="logo-forge">Forge</span></div>
+    <h1>Analytics</h1>
+    <a href="/dashboard" class="header-link">Dashboard</a>
+  </header>
+
+  <div class="analytics-container">
+    <div class="period-select" id="period-select">
+      <button data-days="7">7 days</button>
+      <button data-days="30" class="active">30 days</button>
+      <button data-days="90">90 days</button>
+      <button data-days="365">1 year</button>
+    </div>
+
+    <div id="loading" style="text-align:center;padding:40px;color:#888;">Loading...</div>
+    <div id="content" style="display:none;">
+      <div class="stats-grid" id="kpis"></div>
+
+      <div class="card">
+        <h2>Daily activity</h2>
+        <div class="chart" id="daily-chart"></div>
+      </div>
+
+      <div class="two-col">
+        <div class="card">
+          <h2>Template usage</h2>
+          <table>
+            <thead><tr><th>Name</th><th style="text-align:right;">Submissions</th></tr></thead>
+            <tbody id="templates-tbody"></tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h2>Webhook health</h2>
+          <div id="webhook-health"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentDays = 30;
+
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML.replace(/'/g, '&#39;'); }
+
+    async function load() {
+      document.getElementById('loading').style.display = 'block';
+      document.getElementById('content').style.display = 'none';
+      const resp = await fetch('/api/analytics/summary?days=' + currentDays);
+      if (resp.status === 401) return window.location.href = '/login';
+      if (resp.status === 403) { document.getElementById('loading').textContent = 'Access denied'; return; }
+      const data = await resp.json();
+
+      renderKpis(data);
+      renderDaily(data.daily_activity);
+      renderTemplates(data.templates);
+      renderWebhooks(data.webhooks);
+
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('content').style.display = 'block';
+    }
+
+    function renderKpis(d) {
+      const avg = d.time_to_sign.avg_hours != null ? formatHours(d.time_to_sign.avg_hours) : '—';
+      const kpis = [
+        { num: d.documents.total, label: 'Documents sent', sub: `${d.documents.completed} completed` },
+        { num: d.documents.completion_rate_pct + '%', label: 'Completion rate', sub: `${d.documents.cancelled} cancelled` },
+        { num: avg, label: 'Avg time to sign', sub: d.time_to_sign.min_hours != null ? `Range: ${formatHours(d.time_to_sign.min_hours)}–${formatHours(d.time_to_sign.max_hours)}` : '' },
+        { num: d.signers.sign_rate_pct + '%', label: 'Signer response rate', sub: `${d.signers.signed}/${d.signers.total} signed` },
+        { num: d.signers.avg_reminders_before_sign, label: 'Avg reminders/sign', sub: 'Before response' },
+        { num: d.documents.pending, label: 'Pending now', sub: d.documents.draft + ' draft' },
+      ];
+      document.getElementById('kpis').innerHTML = kpis.map(k =>
+        `<div class="stat-card"><div class="num">${esc(String(k.num))}</div><div class="label">${esc(k.label)}</div><div class="sub">${esc(k.sub)}</div></div>`
+      ).join('');
+    }
+
+    function formatHours(h) {
+      if (h < 1) return Math.round(h * 60) + ' min';
+      if (h < 24) return h.toFixed(1) + ' hr';
+      return Math.round(h / 24) + ' days';
+    }
+
+    function renderDaily(days) {
+      const el = document.getElementById('daily-chart');
+      if (!days || !days.length) { el.innerHTML = '<div style="text-align:center;color:#888;padding:40px;">No activity in this period.</div>'; return; }
+      const max = Math.max(...days.map(d => d.sent), 1);
+      const width = 100;
+      const barW = width / days.length;
+      const svg = `<svg viewBox="0 0 ${width} 100" preserveAspectRatio="none">
+        ${days.map((d, i) => {
+          const h = (d.sent / max) * 90;
+          const hc = (d.completed / max) * 90;
+          return `<rect x="${i * barW + 0.2}" y="${100 - h}" width="${barW - 0.4}" height="${h}" fill="#b0c4de"></rect>
+                  <rect x="${i * barW + 0.2}" y="${100 - hc}" width="${barW - 0.4}" height="${hc}" fill="#1a3b7a"></rect>`;
+        }).join('')}
+      </svg>
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:#888;margin-top:4px;">
+        <span>${esc(days[0].day)}</span>
+        ${days.length > 2 ? `<span>${esc(days[Math.floor(days.length/2)].day)}</span>` : ''}
+        <span>${esc(days[days.length - 1].day)}</span>
+      </div>
+      <div style="font-size:11px;color:#888;margin-top:4px;"><span style="display:inline-block;width:10px;height:10px;background:#1a3b7a;margin-right:4px;"></span>Completed <span style="display:inline-block;width:10px;height:10px;background:#b0c4de;margin-left:12px;margin-right:4px;"></span>Sent</div>`;
+      el.innerHTML = svg;
+    }
+
+    function renderTemplates(templates) {
+      const tbody = document.getElementById('templates-tbody');
+      if (!templates || !templates.length) { tbody.innerHTML = '<tr><td colspan="2" style="text-align:center;color:#888;">No templates.</td></tr>'; return; }
+      tbody.innerHTML = templates.map(t => `
+        <tr>
+          <td>${esc(t.name)}${t.is_public ? ' <span class="badge badge-ok">PUBLIC</span>' : ''}</td>
+          <td style="text-align:right;font-weight:600;">${esc(String(t.submissions))}</td>
+        </tr>`).join('');
+    }
+
+    function renderWebhooks(w) {
+      const el = document.getElementById('webhook-health');
+      if (!w.total) { el.innerHTML = '<div style="color:#888;font-size:13px;">No active webhooks.</div>'; return; }
+      const health = w.failing === 0 ? 'ok' : 'warn';
+      el.innerHTML = `
+        <div style="display:flex;gap:20px;align-items:center;">
+          <div style="text-align:center;">
+            <div style="font-size:24px;font-weight:700;color:#1a3b7a;">${esc(String(w.total))}</div>
+            <div style="font-size:11px;color:#888;">Active</div>
+          </div>
+          <div style="text-align:center;">
+            <div style="font-size:24px;font-weight:700;color:#2e7d32;">${esc(String(w.ok || 0))}</div>
+            <div style="font-size:11px;color:#888;">Healthy</div>
+          </div>
+          <div style="text-align:center;">
+            <div style="font-size:24px;font-weight:700;color:#c62828;">${esc(String(w.failing || 0))}</div>
+            <div style="font-size:11px;color:#888;">Failing</div>
+          </div>
+          <div style="margin-left:auto;"><span class="badge badge-${health}">${esc(health === 'ok' ? 'ALL OK' : 'NEEDS ATTENTION')}</span></div>
+        </div>`;
+    }
+
+    document.getElementById('period-select').querySelectorAll('button').forEach(b => {
+      b.addEventListener('click', () => {
+        document.querySelectorAll('#period-select button').forEach(x => x.classList.remove('active'));
+        b.classList.add('active');
+        currentDays = Number(b.dataset.days);
+        load();
+      });
+    });
+
+    load();
+  </script>
+</body>
+</html>

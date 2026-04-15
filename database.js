@@ -172,6 +172,22 @@ ensureColumn('documents', 'kiosk_pin', "TEXT");
 // ─── Advanced workflows ───
 ensureColumn('documents', 'workflow_json', "TEXT");
 
+// ─── Public template links / web forms ───
+ensureColumn('templates', 'is_public', "INTEGER NOT NULL DEFAULT 0");
+ensureColumn('templates', 'public_slug', "TEXT");
+ensureColumn('templates', 'public_submissions', "INTEGER NOT NULL DEFAULT 0");
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_templates_public_slug ON templates(public_slug) WHERE public_slug IS NOT NULL");
+
+// ─── Branding / white-label ───
+ensureColumn('users', 'brand_logo_url', "TEXT");
+ensureColumn('users', 'brand_color', "TEXT");
+ensureColumn('users', 'brand_from_name', "TEXT");
+ensureColumn('users', 'brand_redirect_url', "TEXT");
+ensureColumn('users', 'brand_email_footer', "TEXT");
+
+// ─── Signer attachments ───
+ensureColumn('signers', 'attachments_json', "TEXT NOT NULL DEFAULT '[]'");
+
 // ─── RFC 3161 timestamp (feature: TSA / LTV) ───
 ensureColumn('documents', 'tsa_url', "TEXT");                       // TSA endpoint used
 ensureColumn('documents', 'tsa_token_path', "TEXT");                // filesystem path of .tst file
@@ -239,6 +255,23 @@ const userOps = {
     db.prepare('DELETE FROM webhooks WHERE user_id = ?').run(id);
     db.prepare('DELETE FROM otp_codes WHERE email = (SELECT email FROM users WHERE id = ?)').run(id);
     db.prepare('DELETE FROM users WHERE id = ?').run(id);
+  },
+  // ─── Branding / white-label ───
+  updateBranding(id, { logoUrl, color, fromName, redirectUrl, emailFooter }) {
+    db.prepare(`UPDATE users SET
+      brand_logo_url = ?, brand_color = ?, brand_from_name = ?, brand_redirect_url = ?, brand_email_footer = ?
+      WHERE id = ?`).run(logoUrl || null, color || null, fromName || null, redirectUrl || null, emailFooter || null, id);
+  },
+  getBranding(id) {
+    const u = this.findById(id);
+    if (!u) return null;
+    return {
+      logoUrl: u.brand_logo_url || '',
+      color: u.brand_color || '#1a3b7a',
+      fromName: u.brand_from_name || u.name || 'SealForge',
+      redirectUrl: u.brand_redirect_url || '',
+      emailFooter: u.brand_email_footer || '',
+    };
   },
   // ─── TOTP / MFA ───
   setTotpSecret(id, encryptedSecret) {
@@ -484,6 +517,17 @@ const signerOps = {
   markReminded(id) {
     db.prepare("UPDATE signers SET last_reminded_at = datetime('now'), reminder_count = reminder_count + 1 WHERE id = ?").run(id);
   },
+  addAttachment(id, attachment) {
+    const row = db.prepare('SELECT attachments_json FROM signers WHERE id = ?').get(id);
+    const list = row ? JSON.parse(row.attachments_json || '[]') : [];
+    list.push(attachment);
+    db.prepare('UPDATE signers SET attachments_json = ? WHERE id = ?').run(JSON.stringify(list), id);
+    return list;
+  },
+  getAttachments(id) {
+    const row = db.prepare('SELECT attachments_json FROM signers WHERE id = ?').get(id);
+    return row ? JSON.parse(row.attachments_json || '[]') : [];
+  },
   allSigned(documentId) {
     // Document is "complete" when all signing/approving signers are signed or skipped (CCs don't count)
     const pending = db.prepare("SELECT COUNT(*) as cnt FROM signers WHERE document_id = ? AND status NOT IN ('signed', 'skipped') AND role != 'cc'").get(documentId);
@@ -516,7 +560,33 @@ const templateOps = {
   },
   delete(uuid, userId) {
     return db.prepare('DELETE FROM templates WHERE uuid = ? AND user_id = ?').run(uuid, userId).changes > 0;
-  }
+  },
+  // ─── Public template links ───
+  findBySlug(slug) {
+    const row = db.prepare('SELECT * FROM templates WHERE public_slug = ? AND is_public = 1').get(slug);
+    if (!row) return null;
+    row.signers = JSON.parse(row.signers_json || '[]');
+    row.fields = JSON.parse(row.fields_json || '[]');
+    return row;
+  },
+  publish(uuid, userId) {
+    // Generate a short, URL-friendly slug (8 chars, url-safe base32-ish)
+    let slug;
+    for (let i = 0; i < 5; i++) {
+      const candidate = crypto.randomBytes(6).toString('base64url').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toLowerCase();
+      const existing = db.prepare('SELECT 1 FROM templates WHERE public_slug = ?').get(candidate);
+      if (!existing) { slug = candidate; break; }
+    }
+    if (!slug) return null;
+    const result = db.prepare('UPDATE templates SET is_public = 1, public_slug = ? WHERE uuid = ? AND user_id = ?').run(slug, uuid, userId);
+    return result.changes > 0 ? slug : null;
+  },
+  unpublish(uuid, userId) {
+    return db.prepare('UPDATE templates SET is_public = 0, public_slug = NULL WHERE uuid = ? AND user_id = ?').run(uuid, userId).changes > 0;
+  },
+  incrementSubmissions(uuid) {
+    db.prepare('UPDATE templates SET public_submissions = public_submissions + 1 WHERE uuid = ?').run(uuid);
+  },
 };
 
 // ─── API key operations ───

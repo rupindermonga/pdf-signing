@@ -42,6 +42,34 @@
   </header>
 
   <div class="settings-container">
+    <!-- BRANDING / WHITE-LABEL -->
+    <div class="card">
+      <h2>Branding</h2>
+      <p class="desc">Customize the signing emails and public forms with your logo and brand color. Affects all signer-facing emails sent from your account.</p>
+      <div class="form-group" style="margin-bottom:12px;">
+        <label style="display:block;font-size:13px;font-weight:600;color:#555;margin-bottom:6px;">Logo URL (https:// only)</label>
+        <input type="url" id="brand-logo" placeholder="https://example.com/logo.png" style="width:100%;padding:8px;border:1px solid #d0d5dd;border-radius:6px;">
+      </div>
+      <div class="form-group" style="margin-bottom:12px;">
+        <label style="display:block;font-size:13px;font-weight:600;color:#555;margin-bottom:6px;">Brand color</label>
+        <input type="color" id="brand-color" value="#1a3b7a" style="width:60px;height:36px;border:1px solid #d0d5dd;border-radius:6px;cursor:pointer;">
+      </div>
+      <div class="form-group" style="margin-bottom:12px;">
+        <label style="display:block;font-size:13px;font-weight:600;color:#555;margin-bottom:6px;">From name (in email "From" field)</label>
+        <input type="text" id="brand-from-name" maxlength="80" placeholder="Acme Corp" style="width:100%;padding:8px;border:1px solid #d0d5dd;border-radius:6px;">
+      </div>
+      <div class="form-group" style="margin-bottom:12px;">
+        <label style="display:block;font-size:13px;font-weight:600;color:#555;margin-bottom:6px;">Email footer text (optional)</label>
+        <textarea id="brand-email-footer" maxlength="500" rows="2" placeholder="Questions? Email support@acme.com" style="width:100%;padding:8px;border:1px solid #d0d5dd;border-radius:6px;font-family:inherit;"></textarea>
+      </div>
+      <div class="form-group" style="margin-bottom:12px;">
+        <label style="display:block;font-size:13px;font-weight:600;color:#555;margin-bottom:6px;">Post-signing redirect URL (optional, https:// only)</label>
+        <input type="url" id="brand-redirect" placeholder="https://acme.com/signed-thanks" style="width:100%;padding:8px;border:1px solid #d0d5dd;border-radius:6px;">
+      </div>
+      <button class="btn-primary" id="brand-save-btn">Save Branding</button>
+      <span id="brand-save-status" style="margin-left:12px;color:#2e7d32;font-size:13px;display:none;">Saved!</span>
+    </div>
+
     <!-- TWO-FACTOR AUTHENTICATION -->
     <div class="card">
       <h2>Two-Factor Authentication (MFA)</h2>
@@ -278,7 +306,35 @@
       loadHooks();
     });
 
-    loadKeys(); loadHooks(); loadTotpStatus();
+    // ── Branding ──
+    async function loadBranding() {
+      const resp = await fetch('/api/settings/branding');
+      if (!resp.ok) return;
+      const b = await resp.json();
+      document.getElementById('brand-logo').value = b.logoUrl || '';
+      document.getElementById('brand-color').value = b.color || '#1a3b7a';
+      document.getElementById('brand-from-name').value = b.fromName || '';
+      document.getElementById('brand-email-footer').value = b.emailFooter || '';
+      document.getElementById('brand-redirect').value = b.redirectUrl || '';
+    }
+    document.getElementById('brand-save-btn').addEventListener('click', async () => {
+      const payload = {
+        logoUrl: document.getElementById('brand-logo').value.trim(),
+        color: document.getElementById('brand-color').value,
+        fromName: document.getElementById('brand-from-name').value.trim(),
+        emailFooter: document.getElementById('brand-email-footer').value.trim(),
+        redirectUrl: document.getElementById('brand-redirect').value.trim(),
+      };
+      const resp = await fetch('/api/settings/branding', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      });
+      const data = await resp.json();
+      if (!resp.ok) return alert(data.error || 'Save failed');
+      const status = document.getElementById('brand-save-status');
+      status.style.display = 'inline'; setTimeout(() => { status.style.display = 'none'; }, 2000);
+    });
+
+    loadKeys(); loadHooks(); loadTotpStatus(); loadBranding();
   </script>
 </body>
 </html>

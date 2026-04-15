@@ -433,11 +433,60 @@
         div.appendChild(document.createTextNode('Click "Sign" below'));
         // Mark as auto-filled when signature canvas has content
         fieldValues[f.id] = '';
+      } else if (f.type === 'attachment') {
+        // Inline file upload button; files uploaded immediately to server
+        div.style.display = 'flex'; div.style.flexDirection = 'column'; div.style.justifyContent = 'center';
+        div.style.fontSize = '11px'; div.style.padding = '2px 4px';
+        const btn = document.createElement('button');
+        btn.type = 'button'; btn.textContent = 'Upload file';
+        btn.style.cssText = 'font-size:11px;padding:2px 8px;cursor:pointer;border:1px solid #1a3b7a;background:#fff;color:#1a3b7a;border-radius:3px;';
+        const fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.style.display = 'none';
+        fileInput.accept = 'application/pdf,image/jpeg,image/png,image/webp,text/plain,.doc,.docx,.xls,.xlsx';
+        const status = document.createElement('span'); status.style.fontSize = '10px'; status.style.color = '#666'; status.style.marginTop = '2px';
+        btn.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', async () => {
+          const file = fileInput.files[0];
+          if (!file) return;
+          if (file.size > 15 * 1024 * 1024) { status.textContent = 'File too large (max 15 MB)'; status.style.color = '#c62828'; return; }
+          status.textContent = 'Uploading...'; status.style.color = '#666';
+          const fd = new FormData();
+          fd.append('file', file);
+          fd.append('fieldId', f.id);
+          try {
+            const resp = await fetch(`/api/sign/${token}/attachments`, { method: 'POST', body: fd });
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.error || 'Upload failed');
+            status.textContent = 'Attached: ' + data.filename; status.style.color = '#2e7d32';
+            div.classList.add('filled');
+            fieldValues[f.id] = data.filename;
+            updateFieldSummary();
+          } catch (err) {
+            status.textContent = err.message; status.style.color = '#c62828';
+          }
+        });
+        div.appendChild(btn); div.appendChild(fileInput); div.appendChild(status);
+        fieldValues[f.id] = '';
       } else {
         const input = document.createElement('input');
         input.type = (f.type === 'date') ? 'date' : 'text';
         input.value = initial;
-        if (initial) { fieldValues[f.id] = initial; div.classList.add('filled'); }
+        if (f.locked || f.defaultValue) { input.value = f.defaultValue || initial; }
+        if (f.locked) { input.readOnly = true; input.style.background = '#f5f5f5'; input.style.cursor = 'not-allowed'; }
+        if (f.validation) {
+          if (f.validation.pattern) input.pattern = f.validation.pattern;
+          if (f.validation.maxLength) input.maxLength = f.validation.maxLength;
+          if (f.validation.minLength) input.minLength = f.validation.minLength;
+          if (f.validation.minValue != null || f.validation.maxValue != null) {
+            input.type = 'number';
+            if (f.validation.minValue != null) input.min = f.validation.minValue;
+            if (f.validation.maxValue != null) input.max = f.validation.maxValue;
+            input.step = 'any';
+          }
+          if (f.validation.message) input.title = f.validation.message;
+        }
+        if (input.value) { fieldValues[f.id] = input.value; div.classList.add('filled'); }
         input.addEventListener('input', () => {
           fieldValues[f.id] = input.value;
           div.classList.toggle('filled', !!input.value);

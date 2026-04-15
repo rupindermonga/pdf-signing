@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SealForge - Form</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    .form-container { max-width: 640px; margin: 40px auto; padding: 0 20px; }
+    .form-card { background: white; border-radius: 14px; padding: 32px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
+    .form-brand { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
+    .form-brand img { max-height: 48px; max-width: 160px; }
+    .form-brand .brand-name { font-size: 14px; color: #666; }
+    .form-card h2 { color: var(--brand-color, #1a3b7a); font-size: 22px; margin-bottom: 8px; }
+    .form-card .message { color: #555; font-size: 14px; margin-bottom: 20px; white-space: pre-wrap; }
+    .form-group { margin-bottom: 14px; }
+    .form-group label { display: block; font-size: 13px; font-weight: 600; color: #555; margin-bottom: 6px; }
+    .form-group label .req { color: #c62828; margin-left: 3px; }
+    .form-group input, .form-group select, .form-group textarea { width: 100%; padding: 10px 14px; border: 1px solid #d0d5dd; border-radius: 8px; font-size: 14px; font-family: inherit; }
+    .form-group input:focus, .form-group select:focus, .form-group textarea:focus { outline: none; border-color: var(--brand-color, #1a3b7a); box-shadow: 0 0 0 3px rgba(26,59,122,0.1); }
+    .form-group .radio-group, .form-group .checkbox-wrap { display: flex; flex-direction: column; gap: 6px; }
+    .form-group .radio-group label, .form-group .checkbox-wrap label { display: flex; align-items: center; gap: 8px; font-weight: normal; cursor: pointer; }
+    .form-group .radio-group input, .form-group .checkbox-wrap input { width: auto; }
+    .btn-submit { background: var(--brand-color, #1a3b7a); color: white; border: none; padding: 14px 32px; border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer; width: 100%; margin-top: 10px; }
+    .btn-submit:hover:not(:disabled) { opacity: 0.92; }
+    .btn-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+    .error-msg { background: #ffebee; border: 1px solid #ef5350; border-radius: 8px; padding: 10px; margin: 12px 0; font-size: 13px; color: #c62828; display: none; }
+    .error-msg.show { display: block; }
+    .success-card { text-align: center; padding: 40px 20px; display: none; }
+    .success-card.show { display: block; }
+    .success-card .icon { font-size: 64px; margin-bottom: 12px; }
+    .success-card h2 { color: #2e7d32; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <div class="form-container">
+    <div class="form-card" id="form-card">
+      <div class="form-brand" id="form-brand" style="display:none;">
+        <img id="brand-logo" alt="Logo" style="display:none;">
+        <span class="brand-name" id="brand-name"></span>
+      </div>
+      <h2 id="form-title">Loading...</h2>
+      <div class="message" id="form-message"></div>
+
+      <form id="public-form">
+        <div class="form-group">
+          <label>Your name <span class="req">*</span></label>
+          <input type="text" id="submitter-name" required maxlength="120">
+        </div>
+        <div class="form-group">
+          <label>Your email <span class="req">*</span></label>
+          <input type="email" id="submitter-email" required maxlength="254">
+          <div style="font-size:11px;color:#888;margin-top:4px;">You will receive a link to sign the document by email.</div>
+        </div>
+
+        <div id="custom-fields"></div>
+
+        <div id="error" class="error-msg"></div>
+
+        <button type="submit" class="btn-submit" id="submit-btn">Submit &amp; continue to signing</button>
+      </form>
+    </div>
+
+    <div class="form-card success-card" id="success-card">
+      <div class="icon">&#9989;</div>
+      <h2>Submitted!</h2>
+      <p id="success-msg" style="color:#666;margin-top:8px;">Check your email for a link to review and sign the document.</p>
+      <div id="direct-link" style="margin-top:16px;"></div>
+    </div>
+  </div>
+
+  <script>
+    const slug = window.location.pathname.split('/f/')[1];
+    let formInfo = null;
+
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML.replace(/'/g, '&#39;'); }
+    function showError(msg) { const e = document.getElementById('error'); e.textContent = msg; e.classList.add('show'); }
+    function hideError() { document.getElementById('error').classList.remove('show'); }
+
+    async function init() {
+      const resp = await fetch('/api/public/forms/' + slug + '/info');
+      if (!resp.ok) { document.body.innerHTML = '<div style="text-align:center;padding:60px;"><h2>Form not found</h2></div>'; return; }
+      formInfo = await resp.json();
+
+      document.getElementById('form-title').textContent = formInfo.title || formInfo.templateName;
+      document.getElementById('form-message').textContent = formInfo.message || '';
+      if (!formInfo.message) document.getElementById('form-message').style.display = 'none';
+
+      if (formInfo.brand) {
+        if (formInfo.brand.color) document.documentElement.style.setProperty('--brand-color', formInfo.brand.color);
+        if (formInfo.brand.logoUrl || formInfo.brand.fromName) {
+          document.getElementById('form-brand').style.display = 'flex';
+          if (formInfo.brand.logoUrl) {
+            const img = document.getElementById('brand-logo');
+            img.src = formInfo.brand.logoUrl; img.style.display = 'block';
+          }
+          document.getElementById('brand-name').textContent = formInfo.brand.fromName || '';
+        }
+      }
+
+      renderFields();
+    }
+
+    function renderFields() {
+      const wrap = document.getElementById('custom-fields');
+      // Only show text-like inputs + checkbox/dropdown/radio in the form.
+      // Signature fields are captured on the sign page, not here.
+      const renderable = (formInfo.fields || []).filter(f => ['text', 'name', 'email', 'date', 'checkbox', 'dropdown', 'radio', 'initials'].includes(f.type));
+      renderable.forEach(f => {
+        const g = document.createElement('div');
+        g.className = 'form-group';
+        const label = document.createElement('label');
+        label.textContent = f.label || f.type;
+        if (f.required) { const r = document.createElement('span'); r.className = 'req'; r.textContent = '*'; label.appendChild(r); }
+        g.appendChild(label);
+
+        let input;
+        if (f.type === 'checkbox') {
+          const wrap2 = document.createElement('div'); wrap2.className = 'checkbox-wrap';
+          const l = document.createElement('label');
+          input = document.createElement('input'); input.type = 'checkbox';
+          l.appendChild(input);
+          const sp = document.createElement('span'); sp.textContent = f.label || 'I agree';
+          l.appendChild(sp);
+          wrap2.appendChild(l);
+          g.appendChild(wrap2);
+        } else if (f.type === 'dropdown') {
+          input = document.createElement('select');
+          const ph = document.createElement('option'); ph.value = ''; ph.textContent = '-- select --';
+          input.appendChild(ph);
+          (f.options || []).forEach(o => {
+            const opt = document.createElement('option'); opt.value = o; opt.textContent = o;
+            input.appendChild(opt);
+          });
+          g.appendChild(input);
+        } else if (f.type === 'radio') {
+          const wrap2 = document.createElement('div'); wrap2.className = 'radio-group';
+          (f.options || []).forEach(o => {
+            const l = document.createElement('label');
+            const rb = document.createElement('input'); rb.type = 'radio'; rb.name = 'rg_' + f.id; rb.value = o;
+            l.appendChild(rb);
+            const sp = document.createElement('span'); sp.textContent = o;
+            l.appendChild(sp);
+            wrap2.appendChild(l);
+          });
+          g.appendChild(wrap2);
+          input = wrap2; // for value extraction below
+        } else {
+          input = document.createElement('input');
+          input.type = f.type === 'date' ? 'date' : (f.type === 'email' ? 'email' : 'text');
+          input.maxLength = 500;
+          g.appendChild(input);
+        }
+        if (input) input.dataset.fid = f.id;
+        wrap.appendChild(g);
+      });
+    }
+
+    function collectValues() {
+      const values = {};
+      document.querySelectorAll('#custom-fields [data-fid]').forEach(el => {
+        const fid = el.dataset.fid;
+        if (el.tagName === 'DIV') {
+          // radio group
+          const checked = el.querySelector('input:checked');
+          if (checked) values[fid] = checked.value;
+        } else if (el.type === 'checkbox') {
+          values[fid] = el.checked;
+        } else {
+          values[fid] = el.value;
+        }
+      });
+      return values;
+    }
+
+    document.getElementById('public-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      hideError();
+      const name = document.getElementById('submitter-name').value.trim();
+      const email = document.getElementById('submitter-email').value.trim();
+      if (!name || !email) return showError('Name and email are required.');
+
+      // Validate required fields
+      const missing = (formInfo.fields || []).filter(f => {
+        if (!f.required || (f.signerOrder || 1) !== 1) return false;
+        const v = collectValues()[f.id];
+        return f.type === 'checkbox' ? v !== true : (!v || !String(v).trim());
+      });
+      if (missing.length) return showError('Please fill in: ' + missing.map(f => f.label || f.type).join(', '));
+
+      const btn = document.getElementById('submit-btn');
+      btn.disabled = true; btn.textContent = 'Submitting...';
+
+      try {
+        const resp = await fetch('/api/public/forms/' + slug + '/submit', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, email, fieldValues: collectValues() }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Submission failed');
+
+        document.getElementById('form-card').style.display = 'none';
+        document.getElementById('success-card').classList.add('show');
+        if (data.signUrl) {
+          const a = document.createElement('a');
+          a.href = data.signUrl; a.className = 'btn-submit';
+          a.textContent = 'Continue to sign now';
+          a.style.textDecoration = 'none';
+          document.getElementById('direct-link').appendChild(a);
+        }
+      } catch (err) {
+        showError(err.message);
+        btn.disabled = false; btn.textContent = 'Submit & continue to signing';
+      }
+    });
+
+    init();
+  </script>
+</body>
+</html>

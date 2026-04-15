@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SealForge - Embed Sample</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    body { background: #f8fafd; }
+    main { max-width: 900px; margin: 24px auto; padding: 0 20px; }
+    .grid { display: grid; grid-template-columns: 1fr 320px; gap: 24px; }
+    @media (max-width: 780px) { .grid { grid-template-columns: 1fr; } }
+    .card-box { background: white; border-radius: 10px; padding: 22px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+    h2 { color: #1a3b7a; margin-bottom: 8px; font-size: 20px; }
+    h3 { color: #1a3b7a; font-size: 14px; margin-top: 14px; margin-bottom: 6px; }
+    pre { background: #f5f7fa; padding: 12px 14px; border-radius: 6px; font-size: 12px; overflow-x: auto; color: #333; line-height: 1.5; margin: 8px 0; }
+    .event-log { background: #0b1530; color: #dcf; font-family: monospace; font-size: 12px; padding: 12px; border-radius: 6px; max-height: 240px; overflow-y: auto; }
+    .event-log .ts { color: #888; }
+    .event-log .ev { color: #7ec8ff; font-weight: 600; }
+    .muted { color: #888; font-size: 13px; }
+    input[type="url"], input[type="text"] { width: 100%; padding: 8px 10px; border: 1px solid #d0d5dd; border-radius: 6px; font-size: 13px; font-family: monospace; }
+    button { background: #1a3b7a; color: #fff; border: none; padding: 9px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+    button:hover { background: #2d5db8; }
+    iframe { width: 100%; height: 600px; border: 1px solid #d0d5dd; border-radius: 8px; background: #fafbff; }
+    .empty-iframe { height: 600px; border: 2px dashed #d0d5dd; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #888; background: #fafbff; text-align: center; padding: 20px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo"><span class="logo-seal">Seal</span><span class="logo-forge">Forge</span></div>
+    <h1>Embedded Signing — Sample</h1>
+    <a href="/dashboard" class="header-link">Dashboard</a>
+  </header>
+
+  <main>
+    <div class="grid">
+      <div>
+        <div class="card-box" style="margin-bottom:16px;">
+          <h2>Live embed preview</h2>
+          <p class="muted">Paste an embed URL from your dashboard (Embed button next to a pending signer), then click <b>Load</b>.</p>
+          <div style="display:flex;gap:8px;margin-top:10px;">
+            <input type="url" id="embed-url" placeholder="https://this-host/embed/sign/&lt;token&gt;">
+            <button id="load-btn">Load</button>
+          </div>
+          <div style="margin-top:14px;">
+            <div id="iframe-wrap" class="empty-iframe">Waiting for embed URL...</div>
+          </div>
+        </div>
+
+        <div class="card-box">
+          <h2>Integration guide</h2>
+
+          <h3>1. Mint a short-lived embed token (server-side)</h3>
+          <p class="muted">Your backend calls this with a signer's token and the origin you'll embed from. The embed token is single-use and expires in 30 min by default.</p>
+          <pre>POST /api/v1/signers/&lt;signer_token&gt;/embed-session
+Authorization: Bearer ds_live_...
+
+{
+  "allowedOrigin": "https://app.example.com",
+  "ttlSeconds": 1800
+}</pre>
+          <p class="muted">Response:</p>
+          <pre>{
+  "ok": true,
+  "embedToken": "...",
+  "embedUrl": "https://sealforge/embed/sign/...",
+  "expiresAt": "2026-04-15T20:00:00.000Z"
+}</pre>
+
+          <h3>2. Embed the iframe</h3>
+          <pre>&lt;iframe
+  src="https://sealforge/embed/sign/&lt;embedToken&gt;"
+  width="100%" height="800"
+  allow="camera; microphone"
+  style="border:1px solid #d0d5dd;border-radius:8px;"
+&gt;&lt;/iframe&gt;</pre>
+
+          <h3>3. Listen for signer events</h3>
+          <p class="muted">SealForge posts <code>message</code> events to the parent frame. Always verify <code>e.origin</code> matches the SealForge domain before trusting the payload.</p>
+          <pre>window.addEventListener('message', (e) =&gt; {
+  if (e.origin !== 'https://sealforge') return;
+  if (!e.data || e.data.source !== 'sealforge') return;
+  console.log('[SealForge]', e.data.type, e.data.detail);
+
+  switch (e.data.type) {
+    case 'sf:loaded':     // signer opened the page
+      break;
+    case 'sf:signed':     // signer submitted signature (detail.completed = true if last)
+      break;
+    case 'sf:declined':   // signer declined (detail.reason)
+      break;
+    case 'sf:reassigned': // signer forwarded to another person (detail.to)
+      break;
+    case 'sf:completed':  // all signers done — poll /api/v1/documents/&lt;uuid&gt; or rely on webhook
+      break;
+  }
+});</pre>
+
+          <h3>4. Security notes</h3>
+          <ul style="font-size:13px;color:#555;line-height:1.7;padding-left:18px;">
+            <li><b>allowedOrigin</b> is pinned at token mint time — the iframe only renders if its parent is that exact origin.</li>
+            <li>Embed tokens are single-use. Mint a fresh one each time a customer loads the signer page.</li>
+            <li>Always validate <code>e.origin</code> in your message handler — never trust event data by itself.</li>
+            <li>Public embeds must be HTTPS. <code>http://localhost</code> is allowed for development only.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div>
+        <div class="card-box">
+          <h2 style="font-size:16px;">Event log</h2>
+          <p class="muted">postMessage events from the iframe appear here in real time.</p>
+          <div id="log" class="event-log">
+            <div class="muted">No events yet.</div>
+          </div>
+          <button id="clear-log-btn" style="margin-top:10px;background:#fff;color:#c62828;border:1px solid #c62828;">Clear</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const iframeWrap = document.getElementById('iframe-wrap');
+    const log = document.getElementById('log');
+
+    function escHtml(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+
+    function appendLog(type, detail, origin) {
+      if (log.querySelector('.muted')) log.innerHTML = '';
+      const ts = new Date().toLocaleTimeString();
+      const row = document.createElement('div');
+      row.innerHTML = `<span class="ts">[${escHtml(ts)}]</span> <span class="ev">${escHtml(type)}</span> <span style="color:#fbb;">@${escHtml(origin)}</span>: ${escHtml(JSON.stringify(detail))}`;
+      log.appendChild(row);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    // Listen for messages from the iframe
+    window.addEventListener('message', (e) => {
+      if (!e.data || e.data.source !== 'sealforge') return;
+      appendLog(e.data.type, e.data.detail, e.origin);
+    });
+
+    document.getElementById('load-btn').addEventListener('click', () => {
+      const url = document.getElementById('embed-url').value.trim();
+      if (!url) return;
+      iframeWrap.innerHTML = '';
+      const iframe = document.createElement('iframe');
+      iframe.src = url;
+      iframe.allow = 'camera; microphone';
+      iframeWrap.appendChild(iframe);
+      iframeWrap.classList.remove('empty-iframe');
+      iframeWrap.style.border = 'none';
+      iframeWrap.style.padding = '0';
+    });
+
+    document.getElementById('clear-log-btn').addEventListener('click', () => {
+      log.innerHTML = '<div class="muted">No events yet.</div>';
+    });
+
+    // Pre-fill if present in ?url=
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('url')) {
+      document.getElementById('embed-url').value = params.get('url');
+      document.getElementById('load-btn').click();
+    }
+  </script>
+</body>
+</html>

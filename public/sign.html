@@ -181,6 +181,24 @@
     let signerInfo = null;        // { signerName, signerEmail, fields, readonlyFields, ... }
     const fieldValues = {};       // { fieldId: value }
 
+    // ── Embedded-signing parent events ──
+    // When this page is loaded in an iframe (e.g. via /embed/sign/:token), the host app
+    // can listen for these postMessage events to react to signer actions without polling.
+    // Parent code example:
+    //   window.addEventListener('message', (e) => {
+    //     if (e.origin !== 'https://sealforge.example') return;
+    //     if (e.data && e.data.source === 'sealforge') console.log(e.data);
+    //   });
+    // Event types: sf:loaded, sf:signed, sf:declined, sf:reassigned, sf:completed
+    // All event types are prefixed 'sf:' so the host can filter cheaply.
+    function postToParent(type, detail) {
+      try {
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage({ source: 'sealforge', type, detail: detail || {} }, '*');
+        }
+      } catch (_) { /* cross-origin restrictions — best-effort only */ }
+    }
+
     // Load document info
     async function init() {
       const resp = await fetch(`/api/sign/${token}/info`);
@@ -195,8 +213,10 @@
       if (info.status === 'signed') {
         document.getElementById('otp-card').classList.add('hidden');
         document.getElementById('success-card').classList.remove('hidden');
+        postToParent('sf:signed', { docUuid: info.docUUID, alreadySigned: true });
         return;
       }
+      postToParent('sf:loaded', { docUuid: info.docUUID, signerEmail: info.signerEmail });
     }
     init();
 
@@ -671,6 +691,7 @@
         document.getElementById('decline-card').classList.add('hidden');
         document.getElementById('success-card').classList.remove('hidden');
         document.getElementById('success-msg').textContent = 'You have declined this document. The owner has been notified.';
+        postToParent('sf:declined', { reason });
       } catch (e) {
         err.textContent = e.message; err.classList.add('show');
         btn.disabled = false; btn.textContent = 'Decline & Notify Owner';
@@ -703,6 +724,7 @@
         document.getElementById('reassign-card').classList.add('hidden');
         document.getElementById('success-card').classList.remove('hidden');
         document.getElementById('success-msg').textContent = 'Reassigned to ' + name + '. They have been sent a signing link.';
+        postToParent('sf:reassigned', { to: { name, email: email2 } });
       } catch (e) {
         err.textContent = e.message; err.classList.add('show');
         btn.disabled = false; btn.textContent = 'Reassign & Send Link';
@@ -765,6 +787,8 @@
         if (data.completed) {
           document.getElementById('success-msg').textContent = 'All signatures collected! Everyone will receive a copy of the signed document.';
         }
+        postToParent('sf:signed', { completed: !!data.completed });
+        if (data.completed) postToParent('sf:completed', { docUuid: signerInfo && signerInfo.docUUID });
       } catch (err) {
         errDiv.textContent = err.message; errDiv.classList.add('show');
         btn.disabled = false; btn.textContent = 'Sign Document';

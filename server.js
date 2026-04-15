@@ -2962,6 +2962,35 @@ app.post('/api/v1/signers/:signerUuid/embed-session', requireApiKey('rw'), (req,
   });
 });
 
+// Session-auth equivalent of the v1 embed-session endpoint — lets the dashboard UI
+// mint embed links directly without the caller needing an API key. Authorization is
+// the same as other session-auth doc routes: creator, or workspace admin.
+app.post('/api/documents/:uuid/signers/:signerId/embed-session', requireAuth, rateLimit(60000, 20), (req, res) => {
+  const { allowedOrigin, ttlSeconds } = req.body;
+  if (!allowedOrigin || !/^https?:\/\/[a-zA-Z0-9.-]+(:\d+)?$/.test(String(allowedOrigin))) {
+    return res.status(400).json({ error: 'allowedOrigin must be a scheme+host (e.g., https://app.example.com)' });
+  }
+  if (/^http:\/\//.test(allowedOrigin) && !/localhost|127\.0\.0\.1/.test(allowedOrigin)) {
+    return res.status(400).json({ error: 'Non-localhost origins must use https://' });
+  }
+  const doc = docOps.findByUUID(req.params.uuid);
+  if (!doc) return res.status(404).json({ error: 'Not found' });
+  if (!docMutableBySession(doc, req)) return res.status(403).json({ error: 'Only the creator or a workspace admin can generate embed links' });
+  const signer = signerOps.findById(parseInt(req.params.signerId, 10));
+  if (!signer || signer.document_id !== doc.id) return res.status(404).json({ error: 'Signer not found' });
+  if (signer.status !== 'sent' && signer.status !== 'pending') {
+    return res.status(400).json({ error: 'Signer is not awaiting action (status: ' + signer.status + ')' });
+  }
+  const ttl = Math.min(Math.max(parseInt(ttlSeconds, 10) || 1800, 60), 3600);
+  const session = embedOps.create(signer.id, String(allowedOrigin), ttl);
+  res.json({ ok: true, embedToken: session.token, embedUrl: `${BASE_URL}/embed/sign/${session.token}`, expiresAt: session.expires });
+});
+
+// Embed integration sample page (dev-facing) — shows how to embed + code snippets
+app.get('/embed/sample', (req, res) => {
+  sendHtml(res, path.join(__dirname, 'public', 'embed-sample.html'));
+});
+
 // Public embed page — loaded in an iframe from the customer's domain.
 // The bootstrap call sets req.session.embedOrigin which relaxes frame-ancestors via the post-session middleware.
 app.get('/embed/sign/:embedToken', (req, res) => {

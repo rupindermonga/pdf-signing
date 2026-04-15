@@ -188,6 +188,7 @@
             <span class="signer-status">
               <span class="status-badge status-${s.status === 'signed' ? 'completed' : 'pending'}">${esc(s.status)}</span>
               ${canResend ? '<button class="resend-btn" data-resend-uuid="' + esc(doc.uuid) + '" data-signer-id="' + s.id + '">Resend</button>' : ''}
+              ${canResend ? '<button class="resend-btn" data-embed-uuid="' + esc(doc.uuid) + '" data-signer-id="' + s.id + '" title="Generate iframe embed link">Embed</button>' : ''}
             </span>
           </div>`;
         }).join('')}
@@ -205,9 +206,73 @@
           resendSigner(btn.dataset.resendUuid, Number(btn.dataset.signerId), btn);
         });
       });
+      modalContent.querySelectorAll('.resend-btn[data-embed-uuid]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          generateEmbedLink(btn.dataset.embedUuid, Number(btn.dataset.signerId));
+        });
+      });
       const cancelBtn = modalContent.querySelector('.cancel-doc-btn[data-cancel-uuid]');
       if (cancelBtn) {
         cancelBtn.addEventListener('click', () => cancelDoc(cancelBtn.dataset.cancelUuid));
+      }
+    }
+
+    async function generateEmbedLink(uuid, signerId) {
+      const defaultOrigin = window.location.origin;
+      const origin = prompt(
+        'Allowed parent origin (the site that will iframe this signer):\n' +
+        'Examples:  https://app.example.com   http://localhost:3001\n\n' +
+        'Public embeds must use https://. Localhost http is allowed for dev.',
+        defaultOrigin
+      );
+      if (!origin) return;
+      try {
+        const resp = await fetch(`/api/documents/${uuid}/signers/${signerId}/embed-session`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ allowedOrigin: origin.trim(), ttlSeconds: 1800 }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Could not generate embed link');
+        // Show modal with copy-to-clipboard + iframe snippet
+        modalContent.innerHTML = `
+          <button class="close" data-close="1">&times;</button>
+          <h3>Embed link ready</h3>
+          <p style="font-size:13px;color:#666;">Allowed to load from: <code>${esc(origin)}</code></p>
+          <p style="font-size:13px;color:#666;">Expires: ${esc(new Date(data.expiresAt).toLocaleString())} (30 min from now)</p>
+          <h4 style="margin-top:18px;color:#1a3b7a;font-size:13px;">Embed URL</h4>
+          <div class="link-box" data-copy="${esc(data.embedUrl)}" title="Click to copy">${esc(data.embedUrl)}</div>
+          <h4 style="margin-top:18px;color:#1a3b7a;font-size:13px;">Paste this in your page</h4>
+          <pre style="background:#f5f7fa;padding:12px;border-radius:6px;font-size:12px;overflow-x:auto;">&lt;iframe src="${esc(data.embedUrl)}"
+        width="100%" height="800"
+        allow="camera; microphone"
+        style="border:1px solid #d0d5dd;border-radius:8px;"&gt;&lt;/iframe&gt;</pre>
+          <h4 style="margin-top:18px;color:#1a3b7a;font-size:13px;">Listen for signer events</h4>
+          <pre style="background:#f5f7fa;padding:12px;border-radius:6px;font-size:12px;overflow-x:auto;">window.addEventListener('message', (e) =&gt; {
+  if (e.data &amp;&amp; e.data.source === 'sealforge') {
+    switch (e.data.type) {
+      case 'sf:loaded':     /* signer opened the page */ break;
+      case 'sf:signed':     /* signer submitted signature */ break;
+      case 'sf:declined':   /* signer declined */ break;
+      case 'sf:reassigned': /* signer forwarded to another person */ break;
+      case 'sf:completed':  /* all signers done */ break;
+    }
+  }
+});</pre>
+          <p style="font-size:12px;color:#888;margin-top:10px;">
+            <a href="/embed/sample" target="_blank" style="color:#1a3b7a;">See a live sample integration &rarr;</a>
+          </p>
+        `;
+        modalContent.querySelector('[data-close="1"]').addEventListener('click', () => modalBg.classList.remove('show'));
+        modalContent.querySelector('[data-copy]').addEventListener('click', (ev) => {
+          const box = ev.currentTarget;
+          navigator.clipboard.writeText(box.dataset.copy).then(() => {
+            const orig = box.textContent;
+            box.textContent = '✓ Copied!';
+            setTimeout(() => box.textContent = orig, 1200);
+          });
+        });
+      } catch (e) {
+        alert(e.message);
       }
     }
 

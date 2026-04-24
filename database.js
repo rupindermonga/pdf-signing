@@ -322,6 +322,38 @@ ensureColumn('signers', 'substituted_by_owner', "INTEGER NOT NULL DEFAULT 0");
 ensureColumn('signers', 'sendback_count', "INTEGER NOT NULL DEFAULT 0");
 ensureColumn('signers', 'last_sendback_at', "TEXT");
 
+// ─── Enterprise admin: audit log ───
+db.exec(`
+  CREATE TABLE IF NOT EXISTS admin_audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER,
+    actor_user_id INTEGER NOT NULL,
+    actor_email TEXT,
+    action TEXT NOT NULL,
+    target_type TEXT,         -- 'user' | 'org' | 'apikey' | 'webhook' | 'document' | 'session'
+    target_id TEXT,           -- the target row's ID or UUID
+    detail TEXT,              -- short description or JSON context
+    ip_address TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE SET NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_audit_org ON admin_audit_log(org_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_audit_actor ON admin_audit_log(actor_user_id, created_at);
+`);
+
+// ─── Enterprise admin: org policies ───
+ensureColumn('orgs', 'require_mfa', "INTEGER NOT NULL DEFAULT 0");   // 1 = all members must have TOTP
+ensureColumn('orgs', 'retention_days', "INTEGER NOT NULL DEFAULT 0"); // 0 = unlimited; >0 = auto-delete completed docs after N days
+ensureColumn('orgs', 'session_ttl_hours', "INTEGER NOT NULL DEFAULT 168"); // 168 = 7 days (default)
+ensureColumn('orgs', 'ip_allowlist', "TEXT");                        // comma-separated CIDRs; empty = no restriction
+
+// ─── Enterprise admin: API key expiry + session tracking ───
+ensureColumn('api_keys', 'expires_at', "TEXT");          // ISO; null = never
+ensureColumn('api_keys', 'rotated_from_id', "INTEGER");  // links to the previous key in a rotation chain
+// Track last login for audit
+ensureColumn('users', 'last_login_at', "TEXT");
+ensureColumn('users', 'last_login_ip', "TEXT");
+
 // ─── RFC 3161 timestamp (feature: TSA / LTV) ───
 ensureColumn('documents', 'tsa_url', "TEXT");                       // TSA endpoint used
 ensureColumn('documents', 'tsa_token_path', "TEXT");                // filesystem path of .tst file
@@ -543,6 +575,9 @@ const userOps = {
   disableTotp(id) {
     db.prepare('UPDATE users SET totp_secret = NULL, totp_enabled = 0 WHERE id = ?').run(id);
   },
+  trackLogin(id, ip) {
+    db.prepare("UPDATE users SET last_login_at = datetime('now'), last_login_ip = ? WHERE id = ?").run(ip || null, id);
+  },
 };
 
 // ─── OTP operations ───
@@ -688,7 +723,7 @@ const docOps = {
 const signerOps = {
   addToDocument(documentId, name, email, signOrder, role = 'sign', phone = null, notifyMethod = 'email') {
     const token = generateToken();
-    const safeRole = ['sign', 'cc', 'approve'].includes(role) ? role : 'sign';
+    const safeRole = ['sign', 'cc', 'approve', 'witness'].includes(role) ? role : 'sign';
     const safeMethod = ['email', 'sms', 'both'].includes(notifyMethod) ? notifyMethod : 'email';
     const cleanPhone = phone ? String(phone).replace(/[^\d+]/g, '').slice(0, 20) : null;
     const result = db.prepare('INSERT INTO signers (document_id, name, email, sign_order, role, token, phone, notify_method) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
@@ -945,9 +980,10 @@ const apiKeyOps = {
       SELECT k.*, u.email, u.name as user_name FROM api_keys k
       JOIN users u ON k.user_id = u.id WHERE k.key_hash = ?
     `).get(hash);
-    if (row) {
-      db.prepare("UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?").run(row.id);
-    }
+    if (!row) return null;
+    // Check expiry — expired keys are invalid even if hash matches
+    if (row.expires_at && new Date(row.expires_at) <= new Date()) return null;
+    db.prepare("UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?").run(row.id);
     return row;
   },
   listByUser(userId) {
@@ -963,7 +999,30 @@ const apiKeyOps = {
   },
   revokeInOrg(id, orgId) {
     return db.prepare('DELETE FROM api_keys WHERE id = ? AND org_id = ?').run(id, orgId).changes > 0;
-  }
+  },
+  setExpiry(id, expiresAtISO) {
+    return db.prepare('UPDATE api_keys SET expires_at = ? WHERE id = ?').run(expiresAtISO || null, id).changes > 0;
+  },
+  // Rotate: create a fresh key linked to the old one, then soft-expire the old one (grace period).
+  // Returns { newKey, oldKeyId }. Caller should set the old key's expires_at for a grace window.
+  rotate(oldId, orgId) {
+    const old = db.prepare('SELECT * FROM api_keys WHERE id = ?').get(oldId);
+    if (!old) return null;
+    const safeScope = old.scope || 'rw';
+    const raw = crypto.randomBytes(24).toString('hex');
+    const plaintext = `ds_live_${raw}`;
+    const prefix = plaintext.slice(0, 12);
+    const hash = crypto.createHash('sha256').update(plaintext).digest('hex');
+    const result = db.prepare('INSERT INTO api_keys (user_id, name, prefix, key_hash, scope, org_id, rotated_from_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(old.user_id, old.name + ' (rotated)', prefix, hash, safeScope, orgId || old.org_id, oldId);
+    // Grace period: old key works for 24 more hours then expires
+    const grace = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+    db.prepare('UPDATE api_keys SET expires_at = ? WHERE id = ?').run(grace, oldId);
+    return { newKey: { id: result.lastInsertRowid, plaintext, prefix, scope: safeScope }, oldKeyId: oldId, graceExpiry: grace };
+  },
+  findById(id) {
+    return db.prepare('SELECT id, user_id, name, prefix, scope, last_used_at, created_at, expires_at, rotated_from_id, org_id FROM api_keys WHERE id = ?').get(id);
+  },
 };
 
 // ─── Webhook operations ───
@@ -1069,6 +1128,27 @@ const commentOps = {
   },
 };
 
+// ─── Admin audit log operations ───
+const auditOps = {
+  log(orgId, actorUserId, actorEmail, action, targetType, targetId, detail, ip) {
+    db.prepare(`INSERT INTO admin_audit_log (org_id, actor_user_id, actor_email, action, target_type, target_id, detail, ip_address)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(orgId || null, actorUserId, actorEmail || null, action, targetType || null,
+        targetId != null ? String(targetId) : null,
+        detail ? String(detail).slice(0, 500) : null,
+        ip || null);
+  },
+  list(orgId, { limit = 50, offset = 0 } = {}) {
+    return db.prepare(`SELECT a.*, u.name as actor_name
+      FROM admin_audit_log a LEFT JOIN users u ON a.actor_user_id = u.id
+      WHERE a.org_id = ? ORDER BY a.created_at DESC LIMIT ? OFFSET ?`)
+      .all(orgId, Math.min(limit, 200), Math.max(offset, 0));
+  },
+  purgeOld(days = 365) {
+    db.prepare("DELETE FROM admin_audit_log WHERE created_at < datetime('now', '-' || ? || ' days')").run(days);
+  },
+};
+
 // ─── Event log (Zapier/Make polling) ───
 db.exec(`
   CREATE TABLE IF NOT EXISTS event_log (
@@ -1138,4 +1218,106 @@ const workflowOps = {
   },
 };
 
-module.exports = { db, userOps, otpOps, sessionOps, docOps, signerOps, templateOps, apiKeyOps, webhookOps, eventLogOps, workflowOps, embedOps, orgOps, orgMemberOps, orgInviteOps, commentOps, generateToken, VALID_ROLES, ORG_ROLES };
+// ─── 2026 market-expansion migrations (CA/US/IN/AU/EU) ───
+// Adding here in additive form so existing installs upgrade cleanly.
+ensureColumn('signers', 'preferred_language', "TEXT NOT NULL DEFAULT 'en'");  // 'en' | 'fr' | 'hi'
+ensureColumn('users',   'preferred_language', "TEXT NOT NULL DEFAULT 'en'");
+ensureColumn('orgs',    'default_language',   "TEXT NOT NULL DEFAULT 'en'");
+ensureColumn('orgs',    'data_residency',     "TEXT NOT NULL DEFAULT 'auto'"); // 'auto' | 'ca' | 'us' | 'in' | 'eu' | 'au'
+ensureColumn('orgs',    'grievance_officer_email', "TEXT");                    // DPDP Act 2023 requirement
+
+// Witness workflow: who is witnessing whom
+ensureColumn('signers', 'witness_for_signer_id', "INTEGER");  // nullable FK into signers — this row witnesses that row
+ensureColumn('signers', 'witnessed_at', "TEXT");
+
+// Aadhaar / DSC-based signing (server stores txn + masked reference only — never the full Aadhaar)
+ensureColumn('signers', 'esign_provider', "TEXT");            // 'sandbox' | 'emudhra' | 'protean' | null
+ensureColumn('signers', 'esign_txn_id',   "TEXT");
+ensureColumn('signers', 'esign_aadhaar_last4', "TEXT");
+ensureColumn('signers', 'esign_signature_token', "TEXT");
+ensureColumn('signers', 'esign_signed_at', "TEXT");
+
+// Payment currency broader support (INR via Razorpay, GBP, EUR, AUD, USD already possible via Stripe)
+ensureColumn('documents', 'payment_provider', "TEXT NOT NULL DEFAULT 'stripe'"); // 'stripe' | 'razorpay'
+ensureColumn('signers',   'payment_provider', "TEXT NOT NULL DEFAULT 'stripe'");
+ensureColumn('signers',   'payment_link_id', "TEXT");  // Razorpay payment_link id
+
+// ID-verification provider reference + outcome
+ensureColumn('signers', 'idv_provider',   "TEXT");
+ensureColumn('signers', 'idv_reference',  "TEXT");
+ensureColumn('signers', 'idv_confidence', "REAL");
+ensureColumn('signers', 'idv_result_json', "TEXT");
+
+// QES (eIDAS) and DSC (India Class 3) references
+ensureColumn('documents', 'qes_provider',  "TEXT");
+ensureColumn('documents', 'qes_reference', "TEXT");
+
+// Initialise the new modular schemas
+const compliance = require('./compliance');
+const envelopes = require('./envelopes');
+const estamp = require('./estamp');
+compliance.initSchema(db);
+envelopes.initSchema(db);
+envelopes.ensureDocColumns(ensureColumn);
+estamp.initSchema(db);
+
+const envelopeOps = envelopes.buildOps(db, { generateDocUUID });
+
+// Witness-specific helpers (built here so we can share the prepared statements).
+const witnessOps = {
+  setWitnessFor(witnessSignerId, targetSignerId) {
+    db.prepare('UPDATE signers SET role = ?, witness_for_signer_id = ? WHERE id = ?')
+      .run('witness', targetSignerId, witnessSignerId);
+  },
+  listWitnessesFor(targetSignerId) {
+    return db.prepare("SELECT * FROM signers WHERE witness_for_signer_id = ? AND role = 'witness' ORDER BY sign_order").all(targetSignerId);
+  },
+  markWitnessed(id, data) {
+    const result = db.prepare(`UPDATE signers SET status = 'signed', signature_data = ?, signed_at = datetime('now'),
+      witnessed_at = datetime('now'), ip_address = ?, browser_info = ?, field_values_json = ?
+      WHERE id = ? AND status = 'sent' AND role = 'witness'`)
+      .run(data.signatureData, data.ip, data.browserInfo, JSON.stringify(data.fieldValues || {}), id);
+    return result.changes === 1;
+  },
+};
+
+// Extend signerOps with language + esign convenience setters (non-breaking additive methods).
+signerOps.setLanguage = function (id, lang) {
+  const ok = ['en', 'fr', 'hi'].includes(lang);
+  if (!ok) return false;
+  db.prepare('UPDATE signers SET preferred_language = ? WHERE id = ?').run(lang, id);
+  return true;
+};
+signerOps.setEsignResult = function (id, { provider, txnId, aadhaarLast4, signatureToken }) {
+  db.prepare(`UPDATE signers SET esign_provider = ?, esign_txn_id = ?, esign_aadhaar_last4 = ?, esign_signature_token = ?, esign_signed_at = datetime('now') WHERE id = ?`)
+    .run(provider || null, txnId || null, aadhaarLast4 || null, signatureToken || null, id);
+};
+signerOps.setIdvResult = function (id, result) {
+  db.prepare(`UPDATE signers SET idv_provider = ?, idv_reference = ?, idv_confidence = ?, idv_result_json = ?, id_verification_status = ? WHERE id = ?`)
+    .run(result.provider || null, result.reference || null, result.confidence || null,
+         result.resultJson ? JSON.stringify(result.resultJson) : null, result.status || 'pending', id);
+};
+
+// Extend orgOps with compliance settings
+orgOps.updatePolicy = function (id, { requireMfa, retentionDays, sessionTtlHours, ipAllowlist, defaultLanguage, dataResidency, grievanceOfficerEmail }) {
+  db.prepare(`UPDATE orgs SET
+      require_mfa = COALESCE(?, require_mfa),
+      retention_days = COALESCE(?, retention_days),
+      session_ttl_hours = COALESCE(?, session_ttl_hours),
+      ip_allowlist = COALESCE(?, ip_allowlist),
+      default_language = COALESCE(?, default_language),
+      data_residency = COALESCE(?, data_residency),
+      grievance_officer_email = COALESCE(?, grievance_officer_email)
+      WHERE id = ?`).run(
+    requireMfa == null ? null : (requireMfa ? 1 : 0),
+    retentionDays == null ? null : retentionDays,
+    sessionTtlHours == null ? null : sessionTtlHours,
+    ipAllowlist == null ? null : ipAllowlist,
+    defaultLanguage == null ? null : defaultLanguage,
+    dataResidency == null ? null : dataResidency,
+    grievanceOfficerEmail == null ? null : grievanceOfficerEmail,
+    id
+  );
+};
+
+module.exports = { db, userOps, otpOps, sessionOps, docOps, signerOps, templateOps, apiKeyOps, webhookOps, eventLogOps, workflowOps, embedOps, orgOps, orgMemberOps, orgInviteOps, commentOps, auditOps, envelopeOps, witnessOps, generateToken, VALID_ROLES, ORG_ROLES };

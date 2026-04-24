@@ -1,4 +1,5 @@
 const nodemailer = require('nodemailer');
+const { t } = require('./i18n-server');
 
 let transporter = null;
 
@@ -36,7 +37,6 @@ function isConfigured() {
 const FROM_NAME = process.env.FROM_NAME || 'SealForge';
 const FROM_EMAIL = process.env.FROM_EMAIL || process.env.SMTP_USER || 'noreply@finelai.com';
 
-// Build a branded email header. `brand` is optional — falls back to default SealForge styling.
 function brandHeader(brand) {
   const color = (brand && brand.color) || '#1a3b7a';
   if (brand && brand.logoUrl) {
@@ -63,68 +63,69 @@ function fromField(brand) {
   return `"${safeName}" <${FROM_EMAIL}>`;
 }
 
-async function sendLoginOTP(toEmail, otp) {
+// `lang` is an optional 2-letter code ('en' | 'fr' | 'hi'). Defaults to 'en'.
+async function sendLoginOTP(toEmail, otp, lang = 'en') {
   if (!transporter) return false;
   await transporter.sendMail({
     from: `"${FROM_NAME}" <${FROM_EMAIL}>`,
     to: toEmail,
-    subject: 'Your SealForge login verification code',
+    subject: t(lang, 'email.login_subject'),
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;">
         <div style="background:#1a3b7a;padding:16px 24px;border-radius:8px 8px 0 0;">
           <span style="color:#fff;font-size:24px;font-weight:800;">Seal</span><span style="color:#7eb8ff;font-size:24px;font-weight:600;">Forge</span>
         </div>
         <div style="padding:24px;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
-          <p>Your login verification code is:</p>
+          <p>${esc(t(lang, 'email.login_body'))}</p>
           <div style="font-size:32px;font-weight:700;color:#1a3b7a;letter-spacing:4px;text-align:center;padding:16px;background:#f5f7fa;border-radius:8px;margin:16px 0;">${otp}</div>
-          <p style="color:#666;font-size:13px;">This code expires in 10 minutes. If you didn't request this, ignore this email.</p>
+          <p style="color:#666;font-size:13px;">${esc(t(lang, 'email.login_expire'))}</p>
         </div>
       </div>`,
   });
   return true;
 }
 
-async function sendSignerOTP(toEmail, signerName, otp) {
+async function sendSignerOTP(toEmail, signerName, otp, lang = 'en') {
   if (!transporter) return false;
   await transporter.sendMail({
     from: `"${FROM_NAME}" <${FROM_EMAIL}>`,
     to: toEmail,
-    subject: 'Your SealForge verification code',
+    subject: t(lang, 'email.signer_subject'),
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;">
         <div style="background:#1a3b7a;padding:16px 24px;border-radius:8px 8px 0 0;">
           <span style="color:#fff;font-size:24px;font-weight:800;">Seal</span><span style="color:#7eb8ff;font-size:24px;font-weight:600;">Forge</span>
         </div>
         <div style="padding:24px;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
-          <p>Hi ${esc(signerName)},</p>
-          <p>Enter this code to verify your identity before signing:</p>
+          <p>${esc(t(lang, 'email.signer_hi', { name: signerName }))}</p>
+          <p>${esc(t(lang, 'email.signer_body'))}</p>
           <div style="font-size:32px;font-weight:700;color:#1a3b7a;letter-spacing:4px;text-align:center;padding:16px;background:#f5f7fa;border-radius:8px;margin:16px 0;">${otp}</div>
-          <p style="color:#666;font-size:13px;">This code expires in 10 minutes.</p>
+          <p style="color:#666;font-size:13px;">${esc(t(lang, 'email.signer_expire'))}</p>
         </div>
       </div>`,
   });
   return true;
 }
 
-async function sendSigningRequest(toEmail, signerName, senderName, docTitle, signUrl, message, brand) {
+async function sendSigningRequest(toEmail, signerName, senderName, docTitle, signUrl, message, brand, lang = 'en') {
   if (!transporter) return false;
   const color = (brand && brand.color) || '#1a3b7a';
   await transporter.sendMail({
     from: fromField(brand),
     to: toEmail,
-    subject: `${senderName} requested your signature: ${docTitle}`,
+    subject: t(lang, 'email.request_subject', { sender: senderName, title: docTitle }),
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;">
         ${brandHeader(brand)}
         <div style="padding:24px;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
-          <p>Hi ${esc(signerName)},</p>
-          <p><strong>${esc(senderName)}</strong> has requested your signature on:</p>
+          <p>${esc(t(lang, 'email.signer_hi', { name: signerName }))}</p>
+          <p>${t(lang, 'email.request_body', { sender: esc(senderName) })}</p>
           <div style="background:#f5f7fa;padding:14px;border-radius:8px;margin:16px 0;">
             <div style="font-weight:600;color:${esc(color)};">${esc(docTitle)}</div>
             ${message ? `<div style="color:#666;font-size:13px;margin-top:6px;">"${esc(message)}"</div>` : ''}
           </div>
-          <a href="${esc(signUrl)}" style="display:inline-block;background:${esc(color)};color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:600;">Review & Sign</a>
-          <p style="color:#666;font-size:13px;margin-top:16px;">You will be asked to verify your email before signing.</p>
+          <a href="${esc(signUrl)}" style="display:inline-block;background:${esc(color)};color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:600;">${esc(t(lang, 'email.request_button'))}</a>
+          <p style="color:#666;font-size:13px;margin-top:16px;">${esc(t(lang, 'email.request_note'))}</p>
           ${brandFooter(brand)}
         </div>
       </div>`,
@@ -132,51 +133,50 @@ async function sendSigningRequest(toEmail, signerName, senderName, docTitle, sig
   return true;
 }
 
-async function sendCompletionNotice(toEmail, recipientName, docTitle, docUUID) {
+async function sendCompletionNotice(toEmail, recipientName, docTitle, docUUID, lang = 'en') {
   if (!transporter) return false;
   await transporter.sendMail({
     from: `"${FROM_NAME}" <${FROM_EMAIL}>`,
     to: toEmail,
-    subject: `Completed: All signatures collected for "${docTitle}"`,
+    subject: t(lang, 'email.complete_subject', { title: docTitle }),
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;">
         <div style="background:#1a3b7a;padding:16px 24px;border-radius:8px 8px 0 0;">
           <span style="color:#fff;font-size:24px;font-weight:800;">Seal</span><span style="color:#7eb8ff;font-size:24px;font-weight:600;">Forge</span>
         </div>
         <div style="padding:24px;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
-          <p>Hi ${esc(recipientName)},</p>
+          <p>${esc(t(lang, 'email.signer_hi', { name: recipientName }))}</p>
           <div style="background:#e8f5e9;border:1px solid #66bb6a;padding:14px;border-radius:8px;margin:16px 0;color:#2e7d32;">
-            <strong>All signatures have been collected</strong> for "${esc(docTitle)}".
+            <strong>${esc(t(lang, 'email.complete_body', { title: docTitle }))}</strong>
           </div>
           <p style="font-size:13px;color:#666;">Document ID: ${docUUID}</p>
-          <p style="font-size:13px;color:#666;">Log in to your SealForge dashboard to download the signed document.</p>
         </div>
       </div>`,
   });
   return true;
 }
 
-async function sendReminder(toEmail, signerName, senderName, docTitle, signUrl, expiresAt, brand) {
+async function sendReminder(toEmail, signerName, senderName, docTitle, signUrl, expiresAt, brand, lang = 'en') {
   if (!transporter) return false;
   const expiryLine = expiresAt
-    ? `<p style="color:#c62828;font-size:13px;margin:12px 0;"><strong>Note:</strong> This request expires on ${esc(String(expiresAt).slice(0, 10))}.</p>`
+    ? `<p style="color:#c62828;font-size:13px;margin:12px 0;"><strong>${esc(t(lang, 'email.expiry_note', { date: String(expiresAt).slice(0, 10) }))}</strong></p>`
     : '';
   await transporter.sendMail({
     from: fromField(brand),
     to: toEmail,
-    subject: `Reminder: Please sign "${docTitle}"`,
+    subject: t(lang, 'email.reminder_subject', { title: docTitle }),
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;">
         <div style="background:#1a3b7a;padding:16px 24px;border-radius:8px 8px 0 0;">
           <span style="color:#fff;font-size:24px;font-weight:800;">Seal</span><span style="color:#7eb8ff;font-size:24px;font-weight:600;">Forge</span>
         </div>
         <div style="padding:24px;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
-          <p>Hi ${esc(signerName)},</p>
-          <p>This is a friendly reminder that <strong>${esc(senderName)}</strong> is still waiting for your signature on:</p>
+          <p>${esc(t(lang, 'email.signer_hi', { name: signerName }))}</p>
+          <p>${t(lang, 'email.reminder_body', { sender: esc(senderName) })}</p>
           <div style="background:#f5f7fa;padding:14px;border-radius:8px;margin:16px 0;">
             <div style="font-weight:600;color:#1a3b7a;">${esc(docTitle)}</div>
           </div>
-          <a href="${esc(signUrl)}" style="display:inline-block;background:#1a3b7a;color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:600;">Review & Sign</a>
+          <a href="${esc(signUrl)}" style="display:inline-block;background:#1a3b7a;color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:600;">${esc(t(lang, 'email.request_button'))}</a>
           ${expiryLine}
         </div>
       </div>`,
@@ -184,56 +184,54 @@ async function sendReminder(toEmail, signerName, senderName, docTitle, signUrl, 
   return true;
 }
 
-async function sendExpiredNotice(toEmail, ownerName, docTitle, docUUID) {
+async function sendExpiredNotice(toEmail, ownerName, docTitle, docUUID, lang = 'en') {
   if (!transporter) return false;
   await transporter.sendMail({
     from: `"${FROM_NAME}" <${FROM_EMAIL}>`,
     to: toEmail,
-    subject: `Expired: "${docTitle}" is no longer available for signing`,
+    subject: t(lang, 'email.expired_subject', { title: docTitle }),
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;">
         <div style="background:#1a3b7a;padding:16px 24px;border-radius:8px 8px 0 0;">
           <span style="color:#fff;font-size:24px;font-weight:800;">Seal</span><span style="color:#7eb8ff;font-size:24px;font-weight:600;">Forge</span>
         </div>
         <div style="padding:24px;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
-          <p>Hi ${esc(ownerName)},</p>
+          <p>${esc(t(lang, 'email.signer_hi', { name: ownerName }))}</p>
           <div style="background:#fff3e0;border:1px solid #ff9800;padding:14px;border-radius:8px;margin:16px 0;color:#6d4c00;">
-            The signing request for "<strong>${esc(docTitle)}</strong>" has expired and was automatically cancelled.
+            ${t(lang, 'email.expired_body', { title: esc(docTitle) })}
           </div>
           <p style="font-size:13px;color:#666;">Document ID: ${docUUID}</p>
-          <p style="font-size:13px;color:#666;">You can re-create the request from your SealForge dashboard.</p>
         </div>
       </div>`,
   });
   return true;
 }
 
-async function sendDeclineNotice(toEmail, ownerName, docTitle, signerName, reason) {
+async function sendDeclineNotice(toEmail, ownerName, docTitle, signerName, reason, lang = 'en') {
   if (!transporter) return false;
   await transporter.sendMail({
     from: `"${FROM_NAME}" <${FROM_EMAIL}>`,
     to: toEmail,
-    subject: `Declined: ${signerName} declined to sign "${docTitle}"`,
+    subject: t(lang, 'email.decline_subject', { signer: signerName, title: docTitle }),
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;">
         <div style="background:#c62828;padding:16px 24px;border-radius:8px 8px 0 0;">
           <span style="color:#fff;font-size:24px;font-weight:800;">Seal</span><span style="color:#ffb3b3;font-size:24px;font-weight:600;">Forge</span>
         </div>
         <div style="padding:24px;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
-          <p>Hi ${esc(ownerName)},</p>
+          <p>${esc(t(lang, 'email.signer_hi', { name: ownerName }))}</p>
           <div style="background:#ffebee;border:1px solid #ef5350;padding:14px;border-radius:8px;margin:16px 0;color:#c62828;">
-            <strong>${esc(signerName)}</strong> has declined to sign <strong>"${esc(docTitle)}"</strong>.
+            ${t(lang, 'email.decline_body', { signer: esc(signerName), title: esc(docTitle) })}
           </div>
-          <p style="font-size:13px;color:#555;"><b>Reason:</b></p>
+          <p style="font-size:13px;color:#555;"><b>${esc(t(lang, 'email.decline_reason'))}</b></p>
           <div style="background:#f5f7fa;padding:12px;border-radius:6px;font-size:13px;color:#333;white-space:pre-wrap;">${esc(reason)}</div>
-          <p style="color:#666;font-size:13px;margin-top:16px;">The document has been marked as declined. No further signers will be notified.</p>
         </div>
       </div>`,
   });
   return true;
 }
 
-async function sendReassignNotice(toEmail, ownerName, docTitle, fromName, toName, toEmailAddr) {
+async function sendReassignNotice(toEmail, ownerName, docTitle, fromName, toName, toEmailAddr, lang = 'en') {
   if (!transporter) return false;
   await transporter.sendMail({
     from: `"${FROM_NAME}" <${FROM_EMAIL}>`,
@@ -243,38 +241,35 @@ async function sendReassignNotice(toEmail, ownerName, docTitle, fromName, toName
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;">
         ${brandHeader(null)}
         <div style="padding:24px;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
-          <p>Hi ${esc(ownerName)},</p>
+          <p>${esc(t(lang, 'email.signer_hi', { name: ownerName }))}</p>
           <div style="background:#fff3e0;border:1px solid #ff9800;padding:14px;border-radius:8px;margin:16px 0;color:#6d4c00;">
             <strong>${esc(fromName)}</strong> reassigned their signing task on <strong>"${esc(docTitle)}"</strong> to:
             <div style="margin-top:8px;">${esc(toName)} &lt;${esc(toEmailAddr)}&gt;</div>
           </div>
-          <p style="color:#666;font-size:13px;">${esc(toName)} has been sent a signing link. The original signer's link is no longer valid.</p>
         </div>
       </div>`,
   });
   return true;
 }
 
-// Workspace invitation email. `opts` contains { orgName, inviterName, role, url }.
-// `brand` is the inviter's branding preferences (optional).
-async function sendInvite(toEmail, opts, brand) {
+async function sendInvite(toEmail, opts, brand, lang = 'en') {
   if (!transporter) return false;
   const { orgName, inviterName, role, url } = opts;
   const color = (brand && brand.color) || '#1a3b7a';
   await transporter.sendMail({
     from: fromField(brand),
     to: toEmail,
-    subject: `${inviterName} invited you to join ${orgName} on SealForge`,
+    subject: t(lang, 'email.invite_subject', { inviter: inviterName, org: orgName }),
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;">
         ${brandHeader(brand)}
         <div style="padding:24px;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
-          <p>Hi,</p>
-          <p><strong>${esc(inviterName)}</strong> has invited you to join the <strong>${esc(orgName)}</strong> workspace on SealForge as a <strong>${esc(role)}</strong>.</p>
+          <p>${esc(t(lang, 'email.signer_hi', { name: '' }))}</p>
+          <p>${t(lang, 'email.invite_body', { inviter: esc(inviterName), org: esc(orgName), role: esc(role) })}</p>
           <div style="text-align:center;margin:24px 0;">
-            <a href="${esc(url)}" style="display:inline-block;background:${esc(color)};color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:600;">Accept Invitation</a>
+            <a href="${esc(url)}" style="display:inline-block;background:${esc(color)};color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:600;">${esc(t(lang, 'email.invite_button'))}</a>
           </div>
-          <p style="color:#666;font-size:13px;">This invitation expires in 7 days. If you don't recognise the sender, you can safely ignore this email.</p>
+          <p style="color:#666;font-size:13px;">${esc(t(lang, 'email.invite_note'))}</p>
           ${brandFooter(brand)}
         </div>
       </div>`,

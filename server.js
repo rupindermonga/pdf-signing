@@ -11,12 +11,20 @@ const { P12Signer } = require('@signpdf/signer-p12');
 const { pdflibAddPlaceholder } = require('@signpdf/placeholder-pdf-lib');
 const { PDFDocument } = require('pdf-lib');
 
-const { userOps, otpOps, sessionOps, docOps, signerOps, templateOps, apiKeyOps, webhookOps, eventLogOps, workflowOps, embedOps, orgOps, orgMemberOps, orgInviteOps, commentOps, VALID_ROLES, ORG_ROLES } = require('./database');
+const { db, userOps, otpOps, sessionOps, docOps, signerOps, templateOps, apiKeyOps, webhookOps, eventLogOps, workflowOps, embedOps, orgOps, orgMemberOps, orgInviteOps, commentOps, envelopeOps, witnessOps, VALID_ROLES, ORG_ROLES } = require('./database');
 const email = require('./email');
 const { TOTP, Secret } = require('otpauth');
 const stripe = require('./stripe');
+const razorpay = require('./razorpay');
 const sms = require('./sms');
 const tsa = require('./tsa');
+const compliance = require('./compliance');
+const esign = require('./esign-providers');
+const idv = require('./id-verification');
+const estamp = require('./estamp');
+const qes = require('./qes-providers');
+const fieldDetection = require('./field-detection');
+const { t: tEmail, SUPPORTED: SUPPORTED_LANGS, normalize: normLang } = require('./i18n-server');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -3571,7 +3579,366 @@ app.post('/api/documents/create-kiosk', requireAuth, requireRole('admin', 'membe
   }
 });
 
-// ─── Root redirect ───
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026 market-expansion endpoints (CA / US / IN / AU / EU)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Consent capture (PIPEDA, Quebec Law 25, DPDP, GDPR, ESIGN/UETA) ──
+// POST from the signer-facing page BEFORE the first signing action.
+app.post('/api/sign/:token/consent', rateLimit(60000, 20), (req, res) => {
+  const signer = signerOps.findByToken(req.params.token);
+  if (!signer) return res.status(404).json({ error: 'Invalid signing link' });
+  const { consentKind, granted, displayedText, lang } = req.body || {};
+  const allowed = ['esign', 'privacy', 'dpdp', 'pipeda'];
+  if (!allowed.includes(consentKind)) return res.status(400).json({ error: 'Invalid consentKind' });
+  const result = compliance.recordConsent(db, {
+    subjectType: 'signer',
+    subjectId: signer.id,
+    subjectEmail: signer.email,
+    consentKind,
+    granted: !!granted,
+    ip: clientIp(req),
+    userAgent: (req.headers['user-agent'] || '').slice(0, 500),
+    lang: normLang(lang),
+    displayedText: String(displayedText || '').slice(0, 2000),
+    documentId: signer.document_id,
+  });
+  res.json({ ok: true, proofHash: result.proofHash, version: result.version });
+});
+
+// ── Data-subject requests (PIPEDA / DPDP / GDPR / Law 25) ──
+// Anyone can file a request by email; they receive a verification link that unlocks action.
+app.post('/api/dsr/request', rateLimit(60 * 60 * 1000, 5), async (req, res) => {
+  const { email: subjectEmail, requestType, jurisdiction, note } = req.body || {};
+  if (!subjectEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(subjectEmail)) return res.status(400).json({ error: 'Valid email required' });
+  try {
+    const dsr = compliance.createDSR(db, { subjectEmail, requestType, jurisdiction, note });
+    const verifyUrl = `${BASE_URL}/api/dsr/verify/${dsr.verificationToken}`;
+    if (email.isConfigured()) {
+      await email.sendLoginOTP(subjectEmail.toLowerCase(), `Verify your ${requestType} request: ${verifyUrl}`, 'en')
+        .catch(() => {});
+    }
+    res.json({ ok: true, message: 'Verification link sent to the email address on file.', devVerifyUrl: ALLOW_DEV_OTP ? verifyUrl : undefined });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// GET link from verification email — marks verified and (for delete/export) performs the action.
+app.get('/api/dsr/verify/:token', (req, res) => {
+  const dsr = compliance.verifyDSR(db, req.params.token);
+  if (!dsr) return res.status(404).send('Invalid or expired verification link.');
+  if (dsr.request_type === 'export') {
+    const data = compliance.exportData(db, dsr.subject_email);
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="sealforge-data-${dsr.subject_email}.json"`);
+    db.prepare(`UPDATE dsr_requests SET status = 'fulfilled', fulfilled_at = datetime('now') WHERE id = ?`).run(dsr.id);
+    return res.send(JSON.stringify(data, null, 2));
+  }
+  if (dsr.request_type === 'delete') {
+    const counts = compliance.deleteData(db, dsr.subject_email);
+    return res.send(`<html><body style="font-family:sans-serif;padding:40px;max-width:500px;margin:0 auto"><h2>Data deletion complete</h2><p>All personally identifiable data for <strong>${dsr.subject_email}</strong> has been removed or pseudonymised. Signed documents remain in audit records (required for legal record-keeping) with PII replaced.</p><pre style="background:#f5f7fa;padding:12px;border-radius:6px">${JSON.stringify(counts, null, 2)}</pre></body></html>`);
+  }
+  res.send(`<html><body style="font-family:sans-serif;padding:40px"><h2>Request verified</h2><p>Your ${dsr.request_type} request has been verified and will be processed within 30 days.</p></body></html>`);
+});
+
+// ── Aadhaar eSign (India) ──
+app.post('/api/sign/:token/aadhaar/initiate', rateLimit(60000, 5), async (req, res) => {
+  const signer = signerOps.findByToken(req.params.token);
+  if (!signer) return res.status(404).json({ error: 'Invalid signing link' });
+  if (signer.status === 'signed') return res.status(400).json({ error: 'Already signed' });
+  const { aadhaar } = req.body || {};
+  if (!esign.isAadhaarFormat(aadhaar)) return res.status(400).json({ error: 'Aadhaar must be 12 digits' });
+  if (!esign.verhoeffValid(aadhaar)) return res.status(400).json({ error: 'Aadhaar failed Verhoeff check' });
+  try {
+    const { name: providerName, impl } = esign.getActive();
+    const result = await impl.initiate({
+      docHash: signer.original_hash,
+      signerName: signer.name,
+      signerEmail: signer.email,
+      aadhaar,
+      redirectUrl: `${BASE_URL}/sign/${signer.token}?aadhaar_callback=1`,
+    });
+    signerOps.setEsignResult(signer.id, { provider: providerName, txnId: result.txnId, aadhaarLast4: String(aadhaar).slice(-4) });
+    // Never echo back the full Aadhaar. In sandbox we expose devOtp for testing only.
+    const payload = { provider: providerName, txnId: result.txnId, status: result.status, redirectUrl: result.redirectUrl };
+    if (ALLOW_DEV_OTP && result.devOtp) payload.devOtp = result.devOtp;
+    res.json(payload);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/sign/:token/aadhaar/verify', rateLimit(60000, 10), async (req, res) => {
+  const signer = signerOps.findByToken(req.params.token);
+  if (!signer) return res.status(404).json({ error: 'Invalid signing link' });
+  if (signer.status === 'signed') return res.status(400).json({ error: 'Already signed' });
+  const { txnId, otp, callbackPayload } = req.body || {};
+  try {
+    const { name: providerName, impl } = esign.getActive();
+    const result = await impl.verifyOTP({ txnId, otp, callbackPayload });
+    signerOps.setEsignResult(signer.id, {
+      provider: providerName,
+      txnId: result.txnId,
+      aadhaarLast4: result.aadhaarLast4 || '',
+      signatureToken: result.signatureToken,
+    });
+    res.json({ ok: true, signedAt: result.signedAt, aadhaarLast4: result.aadhaarLast4, signatureToken: result.signatureToken });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ── AI field detection ──
+app.post('/api/documents/:uuid/detect-fields', requireAuth, rateLimit(60000, 10), async (req, res) => {
+  const doc = docOps.findByUUID(req.params.uuid);
+  if (!doc || doc.created_by !== req.session.userId) return res.status(404).json({ error: 'Document not found' });
+  try {
+    const pdfPath = path.join(storageDir, doc.uuid + '.pdf');
+    if (!fs.existsSync(pdfPath)) return res.status(404).json({ error: 'PDF file missing on disk' });
+    const bytes = fs.readFileSync(pdfPath);
+    const result = await fieldDetection.detect(bytes);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: 'Detection failed: ' + e.message });
+  }
+});
+
+// Upload-time detection: POST a PDF, get back suggested fields without saving the doc.
+// Useful for the "upload" step on the send page (preview fields before assigning signers).
+app.post('/api/detect-fields-preview', requireAuth, upload.single('pdf'), rateLimit(60000, 10), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No PDF uploaded' });
+  try {
+    const result = await fieldDetection.detect(req.file.buffer);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: 'Detection failed: ' + e.message });
+  }
+});
+
+// ── ID verification provider invocation ──
+app.post('/api/sign/:token/idv/verify', rateLimit(60000, 5), async (req, res) => {
+  const signer = signerOps.findByToken(req.params.token);
+  if (!signer) return res.status(404).json({ error: 'Invalid signing link' });
+  if (!signer.id_document_path || !signer.id_selfie_path) {
+    return res.status(400).json({ error: 'Upload an ID document and selfie first.' });
+  }
+  try {
+    const { name: providerName, impl } = idv.getActive();
+    const result = await impl.verify({
+      idPath: signer.id_document_path,
+      selfiePath: signer.id_selfie_path,
+      signerName: signer.name,
+      signerEmail: signer.email,
+    });
+    signerOps.setIdvResult(signer.id, {
+      provider: providerName,
+      reference: result.reference,
+      confidence: result.confidence,
+      resultJson: result,
+      status: result.status === 'approved' ? 'verified' : result.status,
+    });
+    res.json({ ok: true, status: result.status, confidence: result.confidence, reference: result.reference, provider: providerName });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Multi-document envelopes ──
+app.post('/api/envelopes', requireAuth, rateLimit(60000, 20), (req, res) => {
+  const { title, message, signingMode, expiresAt } = req.body || {};
+  if (!title || String(title).trim().length === 0) return res.status(400).json({ error: 'Title required' });
+  const user = userOps.findById(req.session.userId);
+  const result = envelopeOps.create({
+    title: String(title).slice(0, 200),
+    message: String(message || '').slice(0, 2000),
+    createdBy: req.session.userId,
+    orgId: user?.org_id || null,
+    signingMode,
+    expiresAt: expiresAt || null,
+  });
+  res.json({ ok: true, envelope: result });
+});
+
+app.get('/api/envelopes', requireAuth, (req, res) => {
+  const user = userOps.findById(req.session.userId);
+  const envelopes = user?.org_id ? envelopeOps.listByOrg(user.org_id) : envelopeOps.listByUser(req.session.userId);
+  res.json({ envelopes });
+});
+
+app.get('/api/envelopes/:uuid', requireAuth, (req, res) => {
+  const env = envelopeOps.findByUUID(req.params.uuid);
+  if (!env || env.created_by !== req.session.userId) return res.status(404).json({ error: 'Envelope not found' });
+  const docs = envelopeOps.listDocuments(env.id);
+  res.json({ envelope: env, documents: docs });
+});
+
+app.post('/api/envelopes/:uuid/attach', requireAuth, (req, res) => {
+  const env = envelopeOps.findByUUID(req.params.uuid);
+  if (!env || env.created_by !== req.session.userId) return res.status(404).json({ error: 'Envelope not found' });
+  const { documentUUID, position } = req.body || {};
+  const doc = docOps.findByUUID(documentUUID);
+  if (!doc || doc.created_by !== req.session.userId) return res.status(404).json({ error: 'Document not found' });
+  envelopeOps.addDocument(env.id, doc.id, position || 0);
+  envelopeOps.recomputeStatus(env.id);
+  res.json({ ok: true });
+});
+
+app.post('/api/envelopes/:uuid/recompute', requireAuth, (req, res) => {
+  const env = envelopeOps.findByUUID(req.params.uuid);
+  if (!env || env.created_by !== req.session.userId) return res.status(404).json({ error: 'Envelope not found' });
+  const status = envelopeOps.recomputeStatus(env.id);
+  res.json({ ok: true, status });
+});
+
+app.delete('/api/envelopes/:uuid', requireAuth, (req, res) => {
+  const env = envelopeOps.findByUUID(req.params.uuid);
+  if (!env) return res.status(404).json({ error: 'Envelope not found' });
+  const ok = envelopeOps.delete(env.id, req.session.userId);
+  if (!ok) return res.status(403).json({ error: 'Not permitted' });
+  res.json({ ok: true });
+});
+
+// ── eStamping (India) ──
+app.post('/api/documents/:uuid/estamp/purchase', requireAuth, rateLimit(60000, 10), async (req, res) => {
+  const doc = docOps.findByUUID(req.params.uuid);
+  if (!doc || doc.created_by !== req.session.userId) return res.status(404).json({ error: 'Document not found' });
+  const { state, firstParty, secondParty, stampDutyPaise, articleCode, description } = req.body || {};
+  try {
+    const { impl } = estamp.getActive();
+    const cert = await impl.purchase({ state, firstParty, secondParty, stampDutyPaise, articleCode, description });
+    estamp.saveCertificate(db, doc.id, cert);
+    res.json({ ok: true, certificate: cert });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.get('/api/documents/:uuid/estamp', requireAuth, (req, res) => {
+  const doc = docOps.findByUUID(req.params.uuid);
+  if (!doc || doc.created_by !== req.session.userId) return res.status(404).json({ error: 'Document not found' });
+  const cert = estamp.getCertificateForDocument(db, doc.id);
+  res.json({ certificate: cert });
+});
+
+app.get('/api/estamp/verify/:certNumber', rateLimit(60000, 30), async (req, res) => {
+  try {
+    const { impl } = estamp.getActive();
+    const result = await impl.verify(req.params.certNumber);
+    res.json(result);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ── Razorpay (INR) payments ──
+app.post('/api/sign/:token/razorpay/create-link', rateLimit(60000, 5), async (req, res) => {
+  const signer = signerOps.findByToken(req.params.token);
+  if (!signer) return res.status(404).json({ error: 'Invalid signing link' });
+  if (!razorpay.isConfigured()) return res.status(501).json({ error: 'Razorpay not configured' });
+  if (!signer.payment_amount_cents || signer.payment_amount_cents <= 0) {
+    return res.status(400).json({ error: 'No payment required for this signer' });
+  }
+  try {
+    const link = await razorpay.createPaymentLink({
+      amountPaise: signer.payment_amount_cents,
+      currency: (signer.payment_currency || 'INR').toUpperCase(),
+      description: `Signing payment for "${signer.doc_title}"`,
+      customerName: signer.name,
+      customerEmail: signer.email,
+      customerPhone: signer.phone || undefined,
+      callbackUrl: `${BASE_URL}/sign/${signer.token}?payment=done`,
+      referenceId: 'sf_' + signer.id + '_' + Date.now(),
+      notes: { signerId: String(signer.id), documentUuid: signer.doc_uuid },
+    });
+    db.prepare("UPDATE signers SET payment_provider = 'razorpay', payment_link_id = ?, payment_session_id = ?, payment_status = 'pending' WHERE id = ?")
+      .run(link.id, link.short_url || link.id, signer.id);
+    res.json({ ok: true, paymentUrl: link.short_url, linkId: link.id });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Razorpay webhook — verify signature, mark signer paid on payment_link.paid
+app.post('/api/webhooks/razorpay', express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
+  const signature = req.headers['x-razorpay-signature'];
+  const raw = req.body instanceof Buffer ? req.body.toString() : (typeof req.body === 'string' ? req.body : JSON.stringify(req.body));
+  if (!razorpay.verifyWebhookSignature(raw, signature)) return res.status(400).json({ error: 'Invalid signature' });
+  let evt;
+  try { evt = JSON.parse(raw); } catch { return res.status(400).json({ error: 'Invalid JSON' }); }
+  if (evt.event === 'payment_link.paid') {
+    const linkId = evt.payload?.payment_link?.entity?.id;
+    if (linkId) {
+      const signer = db.prepare('SELECT id FROM signers WHERE payment_link_id = ?').get(linkId);
+      if (signer) signerOps.markPaid(signer.id);
+    }
+  }
+  res.json({ ok: true });
+});
+
+// ── QES (eIDAS) ──
+app.get('/api/qes/providers', requireAuth, (req, res) => {
+  res.json({ available: qes.listProviders(), configured: qes.configuredProviders() });
+});
+
+app.post('/api/documents/:uuid/qes/sign', requireAuth, rateLimit(60000, 5), async (req, res) => {
+  const doc = docOps.findByUUID(req.params.uuid);
+  if (!doc || doc.created_by !== req.session.userId) return res.status(404).json({ error: 'Document not found' });
+  try {
+    const { name: providerName, impl } = qes.getActive();
+    const result = await impl.sign({
+      docHash: doc.original_hash,
+      signerIdentity: { name: req.body?.signerName, email: req.body?.signerEmail },
+      tsaUrl: req.body?.tsaUrl,
+    });
+    db.prepare('UPDATE documents SET qes_provider = ?, qes_reference = ? WHERE id = ?')
+      .run(providerName, result.signatureToken, doc.id);
+    res.json({ ok: true, provider: providerName, result });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ── Witness ──
+// Attach a witness to an existing signer. Witness gets their own token + signing URL.
+app.post('/api/documents/:uuid/witness', requireAuth, rateLimit(60000, 20), (req, res) => {
+  const doc = docOps.findByUUID(req.params.uuid);
+  if (!doc || doc.created_by !== req.session.userId) return res.status(404).json({ error: 'Document not found' });
+  const { witnessesFor, name, email: witnessEmail } = req.body || {};
+  if (!witnessesFor || !name || !witnessEmail) return res.status(400).json({ error: 'witnessesFor, name, email required' });
+  const target = db.prepare('SELECT * FROM signers WHERE id = ? AND document_id = ?').get(witnessesFor, doc.id);
+  if (!target) return res.status(404).json({ error: 'Target signer not found in this document' });
+  // Give witness the next sign_order (runs after the target)
+  const nextOrder = (target.sign_order || 1) + 1;
+  const created = signerOps.addToDocument(doc.id, name, witnessEmail, nextOrder, 'witness');
+  witnessOps.setWitnessFor(created.id, target.id);
+  res.json({ ok: true, signerId: created.id, token: created.token, signUrl: `${BASE_URL}/sign/${created.token}` });
+});
+
+// ── Organisation policy (market-specific settings) ──
+app.post('/api/org/policy', requireAuth, requireRole('admin'), rateLimit(60000, 20), (req, res) => {
+  const user = userOps.findById(req.session.userId);
+  if (!user?.org_id) return res.status(400).json({ error: 'Not in an organisation' });
+  const { requireMfa, retentionDays, sessionTtlHours, ipAllowlist, defaultLanguage, dataResidency, grievanceOfficerEmail } = req.body || {};
+  if (defaultLanguage && !SUPPORTED_LANGS.includes(defaultLanguage)) {
+    return res.status(400).json({ error: `defaultLanguage must be one of: ${SUPPORTED_LANGS.join(', ')}` });
+  }
+  if (dataResidency && !['auto', 'ca', 'us', 'in', 'eu', 'au'].includes(dataResidency)) {
+    return res.status(400).json({ error: 'dataResidency must be one of: auto, ca, us, in, eu, au' });
+  }
+  orgOps.updatePolicy(user.org_id, { requireMfa, retentionDays, sessionTtlHours, ipAllowlist, defaultLanguage, dataResidency, grievanceOfficerEmail });
+  res.json({ ok: true });
+});
+
+// ── Signer language preference ──
+app.post('/api/sign/:token/lang', rateLimit(60000, 30), (req, res) => {
+  const signer = signerOps.findByToken(req.params.token);
+  if (!signer) return res.status(404).json({ error: 'Invalid signing link' });
+  const ok = signerOps.setLanguage(signer.id, normLang(req.body?.lang));
+  res.json({ ok });
+});
+
+// ── Root redirect ───
 app.get('/', (req, res) => {
   if (req.session.userId) return res.redirect('/dashboard');
   res.redirect('/login');

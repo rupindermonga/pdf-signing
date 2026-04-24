@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Envelopes — SealForge</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <script src="/js/i18n.js" defer></script>
+  <style>
+    .env-list { display: flex; flex-direction: column; gap: 12px; }
+    .env-row { background: #fff; border-radius: 10px; padding: 16px 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+    .env-row-top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+    .env-title { font-weight: 700; color: #1a3b7a; font-size: 17px; }
+    .env-status { padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; letter-spacing: 0.3px; text-transform: uppercase; }
+    .env-status.draft { background: #e0e0e0; color: #555; }
+    .env-status.sent, .env-status.pending { background: #fff3e0; color: #e65100; }
+    .env-status.completed { background: #e8f5e9; color: #2e7d32; }
+    .env-status.cancelled { background: #ffebee; color: #c62828; }
+    .env-meta { color: #888; font-size: 12px; margin-top: 4px; }
+    .env-docs { margin-top: 10px; display: grid; grid-template-columns: repeat(auto-fill,minmax(220px,1fr)); gap: 8px; }
+    .env-doc { background: #f5f7fa; border-radius: 6px; padding: 8px 12px; font-size: 13px; }
+    .env-doc .d-title { font-weight: 600; color: #1a3b7a; }
+    .env-doc .d-status { font-size: 11px; color: #888; margin-top: 2px; }
+    .env-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+    .env-empty { text-align: center; padding: 50px 20px; color: #888; }
+    .env-new-btn { background: #1a3b7a; color: white; border: none; border-radius: 8px; padding: 10px 20px; font-size: 14px; font-weight: 600; cursor: pointer; }
+    .env-new-btn:hover { background: #2d5db8; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo"><span class="logo-seal">Seal</span><span class="logo-forge">Forge</span></div>
+    <h1>Envelopes</h1>
+    <a href="/dashboard" class="header-link">Back to dashboard</a>
+  </header>
+
+  <main>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
+      <div>
+        <h2 style="color:#1a3b7a;font-size:22px;">Multi-document envelopes</h2>
+        <p style="color:#666;font-size:13px;margin-top:4px;max-width:640px;">Group multiple PDFs into a single signing ceremony. Signers get one link and sign every document in the envelope, sequentially or in parallel.</p>
+      </div>
+      <button class="env-new-btn" id="new-env-btn">+ New envelope</button>
+    </div>
+
+    <div class="env-list" id="env-list">
+      <div class="env-empty">Loading...</div>
+    </div>
+  </main>
+
+  <footer>SealForge by Finel AI</footer>
+
+  <script>
+    async function load() {
+      const list = document.getElementById('env-list');
+      list.innerHTML = '<div class="env-empty">Loading...</div>';
+      try {
+        const resp = await fetch('/api/envelopes');
+        if (!resp.ok) { list.innerHTML = '<div class="env-empty">You are not signed in. <a href="/login">Log in</a>.</div>'; return; }
+        const { envelopes = [] } = await resp.json();
+        if (!envelopes.length) {
+          list.innerHTML = `<div class="env-empty">
+            <div style="font-size:48px;margin-bottom:12px;">&#128231;</div>
+            <h3 style="color:#1a3b7a;margin-bottom:8px;">No envelopes yet</h3>
+            <p>Create an envelope and then attach documents to it when you send them for signing.</p>
+          </div>`;
+          return;
+        }
+
+        // Fetch each envelope's documents
+        const detailed = await Promise.all(envelopes.map(async env => {
+          try {
+            const r = await fetch(`/api/envelopes/${env.uuid}`);
+            if (!r.ok) return { envelope: env, documents: [] };
+            return await r.json();
+          } catch { return { envelope: env, documents: [] }; }
+        }));
+
+        list.innerHTML = '';
+        for (const d of detailed) {
+          const env = d.envelope;
+          const docs = d.documents || [];
+          const row = document.createElement('div');
+          row.className = 'env-row';
+          row.innerHTML = `
+            <div class="env-row-top">
+              <div style="flex:1;min-width:200px;">
+                <div class="env-title">${escapeHtml(env.title)}</div>
+                <div class="env-meta">${env.uuid} &middot; ${docs.length} document(s) &middot; ${env.signing_mode} &middot; created ${formatDate(env.created_at)}</div>
+              </div>
+              <span class="env-status ${env.status}">${env.status}</span>
+            </div>
+            ${docs.length ? `<div class="env-docs">${docs.map(doc => `
+              <div class="env-doc">
+                <div class="d-title">${escapeHtml(doc.title || 'Untitled')}</div>
+                <div class="d-status">${doc.status}</div>
+              </div>`).join('')}</div>` : '<div class="env-meta" style="margin-top:8px;font-style:italic;">No documents attached yet — attach via the Send page.</div>'}
+            <div class="env-actions">
+              <a href="/send?envelope=${env.uuid}" class="btn-secondary" style="text-decoration:none;padding:6px 14px;font-size:13px;">+ Attach document</a>
+              <button type="button" class="btn-secondary env-refresh" data-uuid="${env.uuid}" style="padding:6px 14px;font-size:13px;">Recompute status</button>
+              ${env.status === 'draft' ? `<button type="button" class="btn-secondary env-delete" data-uuid="${env.uuid}" style="padding:6px 14px;font-size:13px;color:#c62828;">Delete</button>` : ''}
+            </div>`;
+          list.appendChild(row);
+        }
+
+        list.querySelectorAll('.env-refresh').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            await fetch(`/api/envelopes/${btn.dataset.uuid}/recompute`, { method: 'POST' });
+            load();
+          });
+        });
+        list.querySelectorAll('.env-delete').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            if (!confirm('Delete this envelope? Attached documents become standalone.')) return;
+            await fetch(`/api/envelopes/${btn.dataset.uuid}`, { method: 'DELETE' });
+            load();
+          });
+        });
+      } catch (e) {
+        list.innerHTML = `<div class="env-empty">Error loading envelopes: ${escapeHtml(e.message)}</div>`;
+      }
+    }
+
+    document.getElementById('new-env-btn').addEventListener('click', async () => {
+      const title = prompt('Envelope title:');
+      if (!title) return;
+      const mode = confirm('OK = Sequential signing (each signer notified after previous)\nCancel = Parallel signing (everyone at once)') ? 'sequential' : 'parallel';
+      const resp = await fetch('/api/envelopes', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, signingMode: mode }),
+      });
+      if (!resp.ok) { alert('Failed: ' + (await resp.json()).error); return; }
+      load();
+    });
+
+    function escapeHtml(s) { return String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]); }
+    function formatDate(s) { try { return new Date(s).toLocaleDateString(); } catch { return s; } }
+    load();
+  </script>
+</body>
+</html>

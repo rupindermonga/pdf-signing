@@ -302,6 +302,41 @@ async function runScheduler() {
 
   // 4) Clean up expired/used OTP codes to prevent table bloat
   try { otpOps.cleanExpired(); } catch {}
+
+  // 5) Retention-policy purge: for each org with retention_days > 0, delete completed
+  //    documents whose completed_at is older than retention_days ago. PDF artefacts
+  //    on disk are removed; signer rows pseudonymised (PII scrubbed, audit trail kept).
+  try {
+    const orgs = db.prepare('SELECT id, name, retention_days FROM orgs WHERE retention_days > 0').all();
+    for (const org of orgs) {
+      const cutoff = new Date(now - org.retention_days * 86400 * 1000).toISOString();
+      const victims = db.prepare(`SELECT id, uuid, title FROM documents
+        WHERE org_id = ? AND status = 'completed' AND completed_at IS NOT NULL AND completed_at < ?`)
+        .all(org.id, cutoff);
+      for (const doc of victims) {
+        try {
+          // Delete PDF + attachments on disk
+          const pdfPath = path.join(storageDir, doc.uuid + '.pdf');
+          const signedPath = path.join(storageDir, doc.uuid + '.signed.pdf');
+          const tsaPath = path.join(storageDir, doc.uuid + '.tst');
+          for (const p of [pdfPath, signedPath, tsaPath]) {
+            try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch {}
+          }
+          // Pseudonymise signer PII but keep row for audit integrity
+          db.prepare(`UPDATE signers SET email = 'retention+' || id || '@redacted.local',
+            name = 'Retention-purged',
+            phone = NULL, ip_address = NULL, location = NULL, browser_info = NULL, geo_coords = NULL,
+            id_document_path = NULL, id_selfie_path = NULL, signature_data = NULL
+            WHERE document_id = ?`).run(doc.id);
+          // Mark doc purged (keeps row for historical counts, drops references)
+          db.prepare(`UPDATE documents SET title = '[Purged per retention policy]',
+            original_filename = 'purged.pdf', message = '', fields_json = '[]', tsa_token_path = NULL
+            WHERE id = ?`).run(doc.id);
+          console.log(`[scheduler] retention-purged doc ${doc.uuid} (org ${org.name}, > ${org.retention_days}d)`);
+        } catch (e) { console.warn(`[scheduler] retention purge failed for ${doc.uuid}:`, e.message); }
+      }
+    }
+  } catch (e) { console.error('[scheduler] retention sweep error:', e.message); }
 }
 
 if (process.env.SCHEDULER_DISABLED !== '1') {
@@ -1473,6 +1508,17 @@ app.get('/send', requireAuth, requireRole('admin', 'member'), (req, res) => {
   sendHtml(res, path.join(__dirname, 'public', 'send.html'));
 });
 
+// ─── Envelope browser (multi-document signing ceremonies) ───
+app.get('/envelopes', requireAuth, requireRole('admin', 'member'), (req, res) => {
+  sendHtml(res, path.join(__dirname, 'public', 'envelopes.html'));
+});
+
+// ─── Legal / compliance pages (public, no auth) ───
+app.get('/legal/privacy', (req, res) => sendHtml(res, path.join(__dirname, 'public', 'legal', 'privacy.html')));
+app.get('/legal/esign-disclosure', (req, res) => sendHtml(res, path.join(__dirname, 'public', 'legal', 'esign-disclosure.html')));
+app.get('/legal/grievance', (req, res) => sendHtml(res, path.join(__dirname, 'public', 'legal', 'grievance.html')));
+app.get('/dsr', (req, res) => res.redirect('/legal/grievance'));
+
 app.post('/api/documents/create', requireAuth, requireRole('admin', 'member'), (req, res, next) => {
   upload.single('pdf')(req, res, (err) => {
     if (err) return res.status(400).json({ error: err.message });
@@ -1559,10 +1605,14 @@ app.post('/api/documents/create', requireAuth, requireRole('admin', 'member'), (
       docOps.setSchedule(doc.id, expIso, cadenceDays);
     }
 
-    // Add signers
+    // Add signers (and remember ids for witness pairing + response)
+    const createdSigners = [];
     for (let i = 0; i < cleanSigners.length; i++) {
       const s = cleanSigners[i];
       const created = signerOps.addToDocument(doc.id, s.name, s.email, i + 1, s.role, s.phone, s.notifyMethod);
+      createdSigners.push({ id: created.id, index: i, name: s.name, email: s.email, role: s.role, sign_order: i + 1 });
+      // Per-signer preferred language (EN/FR/HI) so email/OTP land in their language
+      if (s.preferredLanguage) signerOps.setLanguage(created.id, s.preferredLanguage);
       // Each signing-required signer pays their share
       if (amtCents > 0 && s.role !== 'cc') {
         signerOps.setPayment(created.id, amtCents, cur);
@@ -1570,6 +1620,15 @@ app.post('/api/documents/create', requireAuth, requireRole('admin', 'member'), (
       if (idRequired && s.role !== 'cc') {
         signerOps.setIdRequired(created.id, true);
       }
+    }
+
+    // Witness pairing: client sends witnessPairs=[{ witnessIndex, targetIndex }]
+    let witnessPairs = [];
+    try { witnessPairs = JSON.parse(req.body.witnessPairs || '[]'); } catch {}
+    for (const pair of witnessPairs) {
+      const w = createdSigners[pair.witnessIndex];
+      const t = createdSigners[pair.targetIndex];
+      if (w && t && w.role === 'witness') witnessOps.setWitnessFor(w.id, t.id);
     }
 
     // Validate + persist fields (sender-defined)
@@ -1611,7 +1670,13 @@ app.post('/api/documents/create', requireAuth, requireRole('admin', 'member'), (
       signers: cleanSigners,
     });
 
-    res.json({ ok: true, uuid: doc.uuid });
+    // Return signer ids so the UI can post-process (envelope attach, e-stamp, witness wiring)
+    res.json({
+      ok: true,
+      uuid: doc.uuid,
+      document: { uuid: doc.uuid, title: cleanTitle },
+      signers: createdSigners.map(s => ({ id: s.id, name: s.name, email: s.email, sign_order: s.sign_order, role: s.role })),
+    });
   } catch (err) {
     console.error('Create document error:', err);
     console.error('Document create error:', err);
@@ -3936,6 +4001,123 @@ app.post('/api/sign/:token/lang', rateLimit(60000, 30), (req, res) => {
   if (!signer) return res.status(404).json({ error: 'Invalid signing link' });
   const ok = signerOps.setLanguage(signer.id, normLang(req.body?.lang));
   res.json({ ok });
+});
+
+// ─── OpenAPI 3.1 spec (public — tells Zapier / Make / Postman how to call us) ───
+const openapi = require('./openapi');
+app.get('/api/openapi.json', (req, res) => {
+  res.setHeader('Cache-Control', 'public, max-age=300');
+  res.json(openapi.build({ baseUrl: BASE_URL }));
+});
+app.get('/.well-known/openapi.json', (req, res) => {
+  res.setHeader('Cache-Control', 'public, max-age=300');
+  res.json(openapi.build({ baseUrl: BASE_URL }));
+});
+
+// ─── SCIM 2.0 — enterprise user provisioning (Okta, Azure AD, Google Workspace) ──
+// Minimal Users endpoint: list, get, create, patch (activate/deactivate), delete.
+// Auth: same Bearer API key as /api/v1 (scope: rw). Responses use application/scim+json.
+function scimError(res, status, detail, scimType) {
+  res.status(status).type('application/scim+json').json({
+    schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
+    status: String(status),
+    scimType: scimType || undefined,
+    detail,
+  });
+}
+function scimUserFromRow(u) {
+  return {
+    schemas: ['urn:ietf:params:scim:schemas:core:2.0:User'],
+    id: String(u.id),
+    userName: u.email,
+    displayName: u.name || u.email,
+    name: { formatted: u.name || u.email },
+    emails: [{ value: u.email, primary: true }],
+    active: true,
+    meta: {
+      resourceType: 'User',
+      created: u.created_at,
+      lastModified: u.last_login_at || u.created_at,
+      location: `${BASE_URL}/scim/v2/Users/${u.id}`,
+    },
+  };
+}
+app.get('/scim/v2/ServiceProviderConfig', requireApiKey('ro'), (req, res) => {
+  res.type('application/scim+json').json({
+    schemas: ['urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig'],
+    documentationUri: `${BASE_URL}/docs/scim`,
+    patch: { supported: true },
+    bulk: { supported: false, maxOperations: 0, maxPayloadSize: 0 },
+    filter: { supported: true, maxResults: 200 },
+    changePassword: { supported: false },
+    sort: { supported: false },
+    etag: { supported: false },
+    authenticationSchemes: [{ type: 'oauthbearertoken', name: 'OAuth Bearer Token', description: 'OAuth Bearer Token' }],
+  });
+});
+app.get('/scim/v2/Users', requireApiKey('ro'), (req, res) => {
+  const user = req.apiUser;
+  if (!user.org_id) return scimError(res, 400, 'API key is not bound to an organisation');
+  const startIndex = Math.max(1, parseInt(req.query.startIndex, 10) || 1);
+  const count = Math.min(200, parseInt(req.query.count, 10) || 100);
+  const rows = db.prepare(`SELECT u.id, u.email, u.name, u.created_at, u.last_login_at
+      FROM org_members m JOIN users u ON m.user_id = u.id
+      WHERE m.org_id = ? ORDER BY u.id LIMIT ? OFFSET ?`).all(user.org_id, count, startIndex - 1);
+  const total = db.prepare('SELECT COUNT(*) as c FROM org_members WHERE org_id = ?').get(user.org_id).c;
+  res.type('application/scim+json').json({
+    schemas: ['urn:ietf:params:scim:api:messages:2.0:ListResponse'],
+    totalResults: total,
+    startIndex, itemsPerPage: rows.length,
+    Resources: rows.map(scimUserFromRow),
+  });
+});
+app.get('/scim/v2/Users/:id', requireApiKey('ro'), (req, res) => {
+  const user = req.apiUser;
+  if (!user.org_id) return scimError(res, 400, 'API key is not bound to an organisation');
+  const row = db.prepare(`SELECT u.id, u.email, u.name, u.created_at, u.last_login_at
+      FROM org_members m JOIN users u ON m.user_id = u.id
+      WHERE m.org_id = ? AND u.id = ?`).get(user.org_id, req.params.id);
+  if (!row) return scimError(res, 404, 'User not found');
+  res.type('application/scim+json').json(scimUserFromRow(row));
+});
+app.post('/scim/v2/Users', requireApiKey('rw'), (req, res) => {
+  const user = req.apiUser;
+  if (!user.org_id) return scimError(res, 400, 'API key is not bound to an organisation');
+  const body = req.body || {};
+  const email = (body.userName || body.emails?.[0]?.value || '').trim().toLowerCase();
+  const name = body.displayName || body.name?.formatted || '';
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return scimError(res, 400, 'Valid userName (email) required', 'invalidValue');
+  let target = userOps.findByEmail(email);
+  if (!target) target = userOps.create(email, name || email);
+  orgMemberOps.add(user.org_id, target.id, 'member');
+  res.status(201).type('application/scim+json').json(scimUserFromRow(target));
+});
+app.patch('/scim/v2/Users/:id', requireApiKey('rw'), (req, res) => {
+  const user = req.apiUser;
+  if (!user.org_id) return scimError(res, 400, 'API key is not bound to an organisation');
+  const row = userOps.findById(req.params.id);
+  if (!row || !orgMemberOps.isMember(user.org_id, row.id)) return scimError(res, 404, 'User not found');
+  const ops = Array.isArray(req.body?.Operations) ? req.body.Operations : [];
+  for (const op of ops) {
+    if (op.op && String(op.op).toLowerCase() === 'replace') {
+      const val = op.value || {};
+      if (val.active === false) {
+        orgMemberOps.remove(user.org_id, row.id);
+        db.prepare('DELETE FROM sessions WHERE user_id = ?').run(row.id);
+      }
+      if (val.displayName) userOps.updateName(row.id, val.displayName);
+    }
+  }
+  res.type('application/scim+json').json(scimUserFromRow(userOps.findById(row.id) || row));
+});
+app.delete('/scim/v2/Users/:id', requireApiKey('rw'), (req, res) => {
+  const user = req.apiUser;
+  if (!user.org_id) return scimError(res, 400, 'API key is not bound to an organisation');
+  const row = userOps.findById(req.params.id);
+  if (!row) return res.status(204).end();
+  orgMemberOps.remove(user.org_id, row.id);
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(row.id);
+  res.status(204).end();
 });
 
 // ── Root redirect ───

@@ -64,8 +64,39 @@
       </div>
     </div>
 
+    <!-- Step 0: E-signature consent (PIPEDA / Law 25 / DPDP / GDPR / ESIGN-UETA) -->
+    <div class="card" id="consent-card">
+      <h2 data-i18n="sign.consent_title">Electronic-Signature Consent</h2>
+      <div style="background:#f8fafd;border-left:4px solid #1a3b7a;padding:12px 16px;border-radius:6px;margin:12px 0;font-size:13px;line-height:1.5;color:#333;" id="consent-esign-text" data-i18n="sign.consent_esign">I consent to use electronic records and signatures for this transaction. I understand my electronic signature is legally binding under applicable law (ESIGN/UETA in the US, PIPEDA in Canada, IT Act 2000 in India, ETA 1999 in Australia, eIDAS in the EU).</div>
+      <div style="background:#f8fafd;border-left:4px solid #1a3b7a;padding:12px 16px;border-radius:6px;margin:12px 0;font-size:13px;line-height:1.5;color:#333;" id="consent-privacy-text" data-i18n="sign.consent_privacy">I acknowledge that my IP address, browser, timestamp, email, and (if captured) phone/ID document will be stored as part of the audit trail for this signing.</div>
+      <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;">
+        <button class="btn-primary" id="consent-accept-btn" data-i18n="sign.consent_accept">I agree and consent</button>
+        <button class="btn-secondary" id="consent-decline-btn" data-i18n="sign.consent_decline">I do not agree</button>
+      </div>
+      <div id="consent-error" class="error-msg"></div>
+    </div>
+
+    <!-- Step 0.5: Aadhaar eSign alternative (India) — shown opt-in -->
+    <div class="card hidden" id="aadhaar-card">
+      <h2 data-i18n="sign.aadhaar_option">Sign with Aadhaar (India)</h2>
+      <p data-i18n="sign.aadhaar_desc" style="color:#555;font-size:13px;">Use your 12-digit Aadhaar number. You will receive an OTP on your Aadhaar-linked mobile.</p>
+      <div id="aadhaar-step1">
+        <label style="display:block;font-size:13px;font-weight:600;color:#555;margin:10px 0 6px;" data-i18n="sign.aadhaar_enter">Enter your 12-digit Aadhaar number</label>
+        <input type="text" inputmode="numeric" pattern="[0-9\s-]*" maxlength="14" id="aadhaar-number" placeholder="XXXX XXXX XXXX" style="font-size:18px;letter-spacing:3px;padding:10px 14px;border:1px solid #d0d5dd;border-radius:8px;width:240px;max-width:100%;">
+        <div style="margin-top:12px;"><button class="btn-primary" id="aadhaar-initiate-btn">Send Aadhaar OTP</button></div>
+      </div>
+      <div id="aadhaar-step2" class="hidden" style="margin-top:14px;">
+        <label style="display:block;font-size:13px;font-weight:600;color:#555;margin-bottom:6px;" data-i18n="sign.aadhaar_otp">Enter the OTP sent to your Aadhaar-linked mobile</label>
+        <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" id="aadhaar-otp" class="otp-input" placeholder="------">
+        <div id="aadhaar-dev-otp" class="dev-otp hidden"></div>
+        <div style="margin-top:10px;"><button class="btn-primary" id="aadhaar-verify-btn">Verify & Sign</button></div>
+      </div>
+      <div id="aadhaar-error" class="error-msg"></div>
+      <p style="font-size:11px;color:#888;margin-top:10px;">SealForge stores only the last 4 digits of your Aadhaar and a provider transaction ID. We never see or store the full Aadhaar number.</p>
+    </div>
+
     <!-- Step 1: Email verification -->
-    <div class="card otp-card" id="otp-card">
+    <div class="card otp-card hidden" id="otp-card">
       <h2 data-i18n="sign.verify_id">Verify Your Identity</h2>
       <p data-i18n="sign.code_will_be_sent">A verification code will be sent to your email.</p>
       <button class="btn-primary" id="request-otp-btn" data-i18n="sign.send_code">Send Verification Code</button>
@@ -76,6 +107,9 @@
         <button class="btn-primary" id="verify-otp-btn" style="margin-top:12px;" data-i18n="login.verify">Verify</button>
       </div>
       <div id="otp-error" class="error-msg"></div>
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid #eee;">
+        <a href="#" id="use-aadhaar-link" style="font-size:12px;color:#1a3b7a;text-decoration:none;" data-i18n="sign.aadhaar_option">Sign with Aadhaar (India)</a>
+      </div>
     </div>
 
     <!-- Step 1.4: ID verification (if required) -->
@@ -222,6 +256,7 @@
       document.getElementById('otp-email').textContent = info.signerEmail;
 
       if (info.status === 'signed') {
+        document.getElementById('consent-card').classList.add('hidden');
         document.getElementById('otp-card').classList.add('hidden');
         document.getElementById('success-card').classList.remove('hidden');
         postToParent('sf:signed', { docUuid: info.docUUID, alreadySigned: true });
@@ -230,6 +265,97 @@
       postToParent('sf:loaded', { docUuid: info.docUUID, signerEmail: info.signerEmail });
     }
     init();
+
+    // ─── Consent (PIPEDA / Law 25 / DPDP / GDPR / ESIGN-UETA) ───
+    // Consent must be recorded BEFORE any signing action. Without it the OTP step is gated.
+    async function recordConsent(kind, granted) {
+      const displayedText = document.getElementById(`consent-${kind === 'privacy' ? 'privacy' : 'esign'}-text`)?.textContent || '';
+      const lang = (window.SealForgeI18n && window.SealForgeI18n.getLang()) || 'en';
+      try {
+        await fetch(`/api/sign/${token}/consent`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ consentKind: kind, granted, displayedText, lang }),
+        });
+      } catch (_) { /* best-effort — don't block on network */ }
+    }
+    document.getElementById('consent-accept-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('consent-accept-btn');
+      btn.disabled = true;
+      // Record both ESIGN and privacy consents so the audit log has them explicit.
+      await Promise.all([recordConsent('esign', true), recordConsent('privacy', true)]);
+      document.getElementById('consent-card').classList.add('hidden');
+      // Show OTP step (default path). India-market signers can opt into Aadhaar instead via the small link below.
+      document.getElementById('otp-card').classList.remove('hidden');
+    });
+    document.getElementById('consent-decline-btn').addEventListener('click', async () => {
+      await Promise.all([recordConsent('esign', false), recordConsent('privacy', false)]);
+      const err = document.getElementById('consent-error');
+      err.textContent = 'You declined electronic-signature consent. You may close this page and contact the sender.';
+      err.classList.add('show');
+      document.getElementById('consent-accept-btn').disabled = true;
+      document.getElementById('consent-decline-btn').disabled = true;
+    });
+
+    document.getElementById('use-aadhaar-link').addEventListener('click', (e) => {
+      e.preventDefault();
+      document.getElementById('otp-card').classList.add('hidden');
+      document.getElementById('aadhaar-card').classList.remove('hidden');
+      document.getElementById('aadhaar-number').focus();
+    });
+
+    // ─── Aadhaar eSign (India) — shown when the signer chooses this path ───
+    document.getElementById('aadhaar-initiate-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('aadhaar-initiate-btn');
+      const err = document.getElementById('aadhaar-error');
+      err.classList.remove('show');
+      const aadhaar = document.getElementById('aadhaar-number').value.replace(/\s|-/g, '');
+      if (!/^\d{12}$/.test(aadhaar)) { err.textContent = 'Aadhaar must be exactly 12 digits.'; err.classList.add('show'); return; }
+      btn.disabled = true; btn.textContent = 'Sending OTP...';
+      try {
+        const resp = await fetch(`/api/sign/${token}/aadhaar/initiate`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ aadhaar }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) { err.textContent = data.error || 'Failed to start Aadhaar eSign.'; err.classList.add('show'); btn.disabled = false; btn.textContent = 'Send Aadhaar OTP'; return; }
+        window._aadhaarTxnId = data.txnId;
+        document.getElementById('aadhaar-step1').classList.add('hidden');
+        document.getElementById('aadhaar-step2').classList.remove('hidden');
+        document.getElementById('aadhaar-otp').focus();
+        if (data.devOtp) {
+          const d = document.getElementById('aadhaar-dev-otp');
+          d.classList.remove('hidden');
+          d.textContent = 'Sandbox OTP: ' + data.devOtp;
+        }
+      } catch (e) {
+        err.textContent = 'Network error: ' + e.message; err.classList.add('show');
+        btn.disabled = false; btn.textContent = 'Send Aadhaar OTP';
+      }
+    });
+    document.getElementById('aadhaar-verify-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('aadhaar-verify-btn');
+      const err = document.getElementById('aadhaar-error');
+      err.classList.remove('show');
+      const otp = document.getElementById('aadhaar-otp').value.trim();
+      if (!/^\d{6}$/.test(otp)) { err.textContent = 'Enter the 6-digit OTP.'; err.classList.add('show'); return; }
+      btn.disabled = true; btn.textContent = 'Verifying...';
+      try {
+        const resp = await fetch(`/api/sign/${token}/aadhaar/verify`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ txnId: window._aadhaarTxnId, otp }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) { err.textContent = data.error || 'Verification failed.'; err.classList.add('show'); btn.disabled = false; btn.textContent = 'Verify & Sign'; return; }
+        // Aadhaar success — now proceed to the normal signing flow (draw/type signature),
+        // the backend has recorded the Aadhaar eSign result on this signer row.
+        document.getElementById('aadhaar-card').classList.add('hidden');
+        proceedAfterOTP();
+      } catch (e) {
+        err.textContent = 'Network error: ' + e.message; err.classList.add('show');
+        btn.disabled = false; btn.textContent = 'Verify & Sign';
+      }
+    });
 
     // OTP flow
     document.getElementById('request-otp-btn').addEventListener('click', async () => {

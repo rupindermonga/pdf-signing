@@ -138,13 +138,23 @@
             <option value="both">Both</option>
           </select>
           <select class="signer-role">
-            <option value="sign">Sign</option>
-            <option value="approve">Approve</option>
-            <option value="cc">CC</option>
+            <option value="sign" data-i18n="send.role_sign">Sign</option>
+            <option value="approve" data-i18n="send.role_approve">Approve</option>
+            <option value="cc" data-i18n="send.role_cc">CC</option>
+            <option value="witness" data-i18n="send.role_witness">Witness</option>
+          </select>
+          <select class="signer-lang" title="Preferred language for emails" style="flex:0 0 70px;padding:9px;border:1px solid #d0d5dd;border-radius:6px;font-size:12px;background:white;">
+            <option value="en">EN</option>
+            <option value="fr">FR</option>
+            <option value="hi">HI</option>
           </select>
         </div>
       </div>
       <button class="add-signer-btn" id="add-signer" data-i18n="send.add_another">+ Add another signer</button>
+      <div id="witness-assign" style="display:none;margin-top:14px;padding:12px;background:#fff8e1;border:1px solid #ffc107;border-radius:8px;font-size:12px;color:#6d4c00;">
+        <strong>Witness assignment:</strong> For each signer with role = <em>Witness</em>, pick the primary signer they are witnessing.
+        <div id="witness-pairs" style="margin-top:8px;display:flex;flex-direction:column;gap:6px;"></div>
+      </div>
     </div>
 
     <div class="card" id="fields-card" style="display:none;">
@@ -193,13 +203,89 @@
 
     <div class="card">
       <h2>5. Collect Payment (optional)</h2>
-      <p style="font-size:12px;color:#888;margin-bottom:10px;">If set, each signer (Sign/Approve role) must pay this amount via Stripe before they can sign. Requires <code>STRIPE_SECRET_KEY</code> on the server.</p>
+      <p style="font-size:12px;color:#888;margin-bottom:10px;">If set, each signer (Sign/Approve role) must pay this amount before they can sign. Stripe for card/SEPA/ACH; Razorpay for INR (UPI/NetBanking/cards).</p>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
         <input type="number" id="pay-amount" step="0.01" min="0" placeholder="0.00" style="width:140px;padding:10px;border:1px solid #d0d5dd;border-radius:8px;font-size:14px;">
         <select id="pay-currency" style="padding:10px;border:1px solid #d0d5dd;border-radius:8px;font-size:14px;">
-          <option value="CAD">CAD</option><option value="USD">USD</option><option value="EUR">EUR</option><option value="GBP">GBP</option>
+          <option value="CAD">CAD</option>
+          <option value="USD">USD</option>
+          <option value="EUR">EUR</option>
+          <option value="GBP">GBP</option>
+          <option value="AUD">AUD</option>
+          <option value="INR">INR (Razorpay)</option>
         </select>
         <input type="text" id="pay-desc" placeholder="Description (e.g. Deposit, Booking fee)" style="flex:1;min-width:200px;padding:10px;border:1px solid #d0d5dd;border-radius:8px;font-size:14px;">
+      </div>
+      <p id="pay-provider-hint" style="font-size:11px;color:#888;margin-top:6px;">Provider: <span id="pay-provider">Stripe</span> — selected automatically from currency.</p>
+    </div>
+
+    <!-- India section: eStamping + Aadhaar eSign toggle. Kept collapsed unless explicitly opened. -->
+    <div class="card" style="border-left:3px solid #ff9800;">
+      <h2>&#127470;&#127475; India options (optional)</h2>
+      <p style="font-size:12px;color:#888;margin-bottom:10px;">Only relevant if signing in India. Adds an Aadhaar eSign option for signers and attaches an e-stamp certificate to the document.</p>
+      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;margin-bottom:12px;">
+        <input type="checkbox" id="enable-aadhaar" style="width:18px;height:18px;cursor:pointer;">
+        <span>Offer Aadhaar eSign to signers (IT Act 2000 §5 compliant signature)</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+        <input type="checkbox" id="enable-estamp" style="width:18px;height:18px;cursor:pointer;">
+        <span>Attach an e-stamp certificate (required for admissibility on stamped contracts)</span>
+      </label>
+      <div id="estamp-config" style="display:none;margin-top:12px;padding:12px;background:#fff8e1;border:1px solid #ffc107;border-radius:8px;">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;">
+          <label style="font-size:12px;color:#6d4c00;">State
+            <select id="estamp-state" style="width:100%;margin-top:4px;padding:8px;border:1px solid #d0d5dd;border-radius:6px;font-size:13px;">
+              <option value="KA">Karnataka (KA)</option>
+              <option value="DL">Delhi (DL)</option>
+              <option value="MH">Maharashtra (MH)</option>
+              <option value="TN">Tamil Nadu (TN)</option>
+              <option value="TG">Telangana (TG)</option>
+              <option value="UP">Uttar Pradesh (UP)</option>
+              <option value="GJ">Gujarat (GJ)</option>
+              <option value="RJ">Rajasthan (RJ)</option>
+              <option value="PB">Punjab (PB)</option>
+              <option value="HR">Haryana (HR)</option>
+              <option value="WB">West Bengal (WB)</option>
+              <option value="AP">Andhra Pradesh (AP)</option>
+              <option value="OD">Odisha (OD)</option>
+              <option value="BR">Bihar (BR)</option>
+              <option value="JH">Jharkhand (JH)</option>
+            </select>
+          </label>
+          <label style="font-size:12px;color:#6d4c00;">Article
+            <select id="estamp-article" style="width:100%;margin-top:4px;padding:8px;border:1px solid #d0d5dd;border-radius:6px;font-size:13px;">
+              <option value="AGREEMENT">Agreement (Art 5)</option>
+              <option value="AFFIDAVIT">Affidavit (Art 4)</option>
+              <option value="LEASE">Lease (Art 35)</option>
+              <option value="POWER_OF_ATTORNEY">Power of Attorney (Art 48)</option>
+              <option value="MOU">MoU</option>
+              <option value="NDA">NDA</option>
+              <option value="LOAN">Loan (Art 6)</option>
+              <option value="INDEMNITY_BOND">Indemnity Bond (Art 34)</option>
+            </select>
+          </label>
+          <label style="font-size:12px;color:#6d4c00;">Stamp duty (INR)
+            <input type="number" id="estamp-duty" min="1" step="1" placeholder="100" style="width:100%;margin-top:4px;padding:8px;border:1px solid #d0d5dd;border-radius:6px;font-size:13px;">
+          </label>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;">
+          <input type="text" id="estamp-first" placeholder="First party name" style="padding:8px;border:1px solid #d0d5dd;border-radius:6px;font-size:13px;">
+          <input type="text" id="estamp-second" placeholder="Second party name" style="padding:8px;border:1px solid #d0d5dd;border-radius:6px;font-size:13px;">
+        </div>
+        <p style="font-size:10px;color:#999;margin-top:6px;">Sandbox mode produces a realistic-looking certificate. For production, set <code>ESTAMP_PROVIDER=partner</code> with a SHCIL-authorised reseller.</p>
+      </div>
+    </div>
+
+    <!-- Envelope selector: optionally add this doc to an existing envelope (multi-doc signing) -->
+    <div class="card">
+      <h2>Envelope (optional)</h2>
+      <p style="font-size:12px;color:#888;margin-bottom:10px;">Group this document with others into a single signing ceremony — the signer gets one link and signs all docs in order.</p>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <select id="envelope-select" style="flex:1;min-width:200px;padding:10px;border:1px solid #d0d5dd;border-radius:8px;font-size:14px;">
+          <option value="">— Standalone document —</option>
+        </select>
+        <button type="button" id="envelope-new-btn" class="btn-secondary" style="padding:8px 14px;font-size:13px;">+ New envelope</button>
+        <a href="/envelopes" class="btn-secondary" style="padding:8px 14px;font-size:13px;text-decoration:none;">Manage</a>
       </div>
     </div>
 
@@ -801,6 +887,82 @@
       }
     });
 
+    // ─── Currency → provider hint (INR routes to Razorpay) ───
+    const payCur = document.getElementById('pay-currency');
+    const payProv = document.getElementById('pay-provider');
+    function updatePayProvider() {
+      payProv.textContent = payCur.value === 'INR' ? 'Razorpay' : 'Stripe';
+    }
+    payCur.addEventListener('change', updatePayProvider);
+    updatePayProvider();
+
+    // ─── eStamp toggle reveals config block ───
+    document.getElementById('enable-estamp').addEventListener('change', e => {
+      document.getElementById('estamp-config').style.display = e.target.checked ? '' : 'none';
+    });
+
+    // ─── Witness pairing UI: shows a row for each witness-role signer, letting the sender
+    //     pick which primary signer they are witnessing. ───
+    function refreshWitnessPairs() {
+      const rows = Array.from(signersList.querySelectorAll('.signer-entry'));
+      const witnessContainer = document.getElementById('witness-assign');
+      const pairsDiv = document.getElementById('witness-pairs');
+      const withIdx = rows.map((el, i) => ({ el, i, role: el.querySelector('.signer-role').value,
+        name: el.querySelector('.signer-name').value.trim() }));
+      const witnesses = withIdx.filter(r => r.role === 'witness');
+      if (!witnesses.length) { witnessContainer.style.display = 'none'; return; }
+      const primaries = withIdx.filter(r => r.role === 'sign' || r.role === 'approve');
+      witnessContainer.style.display = '';
+      pairsDiv.innerHTML = '';
+      for (const w of witnesses) {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:8px;align-items:center;';
+        row.innerHTML = `<span style="min-width:120px;">Witness #${w.i + 1}: ${w.name || '(unnamed)'}</span>
+          <span>is witnessing</span>
+          <select data-witness-for="${w.i}" style="padding:6px;border:1px solid #d0d5dd;border-radius:6px;font-size:12px;">
+            ${primaries.map(p => `<option value="${p.i}">#${p.i + 1} ${p.name || '(unnamed)'}</option>`).join('')}
+          </select>`;
+        pairsDiv.appendChild(row);
+      }
+    }
+    signersList.addEventListener('change', refreshWitnessPairs);
+    signersList.addEventListener('input', refreshWitnessPairs);
+
+    // ─── Envelope selector: list existing envelopes + create new ───
+    const envSelect = document.getElementById('envelope-select');
+    async function loadEnvelopes() {
+      try {
+        const r = await fetch('/api/envelopes');
+        if (!r.ok) return;
+        const { envelopes = [] } = await r.json();
+        for (const env of envelopes) {
+          if (env.status === 'completed' || env.status === 'cancelled') continue;
+          const opt = document.createElement('option');
+          opt.value = env.uuid;
+          opt.textContent = `${env.title} (${env.status})`;
+          envSelect.appendChild(opt);
+        }
+      } catch {}
+    }
+    loadEnvelopes();
+    document.getElementById('envelope-new-btn').addEventListener('click', async () => {
+      const title = prompt('New envelope title:');
+      if (!title) return;
+      try {
+        const r = await fetch('/api/envelopes', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title, signingMode }),
+        });
+        const data = await r.json();
+        if (!r.ok) { alert(data.error || 'Failed to create envelope'); return; }
+        const opt = document.createElement('option');
+        opt.value = data.envelope.uuid;
+        opt.textContent = `${title} (draft)`;
+        opt.selected = true;
+        envSelect.appendChild(opt);
+      } catch (e) { alert('Error: ' + e.message); }
+    });
+
     // Send
     document.getElementById('send-btn').addEventListener('click', async () => {
       errorDiv.classList.remove('show');
@@ -813,11 +975,12 @@
         const role = el.querySelector('.signer-role').value;
         const phone = (el.querySelector('.signer-phone')?.value || '').trim();
         const notifyMethod = el.querySelector('.signer-notify')?.value || 'email';
-        if (name && email) signers.push({ name, email, role, phone, notifyMethod });
+        const preferredLanguage = el.querySelector('.signer-lang')?.value || 'en';
+        if (name && email) signers.push({ name, email, role, phone, notifyMethod, preferredLanguage });
       });
 
       if (!signers.length) return showError('Add at least one signer with name and email.');
-      if (!signers.some(s => s.role !== 'cc')) return showError('At least one signer must have role Sign or Approve.');
+      if (!signers.some(s => s.role === 'sign' || s.role === 'approve')) return showError('At least one signer must have role Sign or Approve.');
 
       const btn = document.getElementById('send-btn');
       btn.disabled = true; btn.textContent = 'Sending...';
@@ -843,9 +1006,51 @@
         formData.append('expiresAt', document.getElementById('expires-at').value || '');
         formData.append('reminderEveryDays', document.getElementById('reminder-every').value || '0');
 
+        // Witness pairs (index in signers[] → index of target)
+        const witnessPairsPayload = Array.from(document.querySelectorAll('[data-witness-for]')).map(sel => ({
+          witnessIndex: parseInt(sel.getAttribute('data-witness-for'), 10),
+          targetIndex: parseInt(sel.value, 10),
+        }));
+        formData.append('witnessPairs', JSON.stringify(witnessPairsPayload));
+
         const resp = await fetch('/api/documents/create', { method: 'POST', body: formData });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.error);
+
+        const createdUuid = data.uuid || (data.document && data.document.uuid);
+
+        // Post-creation: attach to envelope if selected
+        const envUuid = envSelect.value;
+        if (envUuid && createdUuid) {
+          try {
+            await fetch(`/api/envelopes/${envUuid}/attach`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ documentUUID: createdUuid, position: Date.now() }),
+            });
+          } catch (e) { console.warn('Envelope attach failed:', e); }
+        }
+
+        // Post-creation: purchase e-stamp (India) if enabled
+        if (document.getElementById('enable-estamp').checked && createdUuid) {
+          try {
+            const duty = parseInt(document.getElementById('estamp-duty').value || '0', 10);
+            if (duty > 0) {
+              await fetch(`/api/documents/${createdUuid}/estamp/purchase`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  state: document.getElementById('estamp-state').value,
+                  articleCode: document.getElementById('estamp-article').value,
+                  stampDutyPaise: duty * 100,
+                  firstParty: document.getElementById('estamp-first').value,
+                  secondParty: document.getElementById('estamp-second').value,
+                  description: document.getElementById('doc-title').value,
+                }),
+              });
+            }
+          } catch (e) { console.warn('e-stamp purchase failed:', e); }
+        }
+
+        // (witness pairs already handled by server via witnessPairs form field)
 
         // Optional: save as template
         if (saveTplCb.checked) {

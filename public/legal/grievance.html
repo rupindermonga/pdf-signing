@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Grievance Officer — SealForge (DPDP Act 2023)</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    .legal { max-width: 720px; margin: 40px auto; padding: 0 24px; line-height: 1.65; color: #222; }
+    .legal h1 { color: #1a3b7a; font-size: 26px; }
+    .legal h2 { color: #1a3b7a; font-size: 18px; margin: 20px 0 8px; }
+    .legal .card { background: #fff; border-radius: 8px; padding: 20px 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin: 16px 0; }
+    .legal label { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 4px; color: #555; }
+    .legal input, .legal select, .legal textarea { width: 100%; padding: 10px; border: 1px solid #d0d5dd; border-radius: 6px; font-size: 14px; font-family: inherit; }
+    .legal textarea { min-height: 120px; resize: vertical; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo"><span class="logo-seal">Seal</span><span class="logo-forge">Forge</span></div>
+    <h1>Grievance</h1>
+  </header>
+  <main class="legal">
+    <h1>Grievance Officer / Data-Subject Requests</h1>
+    <p>In accordance with §10 of the Digital Personal Data Protection Act 2023 (India) and equivalent rights under PIPEDA (Canada), GDPR (EU), the Privacy Act (Australia), and state laws (US), SealForge provides the following channel for grievances and data-subject requests.</p>
+
+    <div class="card">
+      <h2>Contact the Grievance Officer (India – DPDP Act 2023)</h2>
+      <p><strong>Email:</strong> <a href="mailto:grievance@finelai.com">grievance@finelai.com</a></p>
+      <p><strong>Response time:</strong> We acknowledge within 48 hours and resolve within 30 days, per §10(1) DPDP Act.</p>
+    </div>
+
+    <div class="card">
+      <h2>Privacy Officer (Canada – PIPEDA / Quebec Law 25)</h2>
+      <p><strong>Email:</strong> <a href="mailto:privacy@finelai.com">privacy@finelai.com</a></p>
+      <p><strong>Escalation:</strong> Office of the Privacy Commissioner of Canada — <a href="https://www.priv.gc.ca">priv.gc.ca</a>, or Commission d'accès à l'information du Québec.</p>
+    </div>
+
+    <div class="card">
+      <h2>Data Protection Officer (EU – GDPR)</h2>
+      <p><strong>Email:</strong> <a href="mailto:dpo@finelai.com">dpo@finelai.com</a></p>
+    </div>
+
+    <div class="card">
+      <h2>File a data-subject request</h2>
+      <p>Use this form to request export, deletion, correction, or withdrawal of consent. We verify your email before processing.</p>
+      <form id="dsr-form">
+        <label>Email address</label>
+        <input type="email" id="dsr-email" required>
+
+        <label>Request type</label>
+        <select id="dsr-type" required>
+          <option value="export">Export my data (portability)</option>
+          <option value="delete">Delete my data (erasure)</option>
+          <option value="correct">Correct an inaccuracy</option>
+          <option value="withdraw">Withdraw consent (future signatures)</option>
+        </select>
+
+        <label>Jurisdiction</label>
+        <select id="dsr-juris">
+          <option value="">(Not specified)</option>
+          <option value="CA">Canada (PIPEDA)</option>
+          <option value="QC">Quebec (Law 25)</option>
+          <option value="IN">India (DPDP Act 2023)</option>
+          <option value="EU">European Union (GDPR)</option>
+          <option value="AU">Australia (Privacy Act)</option>
+          <option value="US">United States</option>
+        </select>
+
+        <label>Additional details (optional)</label>
+        <textarea id="dsr-note" maxlength="1000" placeholder="Any context that helps us find your records — e.g. the approximate date you signed, or the sender's organisation name."></textarea>
+
+        <button type="submit" class="btn-primary" style="margin-top:16px;">Submit request</button>
+        <div id="dsr-status" style="margin-top:12px;font-size:13px;"></div>
+      </form>
+    </div>
+
+    <p style="margin-top:20px;"><a href="/legal/privacy">Back to privacy policy</a> &middot; <a href="/">SealForge home</a></p>
+  </main>
+
+  <script>
+    document.getElementById('dsr-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const status = document.getElementById('dsr-status');
+      status.textContent = 'Submitting...';
+      status.style.color = '#555';
+      try {
+        const resp = await fetch('/api/dsr/request', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: document.getElementById('dsr-email').value.trim(),
+            requestType: document.getElementById('dsr-type').value,
+            jurisdiction: document.getElementById('dsr-juris').value || null,
+            note: document.getElementById('dsr-note').value.trim(),
+          }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Failed');
+        status.style.color = '#2e7d32';
+        status.textContent = 'Check your email — we sent a verification link. Click it to complete the request.';
+        e.target.reset();
+        if (data.devVerifyUrl) {
+          const dev = document.createElement('div');
+          dev.style.cssText = 'margin-top:8px;font-size:11px;color:#e65100;';
+          dev.innerHTML = 'Dev mode: <a href="' + data.devVerifyUrl + '">' + data.devVerifyUrl + '</a>';
+          status.appendChild(dev);
+        }
+      } catch (err) {
+        status.style.color = '#c62828';
+        status.textContent = 'Error: ' + err.message;
+      }
+    });
+  </script>
+</body>
+</html>

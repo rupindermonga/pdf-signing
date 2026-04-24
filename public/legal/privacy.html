@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Privacy Policy — SealForge</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    .legal { max-width: 760px; margin: 40px auto; padding: 0 24px; line-height: 1.65; color: #222; }
+    .legal h1 { color: #1a3b7a; font-size: 26px; margin-bottom: 18px; }
+    .legal h2 { color: #1a3b7a; font-size: 18px; margin: 24px 0 10px; }
+    .legal h3 { font-size: 15px; margin: 16px 0 6px; color: #333; }
+    .legal p, .legal li { font-size: 15px; }
+    .legal ul { padding-left: 22px; margin: 10px 0; }
+    .legal .meta { color: #888; font-size: 12px; margin-bottom: 18px; }
+    .legal table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 14px; }
+    .legal th, .legal td { border: 1px solid #e0e0e0; padding: 8px 10px; text-align: left; }
+    .legal th { background: #f5f7fa; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo"><span class="logo-seal">Seal</span><span class="logo-forge">Forge</span></div>
+    <h1>Privacy</h1>
+  </header>
+  <main class="legal">
+    <h1>Privacy Policy</h1>
+    <p class="meta">Version 2026-04-24. Applies globally with jurisdiction-specific addenda below.</p>
+
+    <p>This Privacy Policy describes how SealForge ("we", "us") collects, uses, and discloses personal information when you use the SealForge platform. SealForge is a multi-tenant PDF signature platform; in most cases your employer, counterparty, or service provider (the "Sender") is the data controller of documents you sign, and we act as a data processor on their behalf.</p>
+
+    <h2>1. What we collect</h2>
+    <table>
+      <tr><th>Category</th><th>Examples</th><th>Purpose</th></tr>
+      <tr><td>Identity</td><td>Name, email, phone</td><td>Deliver documents, verify identity</td></tr>
+      <tr><td>Audit</td><td>IP, user agent, timestamps, approximate location</td><td>Legal evidence of signing (ESIGN, eIDAS, IT Act)</td></tr>
+      <tr><td>Signature</td><td>Drawn/typed signature image, click-through consent</td><td>Execute the document</td></tr>
+      <tr><td>Optional ID</td><td>Photo of government ID, selfie</td><td>Only if the Sender requires identity verification</td></tr>
+      <tr><td>Optional payment</td><td>Stripe/Razorpay transaction ID</td><td>Only if the Sender collects payment</td></tr>
+    </table>
+
+    <h2>2. How we use it</h2>
+    <ul>
+      <li>To perform the signing ceremony you consented to</li>
+      <li>To produce the audit trail and certificate of completion</li>
+      <li>To comply with legal obligations (e-signature laws, tax law, anti-fraud)</li>
+      <li>To notify you and the Sender of status changes</li>
+      <li>Never to advertise to you or sell your data</li>
+    </ul>
+
+    <h2>3. How we store it</h2>
+    <p>Documents and audit trails are stored encrypted at rest (AES-256-GCM for uploaded IDs). TLS in transit. Database in the region the Sender's organisation has configured (see §8).</p>
+
+    <h2>4. Retention</h2>
+    <p>Retention is set by the Sender's organisation (default: indefinite). When retention expires, personal identifiers are pseudonymised and documents are purged. Audit records are retained as required by law (typically 7 years).</p>
+
+    <h2>5. Your rights</h2>
+    <p>You may:</p>
+    <ul>
+      <li>Request a copy of your personal data (<strong>access / portability</strong>)</li>
+      <li>Request correction of inaccurate data (<strong>rectification</strong>)</li>
+      <li>Request deletion (<strong>erasure</strong>) — audit records may be retained in pseudonymised form where law requires</li>
+      <li>Withdraw your consent for electronic signing (future transactions only)</li>
+      <li>Lodge a complaint with your national data protection authority</li>
+    </ul>
+    <p>Exercise any of these rights by emailing <a href="mailto:privacy@finelai.com">privacy@finelai.com</a> or via the <a href="/dsr">data-subject request form</a>. We respond within 30 days (GDPR/PIPEDA) or as required by local law.</p>
+
+    <h2>6. Third-party processors</h2>
+    <ul>
+      <li>Email: your SMTP provider / our configured provider</li>
+      <li>SMS: Twilio (optional, if enabled)</li>
+      <li>Payments: Stripe (cards), Razorpay (INR)</li>
+      <li>Identity verification: Persona / Jumio / Onfido / Interac (only if Sender enables)</li>
+      <li>Aadhaar eSign: eMudhra or Protean/NSDL (India, only if used)</li>
+      <li>Timestamping (TSA): per organisation configuration</li>
+    </ul>
+
+    <h2>7. Children</h2>
+    <p>SealForge is not intended for persons under 18. We do not knowingly collect data from minors.</p>
+
+    <h2>8. Jurisdictional addenda</h2>
+
+    <h3>Canada (PIPEDA)</h3>
+    <p>The Personal Information Protection and Electronic Documents Act governs our handling of personal information of Canadian residents. Our accountability contact is <a href="mailto:privacy@finelai.com">privacy@finelai.com</a>. Data residency in Canada (AWS ca-central-1 / Azure Canada Central) is available on request. For Canadian residents, you may also file a complaint with the Office of the Privacy Commissioner of Canada at <a href="https://www.priv.gc.ca">priv.gc.ca</a>.</p>
+
+    <h3>Quebec (Law 25)</h3>
+    <p>Our privacy officer for Quebec residents is <a href="mailto:privacy@finelai.com">privacy@finelai.com</a>. Québec residents may exercise the rights of access, rectification, deportability, and de-indexing granted by Law 25. We conduct Privacy Impact Assessments for high-risk features (e.g. ID verification).</p>
+
+    <h3>India (DPDP Act 2023)</h3>
+    <p>Our grievance officer, appointed under §10(1) of the Digital Personal Data Protection Act 2023, is contactable at <a href="mailto:grievance@finelai.com">grievance@finelai.com</a>. We respond to grievances within 30 days. You may also escalate to the Data Protection Board of India.</p>
+
+    <h3>European Union (GDPR)</h3>
+    <p>Legal bases: Art 6(1)(b) contract, Art 6(1)(c) legal obligation, Art 6(1)(f) legitimate interests (audit integrity). Data Protection Officer: <a href="mailto:dpo@finelai.com">dpo@finelai.com</a>. EU data residency in Frankfurt (eu-central-1) available. SCCs / UK IDTA for cross-border transfers.</p>
+
+    <h3>Australia (Privacy Act / APPs)</h3>
+    <p>We handle personal information consistent with the Australian Privacy Principles. Complaints may be made to the Office of the Australian Information Commissioner at <a href="https://www.oaic.gov.au">oaic.gov.au</a>.</p>
+
+    <h3>United States</h3>
+    <p>For California residents (CCPA/CPRA): we do not sell or share your personal information for cross-context behavioral advertising. You have the right to know, delete, correct, and limit. Request these at <a href="mailto:privacy@finelai.com">privacy@finelai.com</a>.</p>
+
+    <p style="margin-top:30px;"><a href="/">Back to SealForge</a></p>
+  </main>
+</body>
+</html>

@@ -801,8 +801,15 @@ footer {
   font-size: 13px;
 }
 
-/* Responsive */
-@media (max-width: 640px) {
+/* Responsive — tablet and small desktop */
+@media (max-width: 960px) {
+  main {
+    padding: 0 14px;
+  }
+}
+
+/* Responsive — phone landscape + small tablet */
+@media (max-width: 768px) {
   .form-grid {
     grid-template-columns: 1fr;
   }
@@ -810,14 +817,26 @@ footer {
     padding: 12px 16px;
     flex-wrap: wrap;
   }
+  header h1 {
+    font-size: 17px;
+    flex: 1 1 100%;
+    margin-top: 4px;
+  }
+  .logo, .logo-seal, .logo-forge {
+    font-size: 24px;
+  }
   .header-link {
     margin-left: 0;
   }
   .step {
     padding: 20px 16px;
   }
+  .step-header h2 {
+    font-size: 17px;
+  }
   .sig-block-preview {
     min-width: auto;
+    flex-wrap: wrap;
   }
   .security-info {
     flex-direction: column;
@@ -825,5 +844,151 @@ footer {
   }
   .hash-dialog-content {
     padding: 24px 20px;
+    max-width: calc(100vw - 24px);
+  }
+  .pdf-toolbar {
+    gap: 6px;
+  }
+  .zoom-controls {
+    margin-left: 0;
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .btn-primary {
+    padding: 12px 20px;
+    font-size: 15px;
+  }
+  /* Signing-page scoped tweaks (sign.html, solo.html) */
+  .sign-container {
+    margin: 12px 0 !important;
+    padding: 0 12px !important;
+  }
+  .card {
+    padding: 18px !important;
+    border-radius: 8px !important;
+  }
+  .doc-banner {
+    padding: 12px 14px !important;
+  }
+  .doc-banner .icon {
+    font-size: 26px !important;
+  }
+  .pdf-viewer {
+    padding: 8px !important;
+    max-height: 62vh !important;
+  }
+  .pdf-field .field-label-tag {
+    font-size: 9px !important;
+  }
+  #sign-canvas, #sig-canvas {
+    height: 180px !important;
+    max-width: 100% !important;
+  }
+  .canvas-controls {
+    gap: 8px;
+  }
+}
+
+/* Responsive — phone portrait */
+@media (max-width: 480px) {
+  body {
+    font-size: 14px;
+  }
+  header {
+    padding: 10px 12px;
+    gap: 10px;
+  }
+  header h1 {
+    font-size: 15px;
+  }
+  .logo, .logo-seal, .logo-forge {
+    font-size: 20px;
+  }
+  main {
+    margin: 14px auto;
+    padding: 0 10px;
+  }
+  .step {
+    padding: 16px 12px;
+  }
+  .step-header {
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .step-number {
+    width: 26px;
+    height: 26px;
+    font-size: 13px;
+  }
+  .step-header h2 {
+    font-size: 15px;
+  }
+  .upload-area {
+    padding: 28px 12px;
+  }
+  .upload-icon {
+    font-size: 36px;
+  }
+  /* 44px minimum touch targets per Apple HIG / Google MD */
+  .btn-primary, .btn-secondary, button[type="submit"] {
+    min-height: 44px;
+  }
+  input[type="text"], input[type="email"], input[type="tel"], input[type="password"],
+  input[type="number"], select, textarea {
+    font-size: 16px !important;  /* prevents iOS zoom on focus */
+    min-height: 44px;
+    padding: 10px 12px;
+  }
+  .otp-input {
+    font-size: 24px !important;
+    letter-spacing: 6px !important;
+    max-width: 200px !important;
+  }
+  #sign-canvas, #sig-canvas {
+    height: 160px !important;
+  }
+  .placement-actions {
+    flex-direction: column;
+    gap: 10px;
+  }
+  .placement-actions button {
+    width: 100%;
+  }
+  .font-options {
+    gap: 8px;
+  }
+  .font-options label {
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+  .typed-sig-input {
+    font-size: 24px;
+  }
+  /* Language switcher smaller on mobile */
+  #sealforge-lang-switcher {
+    bottom: 8px !important;
+    right: 8px !important;
+    font-size: 10px !important;
+  }
+  #sealforge-lang-switcher button {
+    padding: 3px 8px !important;
+  }
+  /* Stack lang switcher buttons on very narrow screens only if needed */
+}
+
+/* Print — clean signed-document preview */
+@media print {
+  header, footer, .btn-primary, .btn-secondary, #sealforge-lang-switcher,
+  .placement-actions, .pdf-toolbar, .upload-area {
+    display: none !important;
+  }
+  main {
+    max-width: 100%;
+    margin: 0;
+    padding: 0;
+  }
+  .step, .card {
+    box-shadow: none;
+    border: 1px solid #ccc;
   }
 }

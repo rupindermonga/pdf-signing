@@ -211,7 +211,7 @@ const dbPath = path.join(__dirname, 'data', 'sealforge.db');
     pass('QES provider registry + clear error when unconfigured');
   } catch (e) { fail('qes-providers', e); }
 
-  section('10. Witness role');
+  section('10. Witness role + scheduler retention purge signature');
   try {
     const { db, userOps, docOps, signerOps, witnessOps } = require('./database');
     let user = userOps.findByEmail('witness-test@example.com');
@@ -230,7 +230,27 @@ const dbPath = path.join(__dirname, 'data', 'sealforge.db');
     pass('Witness can be attached to a primary signer with correct role');
   } catch (e) { fail('witness', e); }
 
-  section('11. Signer language preference');
+  section('11a. OpenAPI spec + SCIM helpers');
+  try {
+    const openapi = require('./openapi');
+    const spec = openapi.build({ baseUrl: 'http://localhost:3000' });
+    assert.strictEqual(spec.openapi, '3.1.0');
+    assert.ok(spec.paths['/api/v1/events'], '/api/v1/events path declared');
+    assert.ok(spec.paths['/api/v1/webhooks'], '/api/v1/webhooks path declared');
+    assert.ok(spec.paths['/api/v1/documents'], '/api/v1/documents path declared');
+    assert.ok(Array.isArray(spec.tags));
+    pass('OpenAPI spec builds with required paths');
+  } catch (e) { fail('openapi', e); }
+
+  section('11b. Envelope UI smoke (HTML is served)');
+  try {
+    const html = require('fs').readFileSync(require('path').join(__dirname, 'public', 'envelopes.html'), 'utf8');
+    assert.ok(html.includes('/api/envelopes'), 'envelope page calls /api/envelopes');
+    assert.ok(html.includes('new-env-btn'), 'has new-envelope button');
+    pass('envelopes.html is complete + references the API');
+  } catch (e) { fail('envelopes.html', e); }
+
+  section('12. Signer language preference');
   try {
     const { db, userOps, docOps, signerOps } = require('./database');
     let user = userOps.findByEmail('lang-test@example.com');

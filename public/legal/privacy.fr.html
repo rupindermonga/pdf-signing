@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Politique de confidentialité — SealForge</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    .legal { max-width: 760px; margin: 40px auto; padding: 0 24px; line-height: 1.65; color: #222; }
+    .legal h1 { color: #1a3b7a; font-size: 26px; margin-bottom: 18px; }
+    .legal h2 { color: #1a3b7a; font-size: 18px; margin: 24px 0 10px; }
+    .legal h3 { font-size: 15px; margin: 16px 0 6px; color: #333; }
+    .legal p, .legal li { font-size: 15px; }
+    .legal ul { padding-left: 22px; margin: 10px 0; }
+    .legal .meta { color: #888; font-size: 12px; margin-bottom: 18px; }
+    .legal table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 14px; }
+    .legal th, .legal td { border: 1px solid #e0e0e0; padding: 8px 10px; text-align: left; }
+    .legal th { background: #f5f7fa; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo"><span class="logo-seal">Seal</span><span class="logo-forge">Forge</span></div>
+    <h1>Confidentialité</h1>
+  </header>
+  <main class="legal">
+    <h1>Politique de confidentialité</h1>
+    <p class="meta">Version du 24 avril 2026. Conforme à la LPRPDE (Canada), à la Loi 25 (Québec), au RGPD, à la DPDP (Inde), à la Privacy Act (Australie) et à l'ESIGN (États-Unis).</p>
+
+    <p>La présente politique décrit la manière dont SealForge (« nous ») recueille, utilise et divulgue les renseignements personnels lorsque vous utilisez la plateforme SealForge. Dans la plupart des cas, votre employeur, votre contrepartie ou votre fournisseur de services (le « Expéditeur ») est le responsable du traitement des documents que vous signez; nous agissons comme sous-traitant pour son compte.</p>
+
+    <h2>1. Renseignements recueillis</h2>
+    <table>
+      <tr><th>Catégorie</th><th>Exemples</th><th>Finalité</th></tr>
+      <tr><td>Identité</td><td>Nom, courriel, téléphone</td><td>Livraison des documents, vérification d'identité</td></tr>
+      <tr><td>Audit</td><td>IP, navigateur, horodatage, localisation approximative</td><td>Preuve légale de signature (ESIGN, eIDAS, IT Act)</td></tr>
+      <tr><td>Signature</td><td>Image de signature, consentement affirmatif</td><td>Exécution du document</td></tr>
+      <tr><td>Pièce d'identité (facultatif)</td><td>Photo d'une pièce d'identité officielle + égoportrait</td><td>Seulement si l'Expéditeur exige une vérification d'identité</td></tr>
+      <tr><td>Paiement (facultatif)</td><td>Identifiant de transaction Stripe/Razorpay</td><td>Seulement si l'Expéditeur exige un paiement</td></tr>
+    </table>
+
+    <h2>2. Utilisation</h2>
+    <ul>
+      <li>Réaliser la cérémonie de signature à laquelle vous avez consenti</li>
+      <li>Produire la piste d'audit et le certificat d'achèvement</li>
+      <li>Nous conformer aux obligations légales (lois sur la signature électronique, lois fiscales, anti-fraude)</li>
+      <li>Vous aviser, et aviser l'Expéditeur, des changements de statut</li>
+      <li>Jamais à des fins publicitaires ou de revente</li>
+    </ul>
+
+    <h2>3. Conservation et sécurité</h2>
+    <p>Chiffrement au repos (AES-256-GCM pour les pièces d'identité téléversées), TLS en transit. Résidence des données dans la région configurée par l'organisation de l'Expéditeur. La durée de conservation est fixée par cette organisation; au-delà, les identifiants personnels sont pseudonymisés.</p>
+
+    <h2>4. Vos droits</h2>
+    <p>Vous pouvez :</p>
+    <ul>
+      <li>Demander une copie de vos renseignements personnels (<strong>accès / portabilité</strong>)</li>
+      <li>Demander la correction de renseignements inexacts</li>
+      <li>Demander la suppression (<strong>droit à l'effacement</strong>) — les registres d'audit peuvent être conservés sous forme pseudonymisée si la loi l'exige</li>
+      <li>Retirer votre consentement à la signature électronique (pour les futures transactions)</li>
+      <li>Déposer une plainte auprès de votre autorité de protection des données</li>
+    </ul>
+    <p>Pour exercer un droit, écrivez à <a href="mailto:privacy@finelai.com">privacy@finelai.com</a> ou utilisez le <a href="/legal/grievance">formulaire de demande</a>. Nous répondons dans un délai de 30 jours (LPRPDE/RGPD).</p>
+
+    <h2>5. Loi 25 (Québec) et LPRPDE (Canada)</h2>
+    <p>Notre responsable de la protection des renseignements personnels pour le Québec et le Canada est joignable à <a href="mailto:privacy@finelai.com">privacy@finelai.com</a>. La résidence des données au Canada (AWS ca-central-1 ou Azure Canada Central) est disponible sur demande. Les résidents du Québec peuvent porter plainte auprès de la Commission d'accès à l'information du Québec; les autres résidents canadiens auprès du Commissariat à la protection de la vie privée du Canada.</p>
+
+    <h2>6. Sous-traitants tiers</h2>
+    <ul>
+      <li>Courriel : votre fournisseur SMTP / notre fournisseur configuré</li>
+      <li>SMS : Twilio (facultatif)</li>
+      <li>Paiements : Stripe (cartes), Razorpay (INR)</li>
+      <li>Vérification d'identité : Persona / Jumio / Onfido / Interac (seulement si activé)</li>
+      <li>Aadhaar eSign : eMudhra ou Protean/NSDL (Inde, seulement si utilisé)</li>
+    </ul>
+
+    <p style="margin-top:30px;"><a href="/legal/privacy">English</a> &middot; <a href="/">Retour à SealForge</a></p>
+  </main>
+</body>
+</html>

@@ -1218,6 +1218,15 @@ const workflowOps = {
   },
 };
 
+// ─── Market/jurisdiction scoping ───
+// `home_market` is the primary jurisdiction for an org or individual user.
+// Drives defaults (language, currency, payment provider, regulatory boilerplate)
+// and gates optional UI sections. Codes: CA | US | IN | AU | EU | GB | GLOBAL.
+ensureColumn('users', 'home_market', "TEXT NOT NULL DEFAULT 'CA'");
+ensureColumn('users', 'market_onboarded', "INTEGER NOT NULL DEFAULT 0"); // 1 once the user picked their market
+ensureColumn('orgs',  'home_market', "TEXT NOT NULL DEFAULT 'CA'");
+ensureColumn('documents', 'target_market', "TEXT"); // per-document override: nullable, defaults to org's home_market
+
 // ─── 2026 market-expansion migrations (CA/US/IN/AU/EU) ───
 // Adding here in additive form so existing installs upgrade cleanly.
 ensureColumn('signers', 'preferred_language', "TEXT NOT NULL DEFAULT 'en'");  // 'en' | 'fr' | 'hi'
@@ -1279,6 +1288,27 @@ const witnessOps = {
       .run(data.signatureData, data.ip, data.browserInfo, JSON.stringify(data.fieldValues || {}), id);
     return result.changes === 1;
   },
+};
+
+// Market convenience setters (CA/US/IN/AU/EU/GB/GLOBAL)
+const MARKET_CODES = ['CA', 'US', 'IN', 'AU', 'EU', 'GB', 'GLOBAL'];
+userOps.setHomeMarket = function (id, market) {
+  const m = String(market || '').toUpperCase();
+  if (!MARKET_CODES.includes(m)) return false;
+  db.prepare('UPDATE users SET home_market = ?, market_onboarded = 1 WHERE id = ?').run(m, id);
+  return true;
+};
+orgOps.setHomeMarket = function (id, market) {
+  const m = String(market || '').toUpperCase();
+  if (!MARKET_CODES.includes(m)) return false;
+  db.prepare('UPDATE orgs SET home_market = ? WHERE id = ?').run(m, id);
+  return true;
+};
+docOps.setTargetMarket = function (id, market) {
+  const m = String(market || '').toUpperCase();
+  if (!MARKET_CODES.includes(m)) return false;
+  db.prepare('UPDATE documents SET target_market = ? WHERE id = ?').run(m, id);
+  return true;
 };
 
 // Extend signerOps with language + esign convenience setters (non-breaking additive methods).

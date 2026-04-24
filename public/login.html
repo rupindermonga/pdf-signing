@@ -64,6 +64,14 @@
         <button class="btn-primary" id="totp-verify-btn">Verify &amp; Login</button>
       </div>
 
+      <!-- First-time market picker (shown post-OTP if market_onboarded === false) -->
+      <div id="market-section" class="otp-section" style="text-align:left;">
+        <h3 style="color:#1a3b7a;font-size:17px;margin-bottom:6px;text-align:center;">One last step</h3>
+        <p style="color:#666;font-size:13px;margin-bottom:16px;text-align:center;">Where will you primarily use SealForge? This sets sensible defaults (language, currency, regulatory frame) — you can change it later.</p>
+        <div id="market-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px;"></div>
+        <p style="font-size:11px;color:#888;margin-top:4px;">Pick <em>Global</em> if you serve clients in multiple regions — all features will be visible.</p>
+      </div>
+
       <div id="error" class="error-msg"></div>
 
       <div style="margin-top:16px;padding-top:16px;border-top:1px solid #eee;">
@@ -151,7 +159,8 @@
           totpInput.focus();
           return;
         }
-        safeRedirect(data.redirect);
+        // First-time login: pick a market before landing on dashboard.
+        await maybeShowMarketPicker(data.redirect);
       } catch (err) { showError(err.message); }
       verifyBtn.disabled = false; verifyBtn.textContent = 'Verify & Login';
     });
@@ -168,10 +177,58 @@
         });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.error);
-        safeRedirect(data.redirect);
+        await maybeShowMarketPicker(data.redirect);
       } catch (err) { showError(err.message); }
       totpVerifyBtn.disabled = false; totpVerifyBtn.textContent = 'Verify & Login';
     });
+
+    // ─── First-login market picker ────────────────────────────────────────
+    const marketSection = document.getElementById('market-section');
+    const marketGrid = document.getElementById('market-grid');
+
+    async function maybeShowMarketPicker(redirectUrl) {
+      try {
+        const meResp = await fetch('/api/user/me');
+        if (!meResp.ok) { safeRedirect(redirectUrl); return; }
+        const me = await meResp.json();
+        if (me.user.market_onboarded) { safeRedirect(redirectUrl); return; }
+        // Hide prior sections, show market picker
+        emailSection.style.display = 'none';
+        otpSection.classList.remove('show');
+        totpSection.classList.remove('show');
+        marketSection.classList.add('show');
+
+        const listResp = await fetch('/api/markets');
+        const { markets: list } = await listResp.json();
+        marketGrid.innerHTML = '';
+        for (const m of list) {
+          const card = document.createElement('button');
+          card.type = 'button';
+          card.style.cssText = 'border:1px solid #d0d5dd;background:#fff;border-radius:10px;padding:12px;text-align:left;cursor:pointer;transition:all 0.15s;';
+          card.innerHTML = `
+            <div style="font-size:22px;">${m.flag}</div>
+            <div style="font-weight:700;color:#1a3b7a;font-size:14px;margin-top:2px;">${m.name}</div>
+            <div style="font-size:11px;color:#888;margin-top:2px;">${m.regulatoryFrame.join(' · ')}</div>`;
+          card.addEventListener('mouseenter', () => { card.style.borderColor = '#1a3b7a'; card.style.background = '#f5f7fa'; });
+          card.addEventListener('mouseleave', () => { card.style.borderColor = '#d0d5dd'; card.style.background = '#fff'; });
+          card.addEventListener('click', async () => {
+            card.disabled = true;
+            try {
+              const r = await fetch('/api/user/home-market', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ market: m.code }),
+              });
+              if (!r.ok) { showError((await r.json()).error || 'Failed'); card.disabled = false; return; }
+              safeRedirect(redirectUrl);
+            } catch (err) { showError(err.message); card.disabled = false; }
+          });
+          marketGrid.appendChild(card);
+        }
+      } catch (err) {
+        // If anything fails, fall through to dashboard — the user can still change market later.
+        safeRedirect(redirectUrl);
+      }
+    }
 
     document.getElementById('back-btn').addEventListener('click', (e) => {
       e.preventDefault();

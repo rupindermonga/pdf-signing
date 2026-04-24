@@ -24,6 +24,7 @@ const idv = require('./id-verification');
 const estamp = require('./estamp');
 const qes = require('./qes-providers');
 const fieldDetection = require('./field-detection');
+const markets = require('./markets');
 const { t: tEmail, SUPPORTED: SUPPORTED_LANGS, normalize: normLang } = require('./i18n-server');
 
 const app = express();
@@ -1514,9 +1515,11 @@ app.get('/envelopes', requireAuth, requireRole('admin', 'member'), (req, res) =>
 });
 
 // ─── Legal / compliance pages (public, no auth) ───
-app.get('/legal/privacy', (req, res) => sendHtml(res, path.join(__dirname, 'public', 'legal', 'privacy.html')));
-app.get('/legal/esign-disclosure', (req, res) => sendHtml(res, path.join(__dirname, 'public', 'legal', 'esign-disclosure.html')));
-app.get('/legal/grievance', (req, res) => sendHtml(res, path.join(__dirname, 'public', 'legal', 'grievance.html')));
+app.get('/legal/privacy',             (req, res) => sendHtml(res, path.join(__dirname, 'public', 'legal', 'privacy.html')));
+app.get('/legal/privacy.fr',          (req, res) => sendHtml(res, path.join(__dirname, 'public', 'legal', 'privacy.fr.html')));
+app.get('/legal/privacy.hi',          (req, res) => sendHtml(res, path.join(__dirname, 'public', 'legal', 'privacy.hi.html')));
+app.get('/legal/esign-disclosure',    (req, res) => sendHtml(res, path.join(__dirname, 'public', 'legal', 'esign-disclosure.html')));
+app.get('/legal/grievance',           (req, res) => sendHtml(res, path.join(__dirname, 'public', 'legal', 'grievance.html')));
 app.get('/dsr', (req, res) => res.redirect('/legal/grievance'));
 
 app.post('/api/documents/create', requireAuth, requireRole('admin', 'member'), (req, res, next) => {
@@ -1629,6 +1632,11 @@ app.post('/api/documents/create', requireAuth, requireRole('admin', 'member'), (
       const w = createdSigners[pair.witnessIndex];
       const t = createdSigners[pair.targetIndex];
       if (w && t && w.role === 'witness') witnessOps.setWitnessFor(w.id, t.id);
+    }
+
+    // Per-document target market override (CA / US / IN / AU / EU / GB / GLOBAL)
+    if (req.body.targetMarket && markets.isValid(req.body.targetMarket)) {
+      docOps.setTargetMarket(doc.id, req.body.targetMarket);
     }
 
     // Validate + persist fields (sender-defined)
@@ -4001,6 +4009,84 @@ app.post('/api/sign/:token/lang', rateLimit(60000, 30), (req, res) => {
   if (!signer) return res.status(404).json({ error: 'Invalid signing link' });
   const ok = signerOps.setLanguage(signer.id, normLang(req.body?.lang));
   res.json({ ok });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Market / jurisdiction (CA / US / IN / AU / EU / GB / GLOBAL)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Public: catalog of supported markets + per-market feature flags + legal metadata.
+app.get('/api/markets', (req, res) => {
+  res.json({ markets: markets.listOrdered(), order: markets.ORDER });
+});
+
+// Current user's context: home market + org market + flattened feature set.
+app.get('/api/user/me', requireAuth, (req, res) => {
+  const user = userOps.findById(req.session.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  const org = user.org_id ? orgOps.findById(user.org_id) : null;
+  const userMarket = markets.get(user.home_market);
+  const orgMarket = org ? markets.get(org.home_market) : userMarket;
+  // Effective features: union of user's market + org's market. Flag-level OR so
+  // a user in a GLOBAL org sees India features even if their personal market is CA.
+  const effective = {};
+  for (const f of Object.keys(userMarket.features)) {
+    effective[f] = userMarket.features[f] || orgMarket.features[f];
+  }
+  res.json({
+    user: {
+      id: user.id, email: user.email, name: user.name, role: user.role,
+      home_market: user.home_market,
+      market_onboarded: !!user.market_onboarded,
+      preferred_language: user.preferred_language,
+    },
+    org: org ? {
+      id: org.id, slug: org.slug, name: org.name,
+      home_market: org.home_market,
+      default_language: org.default_language,
+      data_residency: org.data_residency,
+    } : null,
+    marketDetail: { user: userMarket, org: orgMarket },
+    effectiveFeatures: effective,
+  });
+});
+
+// User sets their own home market (first-time onboarding + change).
+app.post('/api/user/home-market', requireAuth, rateLimit(60000, 10), (req, res) => {
+  const market = req.body?.market;
+  if (!markets.isValid(market)) {
+    return res.status(400).json({ error: `Invalid market. Supported: ${markets.ORDER.join(', ')}` });
+  }
+  const ok = userOps.setHomeMarket(req.session.userId, market);
+  if (!ok) return res.status(400).json({ error: 'Failed to set market' });
+  res.json({ ok: true, market: markets.get(market) });
+});
+
+// Org-level market (admin only). Also can set default_language + data_residency in one call.
+app.post('/api/org/home-market', requireAuth, requireRole('admin'), rateLimit(60000, 10), (req, res) => {
+  const user = userOps.findById(req.session.userId);
+  if (!user?.org_id) return res.status(400).json({ error: 'Not in an organisation' });
+  const market = req.body?.market;
+  if (!markets.isValid(market)) {
+    return res.status(400).json({ error: `Invalid market. Supported: ${markets.ORDER.join(', ')}` });
+  }
+  orgOps.setHomeMarket(user.org_id, market);
+  // Bring org defaults in line with the market unless the admin explicitly overrides.
+  const m = markets.get(market);
+  orgOps.updatePolicy(user.org_id, {
+    defaultLanguage: m.defaultLanguage,
+    dataResidency: m.dataResidency,
+  });
+  res.json({ ok: true, market: m });
+});
+
+// Set per-document target market (overrides org default for this signing).
+app.post('/api/documents/:uuid/target-market', requireAuth, rateLimit(60000, 30), (req, res) => {
+  const doc = docOps.findByUUID(req.params.uuid);
+  if (!doc || doc.created_by !== req.session.userId) return res.status(404).json({ error: 'Document not found' });
+  const ok = docOps.setTargetMarket(doc.id, req.body?.market);
+  if (!ok) return res.status(400).json({ error: 'Invalid market' });
+  res.json({ ok: true });
 });
 
 // ─── OpenAPI 3.1 spec (public — tells Zapier / Make / Postman how to call us) ───

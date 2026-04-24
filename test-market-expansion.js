@@ -250,6 +250,43 @@ const dbPath = path.join(__dirname, 'data', 'sealforge.db');
     pass('envelopes.html is complete + references the API');
   } catch (e) { fail('envelopes.html', e); }
 
+  section('11c. Markets module (CA/US/IN/AU/EU/GB/GLOBAL)');
+  try {
+    const markets = require('./markets');
+    assert.deepStrictEqual(markets.ORDER, ['CA', 'US', 'IN', 'AU', 'EU', 'GB', 'GLOBAL']);
+    assert.strictEqual(markets.isValid('CA'), true);
+    assert.strictEqual(markets.isValid('ca'), true);
+    assert.strictEqual(markets.isValid('ZZ'), false);
+    assert.strictEqual(markets.get('IN').currency, 'INR');
+    assert.strictEqual(markets.get('IN').paymentProvider, 'razorpay');
+    assert.strictEqual(markets.get('CA').languages.includes('fr'), true);
+    assert.strictEqual(markets.featureEnabled('IN', 'aadhaarEsign'), true);
+    assert.strictEqual(markets.featureEnabled('CA', 'aadhaarEsign'), false);
+    assert.strictEqual(markets.featureEnabled('GLOBAL', 'aadhaarEsign'), true);
+    assert.strictEqual(markets.suggestedPaymentProvider('CA', 'INR'), 'razorpay');
+    assert.strictEqual(markets.suggestedPaymentProvider('CA', 'CAD'), 'stripe');
+    pass('Markets module: codes, features, provider routing all correct');
+  } catch (e) { fail('markets', e); }
+
+  section('11d. User + org market persistence');
+  try {
+    const { db, userOps, orgOps } = require('./database');
+    let user = userOps.findByEmail('market-test@example.com');
+    if (!user) user = userOps.create('market-test@example.com', 'Market Tester');
+    assert.strictEqual(userOps.setHomeMarket(user.id, 'IN'), true);
+    assert.strictEqual(userOps.setHomeMarket(user.id, 'ZZ'), false);
+    const stored = db.prepare('SELECT home_market, market_onboarded FROM users WHERE id = ?').get(user.id);
+    assert.strictEqual(stored.home_market, 'IN');
+    assert.strictEqual(stored.market_onboarded, 1);
+    if (user.org_id) {
+      assert.strictEqual(orgOps.setHomeMarket(user.org_id, 'IN'), true);
+      const org = orgOps.findById(user.org_id);
+      assert.strictEqual(org.home_market, 'IN');
+    }
+    db.prepare('DELETE FROM users WHERE id = ?').run(user.id);
+    pass('Home market persists and rejects invalid codes');
+  } catch (e) { fail('market-persistence', e); }
+
   section('12. Signer language preference');
   try {
     const { db, userOps, docOps, signerOps } = require('./database');

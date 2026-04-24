@@ -87,6 +87,16 @@
       <div id="tpl-loaded-note" style="display:none;margin-top:10px;font-size:12px;color:#2e7d32;">&#10003; Loaded from template. Edit anything before sending.</div>
     </div>
 
+    <!-- Target market for THIS document (overrides your default for this doc only) -->
+    <div class="card" id="target-market-card">
+      <h2>Target market</h2>
+      <p style="font-size:12px;color:#888;margin-bottom:10px;">Which jurisdiction's signers will receive this document? Drives default language, currency, and which optional sections appear below.</p>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <select id="target-market" style="padding:10px;border:1px solid #d0d5dd;border-radius:8px;font-size:14px;min-width:220px;"></select>
+        <span id="target-market-detail" style="font-size:12px;color:#666;"></span>
+      </div>
+    </div>
+
     <div class="card">
       <h2 data-i18n="send.upload_doc">1. Upload Document</h2>
       <div id="upload-area" class="upload-area">
@@ -219,8 +229,8 @@
       <p id="pay-provider-hint" style="font-size:11px;color:#888;margin-top:6px;">Provider: <span id="pay-provider">Stripe</span> — selected automatically from currency.</p>
     </div>
 
-    <!-- India section: eStamping + Aadhaar eSign toggle. Kept collapsed unless explicitly opened. -->
-    <div class="card" style="border-left:3px solid #ff9800;">
+    <!-- India section: eStamping + Aadhaar eSign toggle. Only visible if the active market enables it. -->
+    <div class="card" id="india-card" style="border-left:3px solid #ff9800;display:none;">
       <h2>&#127470;&#127475; India options (optional)</h2>
       <p style="font-size:12px;color:#888;margin-bottom:10px;">Only relevant if signing in India. Adds an Aadhaar eSign option for signers and attaches an e-stamp certificate to the document.</p>
       <label style="display:flex;align-items:center;gap:10px;cursor:pointer;margin-bottom:12px;">
@@ -336,6 +346,75 @@
     const signersList = document.getElementById('signers-list');
     const errorDiv = document.getElementById('error');
     let selectedFile = null;
+
+    // ─── Market context: loads user/org home market + feature flags, drives UI gating ───
+    let MARKETS = [];
+    let MY_MARKET = null;
+    let EFFECTIVE_FEATURES = {};
+    let TARGET_MARKET_CODE = 'CA';
+
+    async function loadMarketContext() {
+      try {
+        const [meResp, listResp] = await Promise.all([fetch('/api/user/me'), fetch('/api/markets')]);
+        if (!meResp.ok || !listResp.ok) return;
+        const me = await meResp.json();
+        const { markets } = await listResp.json();
+        MARKETS = markets;
+        MY_MARKET = me.marketDetail.org || me.marketDetail.user;
+        EFFECTIVE_FEATURES = me.effectiveFeatures;
+        TARGET_MARKET_CODE = MY_MARKET.code;
+
+        // Populate target-market dropdown
+        const sel = document.getElementById('target-market');
+        sel.innerHTML = '';
+        for (const m of markets) {
+          const opt = document.createElement('option');
+          opt.value = m.code; opt.textContent = `${m.flag} ${m.name}`;
+          sel.appendChild(opt);
+        }
+        sel.value = TARGET_MARKET_CODE;
+        sel.addEventListener('change', () => {
+          TARGET_MARKET_CODE = sel.value;
+          applyMarketGating();
+        });
+        applyMarketGating();
+      } catch (e) { /* best-effort */ }
+    }
+
+    // Gate visible UI sections by the currently chosen target market.
+    // A document targeting India shows the Aadhaar + e-stamp block; a US-only document hides it.
+    // GLOBAL always shows everything.
+    function applyMarketGating() {
+      const target = MARKETS.find(m => m.code === TARGET_MARKET_CODE) || MY_MARKET;
+      const detail = document.getElementById('target-market-detail');
+      if (target && detail) {
+        detail.innerHTML = `<strong>Default language:</strong> ${target.defaultLanguage.toUpperCase()} &middot;
+          <strong>Currency:</strong> ${target.currency} &middot;
+          <strong>Laws:</strong> ${target.regulatoryFrame.join(', ')}`;
+      }
+      // India-only features (Aadhaar + e-stamp)
+      const showIndia = target && (target.features.aadhaarEsign || target.features.estamp);
+      const indiaCard = document.getElementById('india-card');
+      if (indiaCard) indiaCard.style.display = showIndia ? '' : 'none';
+
+      // Default currency from target market
+      const payCur = document.getElementById('pay-currency');
+      if (payCur && target && !payCur.dataset.touched) {
+        payCur.value = target.currency;
+        const evt = new Event('change'); payCur.dispatchEvent(evt);
+      }
+
+      // Default preferred-language on each signer row to the target market's default
+      document.querySelectorAll('.signer-lang').forEach(s => {
+        if (!s.dataset.touched && target) s.value = target.defaultLanguage;
+      });
+    }
+    // Mark pay-currency as manually touched so we stop auto-updating it
+    document.addEventListener('change', e => {
+      if (e.target && e.target.id === 'pay-currency') e.target.dataset.touched = '1';
+      if (e.target && e.target.classList && e.target.classList.contains('signer-lang')) e.target.dataset.touched = '1';
+    });
+    loadMarketContext();
 
     // File upload
     uploadArea.addEventListener('click', () => fileInput.click());
@@ -1005,6 +1084,7 @@
         formData.append('requireIdVerification', document.getElementById('require-id').checked ? 'true' : 'false');
         formData.append('expiresAt', document.getElementById('expires-at').value || '');
         formData.append('reminderEveryDays', document.getElementById('reminder-every').value || '0');
+        formData.append('targetMarket', TARGET_MARKET_CODE || '');
 
         // Witness pairs (index in signers[] → index of target)
         const witnessPairsPayload = Array.from(document.querySelectorAll('[data-witness-for]')).map(sel => ({

@@ -43,6 +43,28 @@
   </header>
 
   <div class="settings-container">
+    <!-- MARKETS / JURISDICTION -->
+    <div class="card" style="border-left:3px solid #1a3b7a;">
+      <h2>Market / Jurisdiction</h2>
+      <p class="desc">Tells SealForge which country's defaults to use (language, currency, regulatory frame, identity verification, Aadhaar/e-stamp availability). You can always send to any region — this just reduces noise in the UI for features you don't need.</p>
+      <div id="market-current" style="margin-bottom:14px;font-size:13px;color:#555;"></div>
+      <div style="display:flex;gap:20px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:280px;">
+          <label style="display:block;font-size:13px;font-weight:600;color:#555;margin-bottom:6px;">My personal market</label>
+          <select id="my-market" style="width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:6px;font-size:14px;"></select>
+          <button class="btn-primary" id="save-my-market" style="margin-top:8px;padding:8px 16px;font-size:13px;">Save my market</button>
+        </div>
+        <div style="flex:1;min-width:280px;" id="org-market-wrap" hidden>
+          <label style="display:block;font-size:13px;font-weight:600;color:#555;margin-bottom:6px;">Organisation market <span style="font-weight:400;color:#888;font-size:11px;">(admin only)</span></label>
+          <select id="org-market" style="width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:6px;font-size:14px;"></select>
+          <button class="btn-primary" id="save-org-market" style="margin-top:8px;padding:8px 16px;font-size:13px;">Save org market</button>
+          <p style="font-size:11px;color:#888;margin-top:6px;">Sets org-wide defaults (default language, data residency). Affects every new document created by any member.</p>
+        </div>
+      </div>
+      <div id="market-features" style="margin-top:16px;padding:12px;background:#f5f7fa;border-radius:6px;font-size:12px;color:#555;"></div>
+      <div id="market-status" style="margin-top:8px;font-size:13px;"></div>
+    </div>
+
     <!-- SSO (OIDC) -->
     <div class="card">
       <h2>Single Sign-On (OIDC)</h2>
@@ -398,7 +420,73 @@
       loadSso();
     });
 
-    loadKeys(); loadHooks(); loadTotpStatus(); loadBranding(); loadSso();
+    // ── Market / Jurisdiction ──
+    async function loadMarket() {
+      try {
+        const [meResp, listResp] = await Promise.all([fetch('/api/user/me'), fetch('/api/markets')]);
+        if (!meResp.ok || !listResp.ok) return;
+        const me = await meResp.json();
+        const { markets: list } = await listResp.json();
+
+        const myMarket = document.getElementById('my-market');
+        const orgMarket = document.getElementById('org-market');
+        myMarket.innerHTML = ''; orgMarket.innerHTML = '';
+        for (const m of list) {
+          const opt = document.createElement('option');
+          opt.value = m.code; opt.textContent = `${m.flag} ${m.name}`;
+          myMarket.appendChild(opt);
+          orgMarket.appendChild(opt.cloneNode(true));
+        }
+        myMarket.value = me.user.home_market;
+        if (me.org) {
+          orgMarket.value = me.org.home_market;
+          if (me.user.role === 'admin') document.getElementById('org-market-wrap').hidden = false;
+        }
+
+        const userM = me.marketDetail.user;
+        const orgM = me.marketDetail.org || userM;
+        document.getElementById('market-current').innerHTML = `
+          <strong>Current:</strong> ${userM.flag} ${userM.name} (personal)
+          ${me.org ? ` &middot; ${orgM.flag} ${orgM.name} (${me.org.name})` : ''}`;
+
+        const fe = me.effectiveFeatures;
+        const rows = [
+          ['aadhaarEsign',   'Aadhaar eSign'],
+          ['estamp',         'Indian e-stamping'],
+          ['razorpay',       'Razorpay (INR)'],
+          ['qes',            'Qualified eSignature (eIDAS)'],
+          ['kba',            'Knowledge-Based Auth'],
+          ['ron',            'Remote Online Notarisation'],
+          ['witnessRole',    'Witness role'],
+          ['idVerification', 'ID verification'],
+        ];
+        document.getElementById('market-features').innerHTML = '<strong>Features visible in your UI:</strong><br>' +
+          rows.map(([k, label]) => `${fe[k] ? '&#10003;' : '&times;'} ${label}`).join(' &middot; ');
+      } catch (e) { /* best-effort */ }
+    }
+
+    document.getElementById('save-my-market').addEventListener('click', async () => {
+      const m = document.getElementById('my-market').value;
+      const s = document.getElementById('market-status');
+      s.textContent = 'Saving...'; s.style.color = '#555';
+      const r = await fetch('/api/user/home-market', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ market: m }),
+      });
+      if (r.ok) { s.textContent = 'Saved!'; s.style.color = '#2e7d32'; loadMarket(); }
+      else { s.textContent = (await r.json()).error || 'Failed'; s.style.color = '#c62828'; }
+    });
+    document.getElementById('save-org-market').addEventListener('click', async () => {
+      const m = document.getElementById('org-market').value;
+      const s = document.getElementById('market-status');
+      s.textContent = 'Saving...'; s.style.color = '#555';
+      const r = await fetch('/api/org/home-market', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ market: m }),
+      });
+      if (r.ok) { s.textContent = 'Organisation market saved — defaults updated.'; s.style.color = '#2e7d32'; loadMarket(); }
+      else { s.textContent = (await r.json()).error || 'Failed'; s.style.color = '#c62828'; }
+    });
+
+    loadKeys(); loadHooks(); loadTotpStatus(); loadBranding(); loadSso(); loadMarket();
   </script>
 </body>
 </html>

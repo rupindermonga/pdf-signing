@@ -1,6 +1,6 @@
 // Identity-verification provider interface.
 //
-// The existing SealForge ID flow already captures a government-ID photo + a selfie (server.js).
+// The existing CertaDocs ID flow already captures a government-ID photo + a selfie (server.js).
 // This module wraps that capture in a pluggable *verification* step: does the selfie match
 // the ID? Is it a real live face (liveness)? Is the document genuine?
 //

@@ -1,5 +1,5 @@
 /**
- * SealForge feature tests — new field types, scheduler, RFC 3161 TSA.
+ * CertaDocs feature tests — new field types, scheduler, RFC 3161 TSA.
  *
  * Run: node test-features.js
  *   (or with a live TSA: TSA_URL=https://freetsa.org/tsr node test-features.js)
@@ -33,7 +33,7 @@ function section(title) {
 // ─────────────────────────────────────────────────────────────────────
 async function main() {
   console.log('\n\x1b[1m══════════════════════════════════════════\x1b[0m');
-  console.log('\x1b[1m  SealForge Feature Tests\x1b[0m');
+  console.log('\x1b[1m  CertaDocs Feature Tests\x1b[0m');
   console.log('\x1b[1m══════════════════════════════════════════\x1b[0m');
 
   // ─── [1] Field cleaning & validation ────────────────────────────
@@ -165,7 +165,7 @@ async function main() {
   section('[2] SCHEDULER (auto-expire + auto-remind)');
 
   // Use a unique test user so we don't pollute real data
-  const testEmail = `sched-test-${Date.now()}@sealforge.test`;
+  const testEmail = `sched-test-${Date.now()}@certadocs.test`;
   const user = userOps.findOrCreate(testEmail, 'Scheduler Tester');
   const createdDocIds = [];
 
@@ -304,7 +304,7 @@ async function main() {
   if (process.env.TSA_URL) {
     try {
       const liveTsa = require('./tsa');
-      const hash = crypto.createHash('sha256').update('sealforge-test-' + Date.now()).digest();
+      const hash = crypto.createHash('sha256').update('certadocs-test-' + Date.now()).digest();
       const result = await liveTsa.requestTimestamp(hash);
       t('Live TSA returns a timestamp token',
         Buffer.isBuffer(result.token) && result.token.length > 100,

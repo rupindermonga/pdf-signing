@@ -54,21 +54,33 @@ const IS_DEV = process.env.NODE_ENV === 'development';
 const IS_LOCAL = !process.env.BASE_URL || /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(process.env.BASE_URL);
 const ALLOW_DEV_OTP = IS_DEV && IS_LOCAL;
 if (IS_DEV && !IS_LOCAL) {
-  console.warn('\x1b[33m[sealforge] NODE_ENV=development on a non-local BASE_URL — OTPs will NOT be returned in responses. Set NODE_ENV=production to remove this warning.\x1b[0m');
+  console.warn('\x1b[33m[certadocs] NODE_ENV=development on a non-local BASE_URL — OTPs will NOT be returned in responses. Set NODE_ENV=production to remove this warning.\x1b[0m');
 }
 if (!IS_DEV && process.env.NODE_ENV !== 'production') {
-  console.warn('\x1b[33m[sealforge] NODE_ENV is not set to "production" — session cookies will be issued without the Secure flag. Set NODE_ENV=production in your deployment.\x1b[0m');
+  console.warn('\x1b[33m[certadocs] NODE_ENV is not set to "production" — session cookies will be issued without the Secure flag. Set NODE_ENV=production in your deployment.\x1b[0m');
 }
 
 // Fail-closed: refuse to start in production without a real SESSION_SECRET
 if (process.env.NODE_ENV === 'production' && !process.env.SESSION_SECRET) {
-  console.error('\x1b[31m[sealforge] FATAL: SESSION_SECRET is not set. Refusing to start in production with a predictable secret.\x1b[0m');
+  console.error('\x1b[31m[certadocs] FATAL: SESSION_SECRET is not set. Refusing to start in production with a predictable secret.\x1b[0m');
   console.error('\x1b[31m  Set SESSION_SECRET to a random string (at least 32 chars): openssl rand -base64 32\x1b[0m');
   process.exit(1);
 }
 if (process.env.NODE_ENV === 'production' && !process.env.P12_PASSPHRASE) {
-  console.error('\x1b[31m[sealforge] FATAL: P12_PASSPHRASE is not set. Refusing to start with a predictable signing key password.\x1b[0m');
+  console.error('\x1b[31m[certadocs] FATAL: P12_PASSPHRASE is not set. Refusing to start with a predictable signing key password.\x1b[0m');
   console.error('\x1b[31m  Re-run: P12_PASSPHRASE=<your-password> node generate-cert.js  then set P12_PASSPHRASE in .env\x1b[0m');
+  process.exit(1);
+}
+// ID-verif and TOTP keys must be independent of SESSION_SECRET in prod — otherwise
+// one leaked env var decrypts sessions + stored KYC images + enrolled TOTP seeds.
+if (process.env.NODE_ENV === 'production' && !process.env.ID_VERIF_KEY) {
+  console.error('\x1b[31m[certadocs] FATAL: ID_VERIF_KEY is not set. Refusing to start — ID-verification images must not share a key with SESSION_SECRET.\x1b[0m');
+  console.error('\x1b[31m  Generate: openssl rand -base64 32  (rotating this key makes existing ID blobs unreadable by design)\x1b[0m');
+  process.exit(1);
+}
+if (process.env.NODE_ENV === 'production' && !process.env.TOTP_KEY) {
+  console.error('\x1b[31m[certadocs] FATAL: TOTP_KEY is not set. Refusing to start — TOTP secrets must not share a key with SESSION_SECRET.\x1b[0m');
+  console.error('\x1b[31m  Generate: openssl rand -base64 32  (rotating this key invalidates all enrolled TOTP secrets)\x1b[0m');
   process.exit(1);
 }
 
@@ -102,7 +114,10 @@ function sendHtml(res, filePath) {
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'sealforge-dev',
+  // Prod path is boot-guarded above (line ~64) — the IIFE is belt-and-suspenders
+  // so an accidental removal of that guard still fails closed instead of booting
+  // with a predictable secret.
+  secret: process.env.SESSION_SECRET || (IS_DEV ? 'certadocs-dev-DO-NOT-USE-IN-PROD' : (() => { throw new Error('SESSION_SECRET is required'); })()),
   resave: false,
   saveUninitialized: false,
   cookie: {
@@ -191,11 +206,24 @@ const attachmentsDir = path.join(__dirname, 'data', 'attachments');
 if (!fs.existsSync(attachmentsDir)) fs.mkdirSync(attachmentsDir, { recursive: true });
 
 // ─── ID-verification at-rest encryption (AES-256-GCM) ───
-// Key derived from ID_VERIF_KEY env; if unset, derive from SESSION_SECRET (dev fallback).
-// Rotating the key invalidates prior files by design — store them off-server if you need portability.
-const idVerifKey = crypto.createHash('sha256')
-  .update(process.env.ID_VERIF_KEY || process.env.SESSION_SECRET || 'sealforge-dev-idverif')
-  .digest();
+// Prod: requires ID_VERIF_KEY (boot-guarded above).
+// Dev:  falls back to SESSION_SECRET, derived via HKDF with a purpose-specific
+//       `info` label so the ID-verif key and TOTP key cannot collide even when
+//       the root secret is shared.
+// Rotating this key invalidates prior files by design.
+//
+// Compatibility: blobs encrypted under the prior scheme (plain sha256 of the
+// root secret) still decrypt because decryptIdBlob tries the legacy key if the
+// HKDF key fails auth. New writes always use HKDF.
+const ID_VERIF_ROOT = process.env.ID_VERIF_KEY || process.env.SESSION_SECRET || 'certadocs-dev-NEVER-USE-IN-PROD';
+const idVerifKey = Buffer.from(crypto.hkdfSync(
+  'sha256', Buffer.from(ID_VERIF_ROOT, 'utf8'),
+  Buffer.from('certadocs-idverif-salt-v1', 'utf8'),
+  Buffer.from('idverif.aes-256-gcm.v1', 'utf8'),
+  32
+));
+// Legacy key for backward-compatible decryption of existing on-disk blobs.
+const idVerifKeyLegacy = crypto.createHash('sha256').update(ID_VERIF_ROOT).digest();
 
 function encryptIdBlob(plaintext) {
   const iv = crypto.randomBytes(12);
@@ -211,13 +239,25 @@ function decryptIdBlob(blob) {
   const iv = blob.subarray(0, 12);
   const tag = blob.subarray(12, 28);
   const ct = blob.subarray(28);
-  const decipher = crypto.createDecipheriv('aes-256-gcm', idVerifKey, iv);
-  decipher.setAuthTag(tag);
-  return Buffer.concat([decipher.update(ct), decipher.final()]);
+  // Try HKDF key first; fall back to legacy sha256-derived key for pre-HKDF blobs.
+  // AES-GCM auth tag makes a "wrong key" attempt cheap and deterministic.
+  try {
+    const decipher = crypto.createDecipheriv('aes-256-gcm', idVerifKey, iv);
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(ct), decipher.final()]);
+  } catch (_) {
+    const decipher = crypto.createDecipheriv('aes-256-gcm', idVerifKeyLegacy, iv);
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(ct), decipher.final()]);
+  }
 }
 
 // P12 Certificate
-const certPath = path.join(__dirname, 'cert', 'sealforge.p12');
+const certPath = path.join(__dirname, 'cert', 'certadocs.p12');
+// Prod is already boot-guarded (line ~69). Dev still accepts the historical
+// 'certadocs' default so generate-cert.js + `npm run dev` keep working with
+// zero setup — but the string lives only here, never inline at the call sites.
+const P12_PASSPHRASE = process.env.P12_PASSPHRASE || (IS_DEV ? 'certadocs' : null);
 let p12Buffer = null;
 if (fs.existsSync(certPath)) {
   p12Buffer = fs.readFileSync(certPath);
@@ -272,7 +312,7 @@ async function runScheduler() {
       if (cadenceDays <= 0) continue;
       const cadenceMinutes = cadenceDays * 1440;
       const creator = require('./database').db.prepare('SELECT email, name FROM users WHERE id = ?').get(doc.created_by);
-      const senderName = creator?.name || creator?.email || 'SealForge';
+      const senderName = creator?.name || creator?.email || 'CertaDocs';
       // Only remind currently-awaiting signers (sequential: the one holding the ball;
       // parallel: all signers that have been dispatched but haven't signed yet).
       const awaiting = signerOps.getAwaiting(doc.id, doc.signing_mode);
@@ -487,9 +527,19 @@ function requireOrgRole(...roles) {
 }
 
 // ─── TOTP helpers ───
-const totpEncKey = crypto.createHash('sha256')
-  .update(process.env.TOTP_KEY || process.env.SESSION_SECRET || 'sealforge-dev-totp')
-  .digest();
+// Prod: requires TOTP_KEY (boot-guarded above).
+// Dev:  HKDF from SESSION_SECRET with a distinct label so TOTP and ID-verif
+//       keys are independent even when the root secret is shared.
+// Existing enrolled TOTP rows (encrypted under the prior sha256 scheme) keep
+// working — decryptTotpSecret falls back to the legacy key if HKDF fails auth.
+const TOTP_ROOT = process.env.TOTP_KEY || process.env.SESSION_SECRET || 'certadocs-dev-NEVER-USE-IN-PROD';
+const totpEncKey = Buffer.from(crypto.hkdfSync(
+  'sha256', Buffer.from(TOTP_ROOT, 'utf8'),
+  Buffer.from('certadocs-totp-salt-v1', 'utf8'),
+  Buffer.from('totp.aes-256-gcm.v1', 'utf8'),
+  32
+));
+const totpEncKeyLegacy = crypto.createHash('sha256').update(TOTP_ROOT).digest();
 
 function encryptTotpSecret(plaintext) {
   const iv = crypto.randomBytes(12);
@@ -504,9 +554,15 @@ function decryptTotpSecret(encoded) {
   const iv = blob.subarray(0, 12);
   const tag = blob.subarray(12, 28);
   const ct = blob.subarray(28);
-  const decipher = crypto.createDecipheriv('aes-256-gcm', totpEncKey, iv);
-  decipher.setAuthTag(tag);
-  return Buffer.concat([decipher.update(ct), decipher.final()]).toString('utf8');
+  try {
+    const decipher = crypto.createDecipheriv('aes-256-gcm', totpEncKey, iv);
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(ct), decipher.final()]).toString('utf8');
+  } catch (_) {
+    const decipher = crypto.createDecipheriv('aes-256-gcm', totpEncKeyLegacy, iv);
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(ct), decipher.final()]).toString('utf8');
+  }
 }
 
 // API-key auth: requires Bearer token in Authorization header. Sets req.apiUser.
@@ -606,11 +662,11 @@ async function fireWebhooks(userId, event, payload) {
         headers: {
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(body),
-          'User-Agent': 'SealForge-Webhook/1.0',
-          'X-SealForge-Event': event,
+          'User-Agent': 'CertaDocs-Webhook/1.0',
+          'X-CertaDocs-Event': event,
           // Stripe-style signature: t=<unix timestamp>, v1=<hmac of `${t}.${body}`>
           // Consumers: reject if |now - t| > 300s, then recompute HMAC and compare.
-          'X-SealForge-Signature': `t=${ts}, v1=${sig}`,
+          'X-CertaDocs-Signature': `t=${ts}, v1=${sig}`,
         },
         timeout: 8000,
       };
@@ -686,7 +742,7 @@ app.post('/api/auth/verify-totp', rateLimit(60000, 10), (req, res) => {
   if (!user || !user.totp_secret) return res.status(400).json({ error: 'TOTP not configured' });
 
   const secret = decryptTotpSecret(user.totp_secret);
-  const totp = new TOTP({ issuer: 'SealForge', label: user.email, secret: Secret.fromBase32(secret) });
+  const totp = new TOTP({ issuer: 'CertaDocs', label: user.email, secret: Secret.fromBase32(secret) });
   const delta = totp.validate({ token: String(code), window: 1 });
   if (delta === null) return res.status(400).json({ error: 'Invalid authenticator code' });
 
@@ -724,7 +780,7 @@ app.get('/api/auth/me', requireAuth, (req, res) => {
 // ─── TOTP setup routes ───
 app.post('/api/settings/totp/setup', requireAuth, (req, res) => {
   const secret = new Secret();
-  const totp = new TOTP({ issuer: 'SealForge', label: req.session.userEmail, secret });
+  const totp = new TOTP({ issuer: 'CertaDocs', label: req.session.userEmail, secret });
   const encrypted = encryptTotpSecret(secret.base32);
   userOps.setTotpSecret(req.session.userId, encrypted);
   const uri = totp.toString();
@@ -738,7 +794,7 @@ app.post('/api/settings/totp/confirm', requireAuth, rateLimit(60000, 10), (req, 
   if (!user || !user.totp_secret) return res.status(400).json({ error: 'Run setup first' });
 
   const secret = decryptTotpSecret(user.totp_secret);
-  const totp = new TOTP({ issuer: 'SealForge', label: user.email, secret: Secret.fromBase32(secret) });
+  const totp = new TOTP({ issuer: 'CertaDocs', label: user.email, secret: Secret.fromBase32(secret) });
   const delta = totp.validate({ token: String(code), window: 1 });
   if (delta === null) return res.status(400).json({ error: 'Invalid code. Make sure your authenticator is set up correctly.' });
 
@@ -752,7 +808,7 @@ app.post('/api/settings/totp/disable', requireAuth, rateLimit(60000, 5), (req, r
   if (!user || !user.totp_enabled) return res.status(400).json({ error: 'TOTP not enabled' });
 
   const secret = decryptTotpSecret(user.totp_secret);
-  const totp = new TOTP({ issuer: 'SealForge', label: user.email, secret: Secret.fromBase32(secret) });
+  const totp = new TOTP({ issuer: 'CertaDocs', label: user.email, secret: Secret.fromBase32(secret) });
   const delta = totp.validate({ token: String(code), window: 1 });
   if (delta === null) return res.status(400).json({ error: 'Invalid authenticator code' });
 
@@ -1302,7 +1358,7 @@ app.get('/api/analytics/export.csv', requireAuth, requireRole('admin', 'member')
     const csv = header.join(',') + '\n' + body + '\n';
 
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="sealforge-documents-${days}d.csv"`);
+    res.setHeader('Content-Disposition', `attachment; filename="certadocs-documents-${days}d.csv"`);
     res.send(csv);
   } catch (err) {
     console.error('CSV export error:', err.message);
@@ -1441,7 +1497,7 @@ app.get('/api/analytics/signers.csv', requireAuth, requireRole('admin', 'member'
     const csv = header.join(',') + '\n' + body + '\n';
 
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="sealforge-signers-${days}d.csv"`);
+    res.setHeader('Content-Disposition', `attachment; filename="certadocs-signers-${days}d.csv"`);
     res.send(csv);
   } catch (err) {
     console.error('Signer CSV export error:', err.message);
@@ -1883,7 +1939,7 @@ async function advanceWorkflow(documentId) {
       workflowOps.updateStepStatus(currentStep.id, 'active');
       const doc2 = docOps.findById(documentId);
       const creator = require('./database').db.prepare('SELECT * FROM users WHERE id = ?').get(doc2.created_by);
-      const senderName = creator?.name || creator?.email || 'SealForge';
+      const senderName = creator?.name || creator?.email || 'CertaDocs';
       signerOps.updateStatus(signer.id, 'sent');
       await notifySigner(signer, doc2, senderName);
     }
@@ -2247,7 +2303,7 @@ app.post('/api/sign/:token/reassign', rateLimit(60000, 3), async (req, res) => {
   // Notify the new signer with a fresh signing link
   const doc = docOps.findById(signer.document_id);
   const creator = require('./database').db.prepare('SELECT email, name FROM users WHERE id = ?').get(doc.created_by);
-  const senderName = creator?.name || creator?.email || 'SealForge';
+  const senderName = creator?.name || creator?.email || 'CertaDocs';
   const brand = userOps.getBranding(doc.created_by);
   const signUrl = `${BASE_URL}/sign/${result.token}`;
   if (email.isConfigured()) {
@@ -2346,7 +2402,7 @@ app.post('/api/documents/:uuid/signers/:signerId/substitute', requireAuth, rateL
     try {
       const brand = userOps.getBranding(doc.created_by);
       const creator = require('./database').db.prepare('SELECT email, name FROM users WHERE id = ?').get(doc.created_by);
-      const senderName = creator?.name || creator?.email || 'SealForge';
+      const senderName = creator?.name || creator?.email || 'CertaDocs';
       await email.sendSigningRequest(newEmail, newName, senderName, doc.title, signUrl,
         `(You were added to this signing request — it was originally sent to ${result.prevName})`, brand);
     } catch (e) { console.error('Substitute email failed:', e.message); }
@@ -2395,7 +2451,7 @@ app.post('/api/documents/:uuid/signers/:signerId/send-back', requireAuth, rateLi
     try {
       const brand = userOps.getBranding(doc.created_by);
       const creator = require('./database').db.prepare('SELECT email, name FROM users WHERE id = ?').get(doc.created_by);
-      const senderName = creator?.name || creator?.email || 'SealForge';
+      const senderName = creator?.name || creator?.email || 'CertaDocs';
       const signUrl = `${BASE_URL}/sign/${signer.token}`;
       await email.sendSigningRequest(signer.email, signer.name, senderName, doc.title, signUrl,
         `Change requested: ${message.slice(0, 200)}`, brand);
@@ -2662,7 +2718,7 @@ async function generateFinalPdf(documentId) {
   ap.drawRectangle({ x: 0, y: h - 80, width: w, height: 80, color: rgb(0.1, 0.23, 0.48) });
   ap.drawText('Seal', { x: 40, y: h - 52, size: 24, font: fontBold, color: rgb(1,1,1) });
   ap.drawText('Forge', { x: 40 + fontBold.widthOfTextAtSize('Seal', 24), y: h - 52, size: 24, font: fontBold, color: rgb(0.5,0.72,1) });
-  ap.drawText('Certificate of Signing', { x: 40 + fontBold.widthOfTextAtSize('SealForge', 24) + 20, y: h - 50, size: 16, font, color: rgb(0.85,0.9,1) });
+  ap.drawText('Certificate of Signing', { x: 40 + fontBold.widthOfTextAtSize('CertaDocs', 24) + 20, y: h - 50, size: 16, font, color: rgb(0.85,0.9,1) });
 
   y = h - 110;
 
@@ -2714,7 +2770,7 @@ async function generateFinalPdf(documentId) {
   section('VERIFICATION', tsaLines);
 
   ap.drawLine({ start: { x: 40, y: 55 }, end: { x: w - 40, y: 55 }, thickness: 0.5, color: rgb(0.7,0.7,0.7) });
-  ap.drawText('This document was digitally signed using SealForge. Verify at: https://rupindermonga.github.io/pdf-signing/', { x: 40, y: 40, size: 7, font, color: rgb(0.5,0.5,0.5) });
+  ap.drawText('This document was digitally signed using CertaDocs. Verify at: https://rupindermonga.github.io/pdf-signing/', { x: 40, y: 40, size: 7, font, color: rgb(0.5,0.5,0.5) });
 
   // Save stamped PDF
   const stampedBytes = await pdfDoc.save({ useObjectStreams: false });
@@ -2724,9 +2780,9 @@ async function generateFinalPdf(documentId) {
   if (p12Buffer) {
     try {
       const pdfForSign = await PDFDocument.load(stampedBytes);
-      pdflibAddPlaceholder({ pdfDoc: pdfForSign, reason: 'All parties signed', name: 'SealForge', location: '' });
+      pdflibAddPlaceholder({ pdfDoc: pdfForSign, reason: 'All parties signed', name: 'CertaDocs', location: '' });
       const withPlaceholder = await pdfForSign.save({ useObjectStreams: false });
-      const signer = new P12Signer(p12Buffer, { passphrase: process.env.P12_PASSPHRASE || 'sealforge' });
+      const signer = new P12Signer(p12Buffer, { passphrase: P12_PASSPHRASE });
       const signPdf = new SignPdf();
       finalBytes = await signPdf.sign(withPlaceholder, signer);
     } catch (e) {
@@ -2971,7 +3027,7 @@ app.get('/api/public/forms/:slug/info', rateLimit(60000, 30), (req, res) => {
     message: tpl.message || '',
     fields: firstSignerFields,
     brand: owner ? {
-      fromName: owner.brand_from_name || owner.name || 'SealForge',
+      fromName: owner.brand_from_name || owner.name || 'CertaDocs',
       logoUrl: owner.brand_logo_url || '',
       color: owner.brand_color || '#1a3b7a',
     } : null,
@@ -3144,11 +3200,10 @@ app.get('/api/v1/documents', requireApiKey('ro'), (req, res) => {
 });
 
 app.get('/api/v1/documents/:uuid', requireApiKey('ro'), (req, res) => {
-  const doc = docOps.findByUUID(req.params.uuid);
-  // Org members all share document access; legacy keys fall back to creator-match
+  // Scope baked into the query — org-scoped keys see only their org; legacy keys
+  // see only their creator's docs. No post-fetch filter, no IDOR surface.
+  const doc = docOps.findByUUIDForCaller(req.params.uuid, { orgId: req.apiOrgId, userId: req.apiUser.id });
   if (!doc) return res.status(404).json({ error: 'Not found' });
-  const accessible = req.apiOrgId ? (doc.org_id === req.apiOrgId) : (doc.created_by === req.apiUser.id);
-  if (!accessible) return res.status(404).json({ error: 'Not found' });
   const signers = signerOps.listByDocument(doc.id);
   res.json({
     uuid: doc.uuid, title: doc.title, status: doc.status, signing_mode: doc.signing_mode,
@@ -3245,10 +3300,8 @@ app.post('/api/v1/documents', requireApiKey('rw'), (req, res, next) => {
 });
 
 app.post('/api/v1/documents/:uuid/cancel', requireApiKey('rw'), (req, res) => {
-  const doc = docOps.findByUUID(req.params.uuid);
+  const doc = docOps.findByUUIDForCaller(req.params.uuid, { orgId: req.apiOrgId, userId: req.apiUser.id });
   if (!doc) return res.status(404).json({ error: 'Not found' });
-  const accessible = req.apiOrgId ? (doc.org_id === req.apiOrgId) : (doc.created_by === req.apiUser.id);
-  if (!accessible) return res.status(404).json({ error: 'Not found' });
   if (doc.status === 'completed') return res.status(400).json({ error: 'Already completed' });
   if (doc.status === 'cancelled') return res.status(400).json({ error: 'Already cancelled' });
   docOps.cancel(doc.id);
@@ -3257,10 +3310,8 @@ app.post('/api/v1/documents/:uuid/cancel', requireApiKey('rw'), (req, res) => {
 });
 
 app.get('/api/v1/documents/:uuid/download', requireApiKey('ro'), (req, res) => {
-  const doc = docOps.findByUUID(req.params.uuid);
+  const doc = docOps.findByUUIDForCaller(req.params.uuid, { orgId: req.apiOrgId, userId: req.apiUser.id });
   if (!doc) return res.status(404).json({ error: 'Not found' });
-  const accessible = req.apiOrgId ? (doc.org_id === req.apiOrgId) : (doc.created_by === req.apiUser.id);
-  if (!accessible) return res.status(404).json({ error: 'Not found' });
   if (doc.status !== 'completed') return res.status(409).json({ error: 'Document not completed yet' });
   const signedPath = path.join(storageDir, `${doc.uuid}_signed.pdf`);
   const finalPath = fs.existsSync(signedPath) ? signedPath : path.join(storageDir, `${doc.uuid}.pdf`);
@@ -3335,11 +3386,9 @@ app.post('/api/v1/signers/:signerUuid/embed-session', requireApiKey('rw'), (req,
   // Find signer by its token (signerUuid in the URL is actually the signer's current token — keeps API stable across reassigns)
   const signer = signerOps.findByToken(req.params.signerUuid);
   if (!signer) return res.status(404).json({ error: 'Signer not found' });
-  // Ensure the API caller owns the document (org-scoped when the key carries an org, else user-scoped)
-  const doc = docOps.findById(signer.document_id);
+  // Ensure the API caller owns the document — scope enforced in the query.
+  const doc = docOps.findByIdForCaller(signer.document_id, { orgId: req.apiOrgId, userId: req.apiUser.id });
   if (!doc) return res.status(403).json({ error: 'Access denied' });
-  const accessible = req.apiOrgId ? (doc.org_id === req.apiOrgId) : (doc.created_by === req.apiUser.id);
-  if (!accessible) return res.status(403).json({ error: 'Access denied' });
   if (signer.status !== 'sent' && signer.status !== 'pending') {
     return res.status(400).json({ error: 'Signer is not awaiting action (status: ' + signer.status + ')' });
   }
@@ -3436,11 +3485,11 @@ app.post('/api/sign', requireAuth, rateLimit(60000, 20), async (req, res) => {
       pdfDoc,
       reason: req.body.reason || 'Document Signing',
       contactInfo: req.body.signer || '',
-      name: req.body.signer || 'SealForge Signer',
+      name: req.body.signer || 'CertaDocs Signer',
       location: req.body.location || '',
     });
     const pdfWithPlaceholder = await pdfDoc.save({ useObjectStreams: false });
-    const signer = new P12Signer(p12Buffer, { passphrase: process.env.P12_PASSPHRASE || 'sealforge' });
+    const signer = new P12Signer(p12Buffer, { passphrase: P12_PASSPHRASE });
     const signPdf = new SignPdf();
     const signedPdf = await signPdf.sign(pdfWithPlaceholder, signer);
     const hash = crypto.createHash('sha256').update(signedPdf).digest('hex');
@@ -3704,7 +3753,7 @@ app.get('/api/dsr/verify/:token', (req, res) => {
   if (dsr.request_type === 'export') {
     const data = compliance.exportData(db, dsr.subject_email);
     res.setHeader('Content-Type', 'application/json');
-    res.setHeader('Content-Disposition', `attachment; filename="sealforge-data-${dsr.subject_email}.json"`);
+    res.setHeader('Content-Disposition', `attachment; filename="certadocs-data-${dsr.subject_email}.json"`);
     db.prepare(`UPDATE dsr_requests SET status = 'fulfilled', fulfilled_at = datetime('now') WHERE id = ?`).run(dsr.id);
     return res.send(JSON.stringify(data, null, 2));
   }
@@ -3930,6 +3979,40 @@ app.post('/api/sign/:token/razorpay/create-link', rateLimit(60000, 5), async (re
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// Stripe webhook — authoritative payment confirmation. The session-based verify
+// route (/api/sign/:token/payment-verify) relies on the signer's browser returning
+// to the success URL; webhooks cover the closed-tab case and async payment methods.
+//
+// Setup: Stripe dashboard → Developers → Webhooks → Add endpoint
+//   URL:    {BASE_URL}/api/webhooks/stripe
+//   Events: checkout.session.completed, checkout.session.async_payment_succeeded
+//   Copy the "Signing secret" (whsec_...) into STRIPE_WEBHOOK_SECRET.
+app.post('/api/webhooks/stripe', express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
+  // Fail closed — never accept unsigned Stripe events.
+  if (!process.env.STRIPE_WEBHOOK_SECRET) {
+    return res.status(503).json({ error: 'Stripe webhooks not configured' });
+  }
+  const signature = req.headers['stripe-signature'];
+  const raw = req.body instanceof Buffer ? req.body : Buffer.from(String(req.body || ''), 'utf8');
+  if (!stripe.verifyWebhookSignature(raw, signature)) {
+    return res.status(400).json({ error: 'Invalid signature' });
+  }
+  let evt;
+  try { evt = JSON.parse(raw.toString('utf8')); } catch { return res.status(400).json({ error: 'Invalid JSON' }); }
+
+  if (evt.type === 'checkout.session.completed' || evt.type === 'checkout.session.async_payment_succeeded') {
+    const sessionId = evt.data?.object?.id;
+    const paymentStatus = evt.data?.object?.payment_status;
+    if (sessionId && paymentStatus === 'paid') {
+      // markPaid is idempotent — the row's UPDATE is a no-op if already paid.
+      const signer = db.prepare('SELECT id FROM signers WHERE payment_session_id = ?').get(sessionId);
+      if (signer) signerOps.markPaid(signer.id);
+    }
+  }
+  // 2xx on any valid-signature event so Stripe doesn't retry ignorable event types.
+  res.json({ ok: true });
 });
 
 // Razorpay webhook — verify signature, mark signer paid on payment_link.paid
@@ -4216,6 +4299,6 @@ app.get('/', (req, res) => {
 // module without a port collision or an unexpected TCP listener.
 if (require.main === module) {
   app.listen(PORT, () => {
-    console.log(`SealForge running at ${BASE_URL}`);
+    console.log(`CertaDocs running at ${BASE_URL}`);
   });
 }

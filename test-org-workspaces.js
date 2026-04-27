@@ -28,7 +28,7 @@ function section(title) { console.log(`\n\x1b[1m${title}\x1b[0m`); }
 
 async function main() {
   console.log('\n\x1b[1m══════════════════════════════════════════\x1b[0m');
-  console.log('\x1b[1m  SealForge Org Workspace Tests\x1b[0m');
+  console.log('\x1b[1m  CertaDocs Org Workspace Tests\x1b[0m');
   console.log('\x1b[1m══════════════════════════════════════════\x1b[0m');
 
   // Unique test domain so re-runs don't collide with a prior org

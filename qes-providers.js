@@ -9,7 +9,7 @@
 // QES is the only tier that is automatically considered legally equivalent to a handwritten
 // signature across the EU. Many contracts (real estate, many employment) require it.
 //
-// This module provides a pluggable interface so SealForge can embed a QES into the PAdES-LTV
+// This module provides a pluggable interface so CertaDocs can embed a QES into the PAdES-LTV
 // signed PDF produced by @signpdf/signpdf. Real integration requires a commercial contract
 // with one of the QTSPs below (see EU Trust List).
 //

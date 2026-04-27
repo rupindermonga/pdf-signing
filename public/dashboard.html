@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SealForge - Dashboard</title>
+  <title>CertaDocs - Dashboard</title>
   <link rel="stylesheet" href="/css/style.css">
   <script src="/js/i18n.js" defer></script>
   <style>
@@ -366,7 +366,7 @@
         style="border:1px solid #d0d5dd;border-radius:8px;"&gt;&lt;/iframe&gt;</pre>
           <h4 style="margin-top:18px;color:#1a3b7a;font-size:13px;">Listen for signer events</h4>
           <pre style="background:#f5f7fa;padding:12px;border-radius:6px;font-size:12px;overflow-x:auto;">window.addEventListener('message', (e) =&gt; {
-  if (e.data &amp;&amp; e.data.source === 'sealforge') {
+  if (e.data &amp;&amp; e.data.source === 'certadocs') {
     switch (e.data.type) {
       case 'sf:loaded':     /* signer opened the page */ break;
       case 'sf:signed':     /* signer submitted signature */ break;

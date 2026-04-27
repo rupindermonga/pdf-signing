@@ -1,5 +1,5 @@
 /**
- * SealForge New Features Dynamic Test Suite
+ * CertaDocs New Features Dynamic Test Suite
  * Tests: RBAC, MFA/TOTP, Kiosk, Zapier API, CSP Nonce
  * Server must be running on localhost:3000
  */
@@ -35,22 +35,22 @@ function t(name, cond, detail) {
 
 async function main() {
   console.log('\n\x1b[1m\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\x1b[0m');
-  console.log('\x1b[1m  SealForge New Features Dynamic Tests\x1b[0m');
+  console.log('\x1b[1m  CertaDocs New Features Dynamic Tests\x1b[0m');
   console.log('\x1b[1m\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\x1b[0m');
 
   // ─── Login to get session ───
   console.log('\n\x1b[1m[1] AUTH + RBAC\x1b[0m');
-  const otpResp = await req('POST', '/api/auth/send-otp', { email: 'newfeature-test@sealforge.test' });
+  const otpResp = await req('POST', '/api/auth/send-otp', { email: 'newfeature-test@certadocs.test' });
   const otp = otpResp.json && otpResp.json.devOtp;
   t('OTP received for test', !!otp);
 
-  const loginResp = await req('POST', '/api/auth/verify-otp', { email: 'newfeature-test@sealforge.test', code: otp, name: 'Feature Tester' });
+  const loginResp = await req('POST', '/api/auth/verify-otp', { email: 'newfeature-test@certadocs.test', code: otp, name: 'Feature Tester' });
   const cookie = loginResp.cookies && loginResp.cookies[0] ? loginResp.cookies[0].split(';')[0] : '';
   t('Login successful', loginResp.json && loginResp.json.ok && cookie);
 
   // ─── /api/auth/me ───
   const meResp = await req('GET', '/api/auth/me', null, cookie);
-  t('/api/auth/me returns user info', meResp.json && meResp.json.email === 'newfeature-test@sealforge.test');
+  t('/api/auth/me returns user info', meResp.json && meResp.json.email === 'newfeature-test@certadocs.test');
   t('Role is assigned', meResp.json && ['admin', 'member'].includes(meResp.json.role), 'role=' + (meResp.json && meResp.json.role));
 
   // ─── RBAC: Admin routes ───
@@ -83,7 +83,7 @@ async function main() {
   const totpSetup = await req('POST', '/api/settings/totp/setup', {}, cookie);
   t('TOTP setup returns URI', totpSetup.json && totpSetup.json.uri && totpSetup.json.uri.startsWith('otpauth://'));
   t('TOTP setup returns base32 secret', totpSetup.json && typeof totpSetup.json.secret === 'string' && totpSetup.json.secret.length > 10);
-  t('TOTP URI contains SealForge issuer', totpSetup.json && totpSetup.json.uri && totpSetup.json.uri.includes('SealForge'));
+  t('TOTP URI contains CertaDocs issuer', totpSetup.json && totpSetup.json.uri && totpSetup.json.uri.includes('CertaDocs'));
 
   // Confirm with wrong code
   const badConfirm = await req('POST', '/api/settings/totp/confirm', { code: '000000' }, cookie);

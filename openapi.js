@@ -1,4 +1,4 @@
-// OpenAPI 3.1 spec for SealForge public API v1.
+// OpenAPI 3.1 spec for CertaDocs public API v1.
 // Served at /api/openapi.json and /.well-known/openapi.json for auto-discovery
 // (Zapier + Make.com + Postman all consume this format).
 //
@@ -10,13 +10,13 @@ function build({ baseUrl }) {
   return {
     openapi: '3.1.0',
     info: {
-      title: 'SealForge API',
+      title: 'CertaDocs API',
       description: 'PDF digital-signature platform. Full REST API for creating documents, managing signers, collecting signatures, and integrating with Zapier / Make / Salesforce / custom systems.',
       version: '1.0.0',
-      contact: { name: 'SealForge Support', email: 'support@finelai.com' },
+      contact: { name: 'CertaDocs Support', email: 'support@finelai.com' },
       license: { name: 'Proprietary' },
     },
-    servers: [{ url: baseUrl, description: 'This SealForge instance' }],
+    servers: [{ url: baseUrl, description: 'This CertaDocs instance' }],
     security: [{ BearerAuth: [] }],
     components: {
       securitySchemes: {

@@ -49,16 +49,16 @@ function smsSafe(str, maxLen = 40) {
 }
 
 async function sendSigningLinkSMS(phone, signerName, senderName, docTitle, signUrl) {
-  const body = `${smsSafe(senderName, 30)} sent you a document to sign on SealForge: "${smsSafe(docTitle)}". Sign here: ${signUrl}`;
+  const body = `${smsSafe(senderName, 30)} sent you a document to sign on CertaDocs: "${smsSafe(docTitle)}". Sign here: ${signUrl}`;
   return sendSMS(phone, body);
 }
 
 async function sendOTPSMS(phone, otp) {
-  return sendSMS(phone, `Your SealForge verification code: ${otp} (expires in 10 min). Do not share this code.`);
+  return sendSMS(phone, `Your CertaDocs verification code: ${otp} (expires in 10 min). Do not share this code.`);
 }
 
 async function sendCompletionSMS(phone, docTitle) {
-  return sendSMS(phone, `Your SealForge document "${smsSafe(docTitle)}" has been fully signed by all parties.`);
+  return sendSMS(phone, `Your CertaDocs document "${smsSafe(docTitle)}" has been fully signed by all parties.`);
 }
 
 module.exports = { isConfigured, sendSigningLinkSMS, sendOTPSMS, sendCompletionSMS };

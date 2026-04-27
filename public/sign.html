@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SealForge - Sign Document</title>
+  <title>CertaDocs - Sign Document</title>
   <link rel="stylesheet" href="/css/style.css">
   <script src="/js/i18n.js" defer></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" integrity="sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e" crossorigin="anonymous"></script>
@@ -93,7 +93,7 @@
         <div style="margin-top:10px;"><button class="btn-primary" id="aadhaar-verify-btn">Verify & Sign</button></div>
       </div>
       <div id="aadhaar-error" class="error-msg" role="alert" aria-live="polite"></div>
-      <p id="aadhaar-help" style="font-size:11px;color:#888;margin-top:10px;">SealForge stores only the last 4 digits of your Aadhaar and a provider transaction ID. We never see or store the full Aadhaar number.</p>
+      <p id="aadhaar-help" style="font-size:11px;color:#888;margin-top:10px;">CertaDocs stores only the last 4 digits of your Aadhaar and a provider transaction ID. We never see or store the full Aadhaar number.</p>
     </div>
 
     <!-- Step 1: Email verification -->
@@ -140,7 +140,7 @@
       <p>This document requires a payment of <b id="pay-display"></b> before you can sign.</p>
       <div id="pay-status" style="margin:12px 0;font-size:13px;"></div>
       <button class="btn-primary" id="pay-btn">Pay with Card</button>
-      <p style="font-size:12px;color:#888;margin-top:10px;">Powered by Stripe. Your card details never touch SealForge.</p>
+      <p style="font-size:12px;color:#888;margin-top:10px;">Powered by Stripe. Your card details never touch CertaDocs.</p>
       <div id="pay-error" class="error-msg"></div>
     </div>
 
@@ -232,15 +232,15 @@
     // can listen for these postMessage events to react to signer actions without polling.
     // Parent code example:
     //   window.addEventListener('message', (e) => {
-    //     if (e.origin !== 'https://sealforge.example') return;
-    //     if (e.data && e.data.source === 'sealforge') console.log(e.data);
+    //     if (e.origin !== 'https://certadocs.example') return;
+    //     if (e.data && e.data.source === 'certadocs') console.log(e.data);
     //   });
     // Event types: sf:loaded, sf:signed, sf:declined, sf:reassigned, sf:completed
     // All event types are prefixed 'sf:' so the host can filter cheaply.
     function postToParent(type, detail) {
       try {
         if (window.parent && window.parent !== window) {
-          window.parent.postMessage({ source: 'sealforge', type, detail: detail || {} }, '*');
+          window.parent.postMessage({ source: 'certadocs', type, detail: detail || {} }, '*');
         }
       } catch (_) { /* cross-origin restrictions — best-effort only */ }
     }
@@ -271,7 +271,7 @@
     // Consent must be recorded BEFORE any signing action. Without it the OTP step is gated.
     async function recordConsent(kind, granted) {
       const displayedText = document.getElementById(`consent-${kind === 'privacy' ? 'privacy' : 'esign'}-text`)?.textContent || '';
-      const lang = (window.SealForgeI18n && window.SealForgeI18n.getLang()) || 'en';
+      const lang = (window.CertaDocsI18n && window.CertaDocsI18n.getLang()) || 'en';
       try {
         await fetch(`/api/sign/${token}/consent`, {
           method: 'POST',

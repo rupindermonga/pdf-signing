@@ -5,7 +5,7 @@
 // admissible as evidence in court. Stock Holding Corporation of India (SHCIL) is the sole
 // Central Record-Keeping Agency authorised by government for e-stamping, rolled out state-wise.
 //
-// This module provides a pluggable interface so SealForge can:
+// This module provides a pluggable interface so CertaDocs can:
 //   1. Request an e-stamp certificate from SHCIL for a given party/state/amount.
 //   2. Embed the certificate number + QR on the first page of the PDF before signing.
 //

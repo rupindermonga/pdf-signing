@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SealForge - Verify Signed Document</title>
+  <title>CertaDocs - Verify Signed Document</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f0f2f5; color: #333; min-height: 100vh; }
@@ -54,7 +54,7 @@
     <div class="card">
       <h2>Verify Document Integrity <span class="shield">SHA-256</span></h2>
       <p class="sub">
-        Upload a SealForge-signed PDF to verify it hasn't been tampered with.
+        Upload a CertaDocs-signed PDF to verify it hasn't been tampered with.
         This tool computes the SHA-256 hash of the file entirely in your browser &mdash; nothing is uploaded to any server.
       </p>
 
@@ -78,7 +78,7 @@
     <div class="card how-it-works">
       <h3>How Verification Works</h3>
       <ol class="steps-list">
-        <li>When a document is signed with SealForge, a <strong>SHA-256 hash</strong> (digital fingerprint) is computed and recorded in the audit trail page and the signing certificate.</li>
+        <li>When a document is signed with CertaDocs, a <strong>SHA-256 hash</strong> (digital fingerprint) is computed and recorded in the audit trail page and the signing certificate.</li>
         <li>Upload the signed PDF here. This tool computes the hash of the file <strong>in your browser</strong> (nothing leaves your device).</li>
         <li>Compare the computed hash with the one on the audit trail. If they <strong>match</strong>, the document is authentic and unmodified.</li>
         <li>If they <strong>don't match</strong>, the document has been altered after signing &mdash; it should not be trusted.</li>
@@ -87,7 +87,7 @@
   </div>
 
   <footer>
-    <p>SealForge Verification &mdash; Finel AI</p>
+    <p>CertaDocs Verification &mdash; Finel AI</p>
     <p style="margin-top:4px;font-size:11px;color:#aaa;">All processing happens in your browser. No data is sent to any server.</p>
   </footer>
 

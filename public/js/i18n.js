@@ -1,12 +1,12 @@
-// SealForge i18n — lightweight client-side translations (EN, FR, HI)
+// CertaDocs i18n — lightweight client-side translations (EN, FR, HI)
 // Markets: Canada (EN/FR — Quebec Law 25), US (EN), India (EN/HI), Australia (EN), Europe (EN; more on demand).
 (function () {
-  const STORAGE_KEY = 'sealforge_lang';
+  const STORAGE_KEY = 'certadocs_lang';
 
   const dict = {
     en: {
       // Common
-      'app.title': 'SealForge',
+      'app.title': 'CertaDocs',
       'common.dashboard': 'Dashboard',
       'common.templates': 'Templates',
       'common.verify': 'Verify',
@@ -30,7 +30,7 @@
       'common.no': 'No',
 
       // Login
-      'login.title': 'Sign in to SealForge',
+      'login.title': 'Sign in to CertaDocs',
       'login.subtitle': 'Email-based passwordless login.',
       'login.email_placeholder': 'you@example.com',
       'login.send_code': 'Send Verification Code',
@@ -141,7 +141,7 @@
       'tpl.no_pdf': 'No PDF',
     },
     fr: {
-      'app.title': 'SealForge',
+      'app.title': 'CertaDocs',
       'common.dashboard': 'Tableau de bord',
       'common.templates': 'Modèles',
       'common.verify': 'Vérifier',
@@ -164,7 +164,7 @@
       'common.yes': 'Oui',
       'common.no': 'Non',
 
-      'login.title': 'Connexion à SealForge',
+      'login.title': 'Connexion à CertaDocs',
       'login.subtitle': 'Connexion sans mot de passe par courriel.',
       'login.email_placeholder': 'vous@exemple.com',
       'login.send_code': 'Envoyer le code',
@@ -271,7 +271,7 @@
       'tpl.no_pdf': 'Sans PDF',
     },
     hi: {
-      'app.title': 'SealForge',
+      'app.title': 'CertaDocs',
       'common.dashboard': 'डैशबोर्ड',
       'common.templates': 'टेम्पलेट',
       'common.verify': 'सत्यापित करें',
@@ -294,7 +294,7 @@
       'common.yes': 'हाँ',
       'common.no': 'नहीं',
 
-      'login.title': 'SealForge में साइन इन करें',
+      'login.title': 'CertaDocs में साइन इन करें',
       'login.subtitle': 'ईमेल-आधारित पासवर्ड-रहित लॉगिन।',
       'login.email_placeholder': 'aap@example.com',
       'login.send_code': 'सत्यापन कोड भेजें',
@@ -444,13 +444,13 @@
     currentLang = lang;
     try { localStorage.setItem(STORAGE_KEY, lang); } catch {}
     applyTranslations();
-    window.dispatchEvent(new CustomEvent('sealforge:langchange', { detail: { lang } }));
+    window.dispatchEvent(new CustomEvent('certadocs:langchange', { detail: { lang } }));
   }
 
   function injectLanguageSwitcher() {
-    if (document.getElementById('sealforge-lang-switcher')) return;
+    if (document.getElementById('certadocs-lang-switcher')) return;
     const div = document.createElement('div');
-    div.id = 'sealforge-lang-switcher';
+    div.id = 'certadocs-lang-switcher';
     div.style.cssText = 'position:fixed;bottom:14px;right:14px;z-index:9999;background:white;border:1px solid #d0d5dd;border-radius:20px;padding:4px;box-shadow:0 1px 4px rgba(0,0,0,0.1);font-size:12px;display:flex;gap:2px;';
     Object.keys(dict).forEach(l => {
       const b = document.createElement('button');
@@ -460,7 +460,7 @@
       if (l === currentLang) { b.style.background = '#1a3b7a'; b.style.color = 'white'; }
       b.addEventListener('click', () => {
         setLang(l);
-        document.querySelectorAll('#sealforge-lang-switcher button').forEach(x => {
+        document.querySelectorAll('#certadocs-lang-switcher button').forEach(x => {
           x.style.background = 'transparent'; x.style.color = '#666';
         });
         b.style.background = '#1a3b7a'; b.style.color = 'white';
@@ -470,7 +470,7 @@
     document.body.appendChild(div);
   }
 
-  window.SealForgeI18n = { t, setLang, applyTranslations, getLang: () => currentLang, availableLangs: () => Object.keys(dict) };
+  window.CertaDocsI18n = { t, setLang, applyTranslations, getLang: () => currentLang, availableLangs: () => Object.keys(dict) };
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => { applyTranslations(); injectLanguageSwitcher(); });

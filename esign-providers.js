@@ -1,6 +1,6 @@
 // Aadhaar eSign (IT Act 2000, Section 5) provider interface.
 //
-// Architecture: SealForge calls a provider's initiate(docHash, signer) → OTP sent to Aadhaar-linked mobile.
+// Architecture: CertaDocs calls a provider's initiate(docHash, signer) → OTP sent to Aadhaar-linked mobile.
 // Then verifyOTP(txnId, otp) → provider returns a signed PKCS#7 that we embed into the PDF.
 // Real-world providers (eMudhra, Protean/NSDL, CDAC) require a signed ASP (Application Service Provider)
 // agreement with UIDAI. This module ships a working sandbox provider so the full UX can be tested
@@ -74,7 +74,7 @@ register('sandbox', {
     sandboxTxns.delete(txnId);
     // Return a signature token — caller wraps it into the PDF's PKCS#7 signature dictionary.
     // In sandbox we just hash the docHash with a sandbox key; production providers return a real PKCS#7.
-    const signatureToken = crypto.createHmac('sha256', 'sealforge-sandbox-esign-key-do-not-use-in-prod')
+    const signatureToken = crypto.createHmac('sha256', 'certadocs-sandbox-esign-key-do-not-use-in-prod')
       .update(row.docHash || '').digest('base64');
     return {
       provider: 'sandbox',

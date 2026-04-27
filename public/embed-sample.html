@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SealForge - Embed Sample</title>
+  <title>CertaDocs - Embed Sample</title>
   <link rel="stylesheet" href="/css/style.css">
   <style>
     body { background: #f8fafd; }
@@ -63,24 +63,24 @@ Authorization: Bearer ds_live_...
           <pre>{
   "ok": true,
   "embedToken": "...",
-  "embedUrl": "https://sealforge/embed/sign/...",
+  "embedUrl": "https://certadocs/embed/sign/...",
   "expiresAt": "2026-04-15T20:00:00.000Z"
 }</pre>
 
           <h3>2. Embed the iframe</h3>
           <pre>&lt;iframe
-  src="https://sealforge/embed/sign/&lt;embedToken&gt;"
+  src="https://certadocs/embed/sign/&lt;embedToken&gt;"
   width="100%" height="800"
   allow="camera; microphone"
   style="border:1px solid #d0d5dd;border-radius:8px;"
 &gt;&lt;/iframe&gt;</pre>
 
           <h3>3. Listen for signer events</h3>
-          <p class="muted">SealForge posts <code>message</code> events to the parent frame. Always verify <code>e.origin</code> matches the SealForge domain before trusting the payload.</p>
+          <p class="muted">CertaDocs posts <code>message</code> events to the parent frame. Always verify <code>e.origin</code> matches the CertaDocs domain before trusting the payload.</p>
           <pre>window.addEventListener('message', (e) =&gt; {
-  if (e.origin !== 'https://sealforge') return;
-  if (!e.data || e.data.source !== 'sealforge') return;
-  console.log('[SealForge]', e.data.type, e.data.detail);
+  if (e.origin !== 'https://certadocs') return;
+  if (!e.data || e.data.source !== 'certadocs') return;
+  console.log('[CertaDocs]', e.data.type, e.data.detail);
 
   switch (e.data.type) {
     case 'sf:loaded':     // signer opened the page
@@ -136,7 +136,7 @@ Authorization: Bearer ds_live_...
 
     // Listen for messages from the iframe
     window.addEventListener('message', (e) => {
-      if (!e.data || e.data.source !== 'sealforge') return;
+      if (!e.data || e.data.source !== 'certadocs') return;
       appendLog(e.data.type, e.data.detail, e.origin);
     });
 

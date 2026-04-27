@@ -58,7 +58,7 @@ function req(port, method, path, body, jar) {
 
 async function main() {
   console.log('\n\x1b[1m══════════════════════════════════════════\x1b[0m');
-  console.log('\x1b[1m  SealForge Analytics Depth Tests\x1b[0m');
+  console.log('\x1b[1m  CertaDocs Analytics Depth Tests\x1b[0m');
   console.log('\x1b[1m══════════════════════════════════════════\x1b[0m');
 
   const server = app.listen(process.env.PORT);

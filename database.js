@@ -6,7 +6,7 @@ const fs = require('fs');
 const dataDir = path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-const db = new Database(path.join(dataDir, 'sealforge.db'));
+const db = new Database(path.join(dataDir, 'certadocs.db'));
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
@@ -560,7 +560,7 @@ const userOps = {
     return {
       logoUrl: u.brand_logo_url || '',
       color: u.brand_color || '#1a3b7a',
-      fromName: u.brand_from_name || u.name || 'SealForge',
+      fromName: u.brand_from_name || u.name || 'CertaDocs',
       redirectUrl: u.brand_redirect_url || '',
       emailFooter: u.brand_email_footer || '',
     };
@@ -650,6 +650,21 @@ const docOps = {
   },
   findById(id) {
     return db.prepare('SELECT * FROM documents WHERE id = ?').get(id);
+  },
+  // Scoped lookups that push the org/owner check into the WHERE clause.
+  // Preferred over findByUUID + post-fetch filter in API-key routes, so a
+  // forgotten post-fetch check cannot leak cross-org documents.
+  findByUUIDForCaller(uuid, { orgId, userId }) {
+    if (orgId) {
+      return db.prepare('SELECT * FROM documents WHERE uuid = ? AND org_id = ?').get(uuid, orgId);
+    }
+    return db.prepare('SELECT * FROM documents WHERE uuid = ? AND created_by = ?').get(uuid, userId);
+  },
+  findByIdForCaller(id, { orgId, userId }) {
+    if (orgId) {
+      return db.prepare('SELECT * FROM documents WHERE id = ? AND org_id = ?').get(id, orgId);
+    }
+    return db.prepare('SELECT * FROM documents WHERE id = ? AND created_by = ?').get(id, userId);
   },
   listByUser(userId) {
     return db.prepare('SELECT * FROM documents WHERE created_by = ? ORDER BY created_at DESC').all(userId);

@@ -87,7 +87,7 @@ function forgeSession(user, orgId) {
 
 async function main() {
   console.log('\n\x1b[1m══════════════════════════════════════════\x1b[0m');
-  console.log('\x1b[1m  SealForge Org HTTP Tests\x1b[0m');
+  console.log('\x1b[1m  CertaDocs Org HTTP Tests\x1b[0m');
   console.log('\x1b[1m══════════════════════════════════════════\x1b[0m');
 
   const server = app.listen(process.env.PORT);

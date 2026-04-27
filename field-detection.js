@@ -2,12 +2,12 @@
 //
 // Two strategies, combined:
 //   1. AcroForm-based: if the PDF already has form fields (many government / bank docs do),
-//      convert them to SealForge fields at the exact coordinates the issuer placed them.
+//      convert them to CertaDocs fields at the exact coordinates the issuer placed them.
 //   2. Heuristic text-based: scan page text for anchor phrases ("Signature:", "Date:",
 //      "Name:", "Initials:", "Witness:", "Aadhaar No.", etc.) and place a field to the
 //      right of — or below — the anchor, at the line's baseline.
 //
-// Returns an array of SealForge field objects ready to be merged into documents.fields_json.
+// Returns an array of CertaDocs field objects ready to be merged into documents.fields_json.
 // No network required; if ANTHROPIC_API_KEY is set we also offer `detectWithAI()` that passes
 // the first page image to Claude for smarter inference (opt-in, separate function).
 const { PDFDocument, PDFName, PDFDict, PDFArray } = require('pdf-lib');
@@ -90,7 +90,7 @@ const DEFAULT_SIZES = {
 function uid() { return 'f_' + crypto.randomBytes(6).toString('hex'); }
 
 // Given raw text and its position (PDF page coords, origin = bottom-left),
-// convert to SealForge field object (percentages, origin = top-left).
+// convert to CertaDocs field object (percentages, origin = top-left).
 function makeField({ type, label, page, pageWidth, pageHeight, x, y, anchorWidth, anchorHeight, signerIndex }) {
   const size = DEFAULT_SIZES[type] || DEFAULT_SIZES.text;
   // Place to the right of the anchor, same baseline — unless the anchor ends near page right edge.
@@ -98,7 +98,7 @@ function makeField({ type, label, page, pageWidth, pageHeight, x, y, anchorWidth
   const myW = Math.min(size.wPct, (spaceAfter / pageWidth) * 100 * 0.9);
   const myH = size.hPct;
   const xPctRaw = ((x + anchorWidth + 4) / pageWidth) * 100;
-  // Flip Y: SealForge uses top-origin percentages.
+  // Flip Y: CertaDocs uses top-origin percentages.
   const yPdfBottom = y;                        // anchor baseline y (bottom-up)
   const yPdfTop = pageHeight - yPdfBottom - anchorHeight;
   const yPctRaw = (yPdfTop / pageHeight) * 100;

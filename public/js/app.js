@@ -1,5 +1,5 @@
 // ─── Constants ───
-const VERIFY_URL = (window.SEALFORGE_VERIFY_URL || window.location.origin + '/verify');
+const VERIFY_URL = (window.CERTADOCS_VERIFY_URL || window.location.origin + '/verify');
 
 // ─── State ───
 const state = {
@@ -615,7 +615,7 @@ async function addAuditTrailPage(pdfDoc, audit, qrDataUrl) {
   pg.drawRectangle({ x: 0, y: h - 80, width: w, height: 80, color: rgb(0.1, 0.23, 0.48) });
   pg.drawText('Seal', { x: 40, y: h - 52, size: 24, font: fontBold, color: rgb(1, 1, 1) });
   pg.drawText('Forge', { x: 40 + fontBold.widthOfTextAtSize('Seal', 24), y: h - 52, size: 24, font: fontBold, color: rgb(0.5, 0.72, 1) });
-  pg.drawText('Certificate of Signing', { x: 40 + fontBold.widthOfTextAtSize('SealForge', 24) + 20, y: h - 50, size: 16, font, color: rgb(0.85, 0.9, 1) });
+  pg.drawText('Certificate of Signing', { x: 40 + fontBold.widthOfTextAtSize('CertaDocs', 24) + 20, y: h - 50, size: 16, font, color: rgb(0.85, 0.9, 1) });
 
   y = h - 110;
 
@@ -676,7 +676,7 @@ async function addAuditTrailPage(pdfDoc, audit, qrDataUrl) {
 
   // Disclaimer
   pg.drawLine({ start: { x: 40, y: 75 }, end: { x: w - 40, y: 75 }, thickness: 0.5, color: rgb(0.7, 0.7, 0.7) });
-  pg.drawText('This document was digitally signed using SealForge with a PKCS#7 digital certificate.', { x: 40, y: 60, size: 8, font, color: rgb(0.5, 0.5, 0.5) });
+  pg.drawText('This document was digitally signed using CertaDocs with a PKCS#7 digital certificate.', { x: 40, y: 60, size: 8, font, color: rgb(0.5, 0.5, 0.5) });
   pg.drawText(`Verify integrity at: ${VERIFY_URL}`, { x: 40, y: 48, size: 8, font: fontMono, color: rgb(0.4, 0.4, 0.4) });
   pg.drawText('Any modification after signing will invalidate both the hash and the digital signature.', { x: 40, y: 36, size: 8, font, color: rgb(0.5, 0.5, 0.5) });
 }
@@ -688,7 +688,7 @@ function generateHtmlCertificate(audit, signedHash) {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SealForge Signing Certificate - ${audit.documentId}</title>
+<title>CertaDocs Signing Certificate - ${audit.documentId}</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'Segoe UI',Tahoma,sans-serif;background:#f0f2f5;color:#333;padding:24px}
@@ -773,7 +773,7 @@ footer{text-align:center;padding:16px;color:#aaa;font-size:11px}
     </div>
   </div>
 </div>
-<footer>SealForge &mdash; Finel AI &mdash; This certificate was generated at the time of signing.</footer>
+<footer>CertaDocs &mdash; Finel AI &mdash; This certificate was generated at the time of signing.</footer>
 
 <script>
 const expectedHash = "${signedHash}";
@@ -867,13 +867,13 @@ downloadBtn.addEventListener('click', async () => {
     // Draw box
     page.drawRectangle({ x: pdfX, y: pdfY, width: stampW, height: finalH, color: rgb(1,1,1), borderColor: rgb(0.1,0.23,0.48), borderWidth: 0.8 });
 
-    // Left column: SealForge logo
+    // Left column: CertaDocs logo
     const logoX = pdfX + pad;
     page.drawText('Seal', { x: logoX, y: pdfY + finalH - pad - logoFs, size: logoFs, font: fontBold, color: rgb(0.1,0.23,0.48) });
     page.drawText('Forge', { x: logoX + fontBold.widthOfTextAtSize('Seal', logoFs), y: pdfY + finalH - pad - logoFs, size: logoFs, font: fontBold, color: rgb(0.18,0.37,0.72) });
 
     // Divider
-    const logoTotalW = fontBold.widthOfTextAtSize('SealForge', logoFs);
+    const logoTotalW = fontBold.widthOfTextAtSize('CertaDocs', logoFs);
     const divX = pdfX + logoTotalW + pad * 2 + 2;
     page.drawLine({ start: { x: divX, y: pdfY + 2 }, end: { x: divX, y: pdfY + finalH - 2 }, thickness: 0.5, color: rgb(0.1,0.23,0.48) });
 
@@ -912,7 +912,7 @@ downloadBtn.addEventListener('click', async () => {
         const qrBytes = await fetch(qrDataUrl).then(r => r.arrayBuffer());
         const qrImg = await pdfDoc.embedPng(qrBytes);
         const qrSz = Math.round(22 * userScale);
-        // QR right below SealForge logo, tight gap
+        // QR right below CertaDocs logo, tight gap
         page.drawImage(qrImg, { x: pdfX + pad, y: pdfY + finalH - pad - logoFs - qrSz - 2 * s, width: qrSz, height: qrSz });
       } catch (e) { console.error('QR embed failed', e); }
     }

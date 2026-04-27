@@ -118,7 +118,7 @@ async function requestTimestamp(sha256HashBuf) {
     headers: {
       'Content-Type': 'application/timestamp-query',
       'Content-Length': reqDer.length,
-      'User-Agent': 'SealForge-TSA/1.0',
+      'User-Agent': 'CertaDocs-TSA/1.0',
     },
     timeout: TSA_TIMEOUT_MS,
   };

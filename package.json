@@ -1,14 +1,16 @@
 {
-  "name": "sealforge",
+  "name": "certadocs",
   "version": "1.0.0",
-  "description": "SealForge — PDF digital signature platform by Finel AI",
+  "description": "CertaDocs — PDF digital signature platform by Finel AI",
   "main": "server.js",
   "scripts": {
-    "start": "node start.js",
-    "dev": "NODE_ENV=development node server.js",
+    "start": "doppler run -- node start.js",
+    "dev": "doppler run -- node server.js",
     "generate-cert": "node generate-cert.js",
     "test:features": "node test-features.js",
-    "test:security": "node test-security.js"
+    "test:security": "node test-security.js",
+    "test:idor": "node test-idor-scoping.js",
+    "rekey:legacy": "node rekey-legacy-blobs.js"
   },
   "engines": {
     "node": ">=18.0.0"

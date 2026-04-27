@@ -22,7 +22,7 @@ cert.validity.notAfter = new Date();
 cert.validity.notAfter.setFullYear(cert.validity.notBefore.getFullYear() + 10);
 
 const attrs = [
-  { name: 'commonName', value: 'SealForge PDF Signing' },
+  { name: 'commonName', value: 'CertaDocs PDF Signing' },
   { name: 'organizationName', value: 'Finel AI' },
   { name: 'countryName', value: 'CA' },
   { name: 'stateOrProvinceName', value: 'Ontario' },
@@ -64,8 +64,8 @@ const p12Buffer = Buffer.from(p12Der, 'binary');
 const certDir = path.join(__dirname, 'cert');
 if (!fs.existsSync(certDir)) fs.mkdirSync(certDir);
 
-fs.writeFileSync(path.join(certDir, 'sealforge.p12'), p12Buffer);
-console.log(`Certificate saved to cert/sealforge.p12`);
+fs.writeFileSync(path.join(certDir, 'certadocs.p12'), p12Buffer);
+console.log(`Certificate saved to cert/certadocs.p12`);
 console.log(`Password: ${p12Pass}`);
 if (!process.env.P12_PASSPHRASE) {
   console.log(`\x1b[33mIMPORTANT: Set P12_PASSPHRASE=${p12Pass} in your .env file.\x1b[0m`);

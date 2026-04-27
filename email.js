@@ -34,7 +34,7 @@ function isConfigured() {
   return transporter !== null;
 }
 
-const FROM_NAME = process.env.FROM_NAME || 'SealForge';
+const FROM_NAME = process.env.FROM_NAME || 'CertaDocs';
 const FROM_EMAIL = process.env.FROM_EMAIL || process.env.SMTP_USER || 'noreply@finelai.com';
 
 function brandHeader(brand) {

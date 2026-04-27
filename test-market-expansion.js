@@ -13,7 +13,7 @@ function pass(msg) { console.log(`  [${GREEN}PASS${RESET}] ${msg}`); passed++; }
 function fail(msg, err) { console.log(`  [${RED}FAIL${RESET}] ${msg}${err ? ` — ${err.message}` : ''}`); failed++; }
 
 // Use a throwaway DB for tests
-const dbPath = path.join(__dirname, 'data', 'sealforge.db');
+const dbPath = path.join(__dirname, 'data', 'certadocs.db');
 
 (async () => {
   section('1. i18n (server-side)');
@@ -24,7 +24,7 @@ const dbPath = path.join(__dirname, 'data', 'sealforge.db');
     assert.strictEqual(normalize('fr-CA'), 'en'); // normalize only accepts exact codes; CA falls back
     assert.strictEqual(normalize('hi'), 'hi');
     assert.strictEqual(normalize('zz'), 'en');
-    assert.ok(t('fr', 'email.login_subject').toLowerCase().includes('sealforge') || t('fr', 'email.login_subject').toLowerCase().includes('vérification') || t('fr', 'email.login_subject').toLowerCase().includes('code'));
+    assert.ok(t('fr', 'email.login_subject').toLowerCase().includes('certadocs') || t('fr', 'email.login_subject').toLowerCase().includes('vérification') || t('fr', 'email.login_subject').toLowerCase().includes('code'));
     const hi = t('hi', 'email.request_subject', { sender: 'Raj', title: 'NDA' });
     assert.ok(hi.includes('Raj'));
     assert.ok(hi.includes('NDA'));

@@ -965,12 +965,12 @@ footer {
     font-size: 24px;
   }
   /* Language switcher smaller on mobile */
-  #sealforge-lang-switcher {
+  #certadocs-lang-switcher {
     bottom: 8px !important;
     right: 8px !important;
     font-size: 10px !important;
   }
-  #sealforge-lang-switcher button {
+  #certadocs-lang-switcher button {
     padding: 3px 8px !important;
   }
   /* Stack lang switcher buttons on very narrow screens only if needed */
@@ -1015,7 +1015,7 @@ footer {
 
 /* Print — clean signed-document preview */
 @media print {
-  header, footer, .btn-primary, .btn-secondary, #sealforge-lang-switcher,
+  header, footer, .btn-primary, .btn-secondary, #certadocs-lang-switcher,
   .placement-actions, .pdf-toolbar, .upload-area {
     display: none !important;
   }

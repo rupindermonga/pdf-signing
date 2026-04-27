@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SealForge - Settings</title>
+  <title>CertaDocs - Settings</title>
   <link rel="stylesheet" href="/css/style.css">
   <script src="/js/i18n.js" defer></script>
   <style>
@@ -46,7 +46,7 @@
     <!-- MARKETS / JURISDICTION -->
     <div class="card" style="border-left:3px solid #1a3b7a;">
       <h2>Market / Jurisdiction</h2>
-      <p class="desc">Tells SealForge which country's defaults to use (language, currency, regulatory frame, identity verification, Aadhaar/e-stamp availability). You can always send to any region — this just reduces noise in the UI for features you don't need.</p>
+      <p class="desc">Tells CertaDocs which country's defaults to use (language, currency, regulatory frame, identity verification, Aadhaar/e-stamp availability). You can always send to any region — this just reduces noise in the UI for features you don't need.</p>
       <div id="market-current" style="margin-bottom:14px;font-size:13px;color:#555;"></div>
       <div style="display:flex;gap:20px;flex-wrap:wrap;">
         <div style="flex:1;min-width:280px;">
@@ -150,7 +150,7 @@
     <!-- API KEYS -->
     <div class="card">
       <h2>API Keys</h2>
-      <p class="desc">Use these to call the SealForge REST API from your apps. <b>Treat them like passwords.</b></p>
+      <p class="desc">Use these to call the CertaDocs REST API from your apps. <b>Treat them like passwords.</b></p>
       <table>
         <thead><tr><th>Name</th><th>Key prefix</th><th>Scope</th><th>Last used</th><th></th></tr></thead>
         <tbody id="keys-tbody"><tr><td colspan="5" style="text-align:center;color:#888;padding:16px;">Loading...</td></tr></tbody>
@@ -169,13 +169,13 @@
     <!-- WEBHOOKS -->
     <div class="card">
       <h2>Webhooks</h2>
-      <p class="desc">Receive HTTPS POSTs when documents are sent, signed, completed, or cancelled. Each request is signed with HMAC-SHA256 in the <code>X-SealForge-Signature</code> header (format: <code>t=&lt;unix&gt;, v1=&lt;sha256&gt;</code> where the signed payload is <code>&lt;t&gt;.&lt;body&gt;</code>). Only <code>https://</code> URLs are accepted — consumers should reject requests older than 5 minutes to prevent replay.</p>
+      <p class="desc">Receive HTTPS POSTs when documents are sent, signed, completed, or cancelled. Each request is signed with HMAC-SHA256 in the <code>X-CertaDocs-Signature</code> header (format: <code>t=&lt;unix&gt;, v1=&lt;sha256&gt;</code> where the signed payload is <code>&lt;t&gt;.&lt;body&gt;</code>). Only <code>https://</code> URLs are accepted — consumers should reject requests older than 5 minutes to prevent replay.</p>
       <table>
         <thead><tr><th>URL</th><th>Events</th><th>Last status</th><th>Active</th><th></th></tr></thead>
         <tbody id="hooks-tbody"><tr><td colspan="5" style="text-align:center;color:#888;padding:16px;">Loading...</td></tr></tbody>
       </table>
       <div class="row-form">
-        <input type="url" id="new-hook-url" placeholder="https://your-app.example.com/webhooks/sealforge" pattern="https://.*">
+        <input type="url" id="new-hook-url" placeholder="https://your-app.example.com/webhooks/certadocs" pattern="https://.*">
       </div>
       <div class="events-checks" id="event-checks">
         <label><input type="checkbox" value="*" checked> All events</label>
